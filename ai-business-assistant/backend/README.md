@@ -10,8 +10,11 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+默认地址：http://localhost:8000  
+API 文档：http://localhost:8000/docs
 
 ## 环境变量
 
@@ -19,10 +22,25 @@ uvicorn app.main:app --reload
 
 ## 数据库
 
-默认使用 SQLite：`ai_business_assistant.db`。应用启动时自动初始化表。
+默认使用 SQLite：`ai_business_assistant.db`。应用启动时会自动初始化表，无需手动迁移。
+
+## 上传目录
+
+默认使用 `uploads/`。应用启动时自动创建目录；每个项目的文件会保存到 `uploads/{project_id}/`。
+
+## 烟测
+
+```bash
+cd ai-business-assistant/backend
+source .venv/bin/activate
+python scripts/smoke_test.py
+```
+
+烟测会使用临时 SQLite 数据库和上传目录，覆盖注册登录、JWT、项目创建、文件上传、资料分析、综合分析、多文档生成和 Markdown 导出。
 
 ## 主要接口
 
+- `GET /api/health`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 - `GET /api/auth/me`
