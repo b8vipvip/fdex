@@ -1,0 +1,8 @@
+import { FormEvent, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../store/authStore';
+import type { ProfessionalLevel } from '../types';
+import { AuthShell } from './LoginPage';
+export default function RegisterPage(){const [email,setEmail]=useState('');const [name,setName]=useState('');const [password,setPassword]=useState('');const [professional_level,setLevel]=useState<ProfessionalLevel>('business');const nav=useNavigate();const register=useAuthStore(s=>s.register);
+ async function submit(e:FormEvent){e.preventDefault(); await register({email,name,password,professional_level}); nav('/');}
+ return <AuthShell title="注册"><form onSubmit={submit} className="space-y-4"><input className="w-full rounded-xl border p-3" placeholder="邮箱" value={email} onChange={e=>setEmail(e.target.value)} /><input className="w-full rounded-xl border p-3" placeholder="用户名" value={name} onChange={e=>setName(e.target.value)} /><input type="password" className="w-full rounded-xl border p-3" placeholder="密码（至少6位）" value={password} onChange={e=>setPassword(e.target.value)} /><select className="w-full rounded-xl border p-3" value={professional_level} onChange={e=>setLevel(e.target.value as ProfessionalLevel)}><option value="beginner">完全小白</option><option value="business">懂业务不懂技术</option><option value="product">产品/项目经理</option><option value="developer">技术人员</option><option value="auto">AI自动判断</option></select><button className="w-full rounded-xl bg-blue-600 p-3 text-white">注册</button><p className="text-center text-sm">已有账号？<Link className="text-blue-600" to="/login">去登录</Link></p></form></AuthShell>}

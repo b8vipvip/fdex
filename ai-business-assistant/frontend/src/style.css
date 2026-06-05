@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+body { @apply bg-slate-50 text-slate-900; }
+.prose-lite h1 { @apply text-2xl font-bold mt-4 mb-3; }
+.prose-lite h2 { @apply text-lg font-semibold mt-4 mb-2; }
+.prose-lite p { @apply my-2 leading-7; }
+.prose-lite ul { @apply list-disc pl-6; }
+.prose-lite li { @apply my-1; }
