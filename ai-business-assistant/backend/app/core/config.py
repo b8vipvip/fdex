@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     ai_model_summary: str = "mock-summary"
     ai_model_code: str = "mock-code"
     ai_model_industry: str = "mock-industry"
+    ai_timeout_seconds: float = 60.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

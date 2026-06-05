@@ -4,9 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import analysis, assets, auth, documents, projects
 from app.core.config import get_settings
 from app.db.database import Base, engine
+from app.db.migrations import run_lightweight_migrations
 
 settings = get_settings()
 Base.metadata.create_all(bind=engine)
+run_lightweight_migrations(engine)
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title=settings.app_name)

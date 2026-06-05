@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
-from app.db.models import Project, ProjectMessage, User
+from app.db.models import Project, ProjectAsset, ProjectMessage, User
 from app.db.session import get_db
+from app.schemas.privacy import PrivacySummaryRead
 from app.schemas.project import MessageCreate, MessageRead, ProjectCreate, ProjectRead, ProjectUpdate
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -24,7 +25,16 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if payload.professional_level:
         user.professional_level = payload.professional_level
-    project = Project(user_id=user.id, title=payload.title, description=payload.description, requirement_score=25 if payload.description else 0)
+    project = Project(
+        user_id=user.id,
+        title=payload.title,
+        description=payload.description,
+        requirement_score=25 if payload.description else 0,
+        storage_mode=payload.storage_mode,
+        data_retention_policy=payload.data_retention_policy,
+        allow_third_party_ai=payload.allow_third_party_ai,
+        auto_desensitize=payload.auto_desensitize,
+    )
     db.add(project)
     db.flush()
     if payload.description:
@@ -56,6 +66,26 @@ def delete_project(project_id: int, db: Session = Depends(get_db), user: User = 
     db.commit()
     return {"ok": True}
 
+
+
+
+@router.get("/{project_id}/privacy-summary", response_model=PrivacySummaryRead)
+def privacy_summary(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    project = get_owned_project(db, project_id, user)
+    assets = db.query(ProjectAsset).filter(ProjectAsset.project_id == project_id).all()
+    deadlines = [asset.retention_deadline for asset in assets if asset.retention_deadline]
+    return {
+        "project_id": project.id,
+        "storage_mode": project.storage_mode,
+        "data_retention_policy": project.data_retention_policy,
+        "allow_third_party_ai": project.allow_third_party_ai,
+        "auto_desensitize": project.auto_desensitize,
+        "total_assets": len(assets),
+        "sensitive_assets": sum(1 for asset in assets if asset.is_sensitive),
+        "highly_sensitive_assets": sum(1 for asset in assets if asset.privacy_level == "highly_sensitive"),
+        "pending_decision_assets": sum(1 for asset in assets if asset.status == "need_user_decision"),
+        "retention_deadline": min(deadlines) if deadlines else None,
+    }
 
 @router.post("/{project_id}/messages", response_model=MessageRead)
 def create_message(project_id: int, payload: MessageCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):

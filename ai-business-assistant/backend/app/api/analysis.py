@@ -5,6 +5,7 @@ from app.api.projects import get_owned_project
 from app.db.models import ProjectReport, User
 from app.db.session import get_db
 from app.schemas.document import ReportRead
+from app.services.ai_providers import AIProviderError
 from app.services.analysis_service import AnalysisService
 
 router = APIRouter(prefix="/projects", tags=["analysis"])
@@ -17,6 +18,8 @@ def analyze_project(project_id: int, db: Session = Depends(get_db), user: User =
         return AnalysisService(db).analyze_project(project_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AIProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}/reports", response_model=list[ReportRead])

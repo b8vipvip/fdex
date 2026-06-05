@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.database import Base
 
@@ -28,6 +28,10 @@ class Project(Base):
     project_type: Mapped[str] = mapped_column(String(50), default="unknown")
     status: Mapped[str] = mapped_column(String(50), default="draft")
     requirement_score: Mapped[float] = mapped_column(Float, default=0)
+    storage_mode: Mapped[str] = mapped_column(String(30), default="hybrid")
+    data_retention_policy: Mapped[str] = mapped_column(String(40), default="keep_forever")
+    allow_third_party_ai: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_desensitize: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     user: Mapped[User] = relationship(back_populates="projects")
@@ -56,6 +60,11 @@ class ProjectAsset(Base):
     mime_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(50), default="uploaded")
+    privacy_level: Mapped[str] = mapped_column(String(30), default="normal")
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    desensitized_path: Mapped[str] = mapped_column(String(500), default="")
+    original_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retention_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     results: Mapped[list["AssetAnalysisResult"]] = relationship(cascade="all, delete-orphan")
 
