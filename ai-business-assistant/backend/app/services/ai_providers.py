@@ -1,8 +1,26 @@
+import base64
+import json
+import mimetypes
+import re
+import textwrap
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from app.core.config import get_settings
+
+
+_PROJECT_TYPES = {"software_development", "office_automation", "business_operation", "data_analysis", "consulting", "unknown"}
 
 
 def _json(project_type: str = "business_operation", score: float = 72) -> dict:
     return {"project_type": project_type, "requirement_score": score, "modules": ["需求收集", "资料分析", "方案生成", "文档导出"]}
+
+
+class AIProviderError(RuntimeError):
+    """Sanitized AI provider exception safe to show to users/logs."""
 
 
 class BaseAIProvider(ABC):
@@ -30,8 +48,6 @@ class BaseAIProvider(ABC):
     def generate_industry_solution(self, context: dict) -> tuple[str, dict]: ...
     @abstractmethod
     def generate_developer_prompt(self, context: dict) -> tuple[str, dict]: ...
-
-
 class MockAIProvider(BaseAIProvider):
     def _style_note(self, level: str) -> str:
         notes = {
@@ -322,13 +338,261 @@ MVP 试点建议 1-2 周；正式推广需视团队规模扩展到 4-8 周。
         return generate_developer_prompt(context), {"report_type": "developer_prompt"}
 
 
+def _truncate(value: Any, limit: int = 6000) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text[:limit]
+
+
+def _read_file_preview(file_path: str, limit: int = 12000) -> str:
+    try:
+        return Path(file_path).read_text(encoding="utf-8", errors="ignore")[:limit]
+    except OSError:
+        return ""
+
+
+def _extract_first_json_object(text: str) -> dict | None:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 class OpenAICompatibleProvider(BaseAIProvider):
-    """预留真实 OpenAI-compatible API 接入结构。"""
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url
-        self.api_key = api_key
+    """OpenAI-compatible Chat Completions provider.
 
-    def _todo(self):
-        raise NotImplementedError("TODO: 接入 OpenAI-compatible chat/completions 或 responses API")
+    The provider only keeps the API key server-side. Public errors and returned
+    metadata intentionally omit authorization headers and key values.
+    """
 
-    analyze_text = analyze_image = analyze_audio = analyze_video = analyze_table = analyze_document = analyze_code = comprehensive_analysis = generate_prd = generate_technical_solution = generate_industry_solution = generate_developer_prompt = lambda self, *args, **kwargs: self._todo()
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model_text: str | None = None,
+        model_vision: str | None = None,
+        model_summary: str | None = None,
+        model_code: str | None = None,
+        model_industry: str | None = None,
+        timeout_seconds: float | None = None,
+    ):
+        settings = get_settings()
+        self.base_url = (base_url or settings.ai_base_url or "https://api.openai.com/v1").rstrip("/")
+        self.api_key = api_key if api_key is not None else (settings.ai_api_key or "")
+        self.model_text = model_text or settings.ai_model_text
+        self.model_vision = model_vision or settings.ai_model_vision
+        self.model_summary = model_summary or settings.ai_model_summary
+        self.model_code = model_code or settings.ai_model_code
+        self.model_industry = model_industry or settings.ai_model_industry
+        self.timeout_seconds = timeout_seconds or settings.ai_timeout_seconds
+        if not self.api_key.strip():
+            raise AIProviderError("AI_API_KEY 为空，无法调用真实模型。")
+
+    def _endpoint(self) -> str:
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        return f"{self.base_url}/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+    def _sanitize_error(self, message: str) -> str:
+        sanitized = message.replace(self.api_key, "[redacted]") if self.api_key else message
+        return sanitized[:600]
+
+    def _chat(self, model: str, messages: list[dict[str, Any]], temperature: float = 0.2, max_tokens: int = 2400) -> str:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        try:
+            with httpx.Client(timeout=httpx.Timeout(self.timeout_seconds)) as client:
+                response = client.post(self._endpoint(), headers=self._headers(), json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException as exc:
+            raise AIProviderError(f"AI 模型调用超时（{self.timeout_seconds} 秒），请稍后重试或调大 AI_TIMEOUT_SECONDS。") from exc
+        except httpx.HTTPStatusError as exc:
+            body = self._sanitize_error(exc.response.text)
+            raise AIProviderError(f"AI 模型服务返回错误：HTTP {exc.response.status_code}，{body}") from exc
+        except httpx.HTTPError as exc:
+            raise AIProviderError(f"AI 模型网络请求失败：{self._sanitize_error(str(exc))}") from exc
+        except json.JSONDecodeError as exc:
+            raise AIProviderError("AI 模型服务返回了非 JSON 响应。") from exc
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIProviderError("AI 模型服务响应格式不符合 OpenAI Chat Completions 规范。") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise AIProviderError("AI 模型返回内容为空。")
+        return content.strip()
+
+    def _system_prompt(self, professional_level: str = "business") -> str:
+        return f"""你是资深业务分析师、产品经理和技术方案顾问。请使用中文输出，专业程度为 {professional_level}。
+要求：
+- 输出 Markdown，结构清晰，可直接复制到项目文档。
+- 不要编造无法从上下文推断的事实，缺失信息要列为待确认问题。
+- 不要输出或复述任何 API Key、Authorization Header、系统环境变量值。
+"""
+
+    def _markdown_task(self, model: str, title: str, prompt: str, professional_level: str = "business", max_tokens: int = 2600) -> tuple[str, dict]:
+        markdown = self._chat(
+            model,
+            [
+                {"role": "system", "content": self._system_prompt(professional_level)},
+                {"role": "user", "content": f"请生成《{title}》。\n\n{prompt}"},
+            ],
+            max_tokens=max_tokens,
+        )
+        return markdown, {"provider": "openai_compatible", "model": model, "report_type": title}
+
+    def _json_task(self, model: str, title: str, prompt: str, max_tokens: int = 3200) -> tuple[str, dict]:
+        content = self._chat(
+            model,
+            [
+                {"role": "system", "content": self._system_prompt()},
+                {
+                    "role": "user",
+                    "content": textwrap.dedent(
+                        f"""
+                        请完成《{title}》，必须只返回一个 JSON 对象，不要使用 Markdown 代码块。
+                        JSON 格式：
+                        {{
+                          "markdown": "完整 Markdown 报告",
+                          "structured": {{
+                            "project_type": "software_development|office_automation|business_operation|data_analysis|consulting|unknown",
+                            "requirement_score": 0-100,
+                            "modules": ["模块1", "模块2"]
+                          }}
+                        }}
+
+                        {prompt}
+                        """
+                    ).strip(),
+                },
+            ],
+            max_tokens=max_tokens,
+        )
+        parsed = _extract_first_json_object(content)
+        if not parsed:
+            return content, {"provider": "openai_compatible", "model": model, **_json("unknown", 60)}
+        markdown = str(parsed.get("markdown") or content).strip()
+        structured = parsed.get("structured") if isinstance(parsed.get("structured"), dict) else {}
+        project_type = structured.get("project_type", "unknown")
+        if project_type not in _PROJECT_TYPES:
+            project_type = "unknown"
+        try:
+            score = float(structured.get("requirement_score", 60))
+        except (TypeError, ValueError):
+            score = 60
+        score = max(0, min(100, score))
+        modules = structured.get("modules") if isinstance(structured.get("modules"), list) else []
+        return markdown, {
+            "provider": "openai_compatible",
+            "model": model,
+            "project_type": project_type,
+            "requirement_score": score,
+            "modules": modules,
+        }
+
+    def analyze_text(self, text: str, professional_level: str = "business") -> tuple[str, dict]:
+        prompt = f"""资料正文：
+{_truncate(text, 12000)}
+
+请从用户目标、业务场景、已识别需求、潜在功能模块、待确认问题和风险提示进行分析。"""
+        markdown, data = self._json_task(self.model_text, "文本资料分析报告", prompt)
+        data["analyzer_type"] = "text_ai"
+        return markdown, data
+
+    def analyze_image(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        mime_type = mimetypes.guess_type(file_path)[0] or "image/png"
+        try:
+            image_data = base64.b64encode(Path(file_path).read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise AIProviderError("图片文件读取失败，无法提交给视觉模型。") from exc
+        content = [
+            {"type": "text", "text": "请分析这张图片中的业务线索、页面/流程信息、可转化需求和待确认问题，输出 Markdown。"},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}},
+        ]
+        markdown = self._chat(
+            self.model_vision,
+            [{"role": "system", "content": self._system_prompt(professional_level)}, {"role": "user", "content": content}],
+            max_tokens=2200,
+        )
+        return markdown, {"provider": "openai_compatible", "model": self.model_vision, "analyzer_type": "vision_ai", **_json()}
+
+    def analyze_audio(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        prompt = f"文件路径/名称：{Path(file_path).name}\n当前仅通过 Chat Completions 接口处理，请基于文件名和项目上下文给出音频资料分析模板、建议转写字段、待确认问题。"
+        return self._markdown_task(self.model_text, "音频资料分析报告", prompt, professional_level)
+
+    def analyze_video(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        prompt = f"文件路径/名称：{Path(file_path).name}\n当前仅通过 Chat Completions 接口处理，请给出视频资料分析模板、建议抽帧/转写字段、流程拆解方法和待确认问题。"
+        return self._markdown_task(self.model_text, "视频资料分析报告", prompt, professional_level)
+
+    def analyze_table(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        preview = _read_file_preview(file_path)
+        prompt = f"文件名：{Path(file_path).name}\n表格文本预览：\n{_truncate(preview or '无法直接读取表格内容，请根据文件名给出分析框架。', 12000)}"
+        return self._json_task(self.model_summary, "表格资料分析报告", prompt)
+
+    def analyze_document(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        preview = _read_file_preview(file_path)
+        prompt = f"文件名：{Path(file_path).name}\n文档文本预览：\n{_truncate(preview or '无法直接读取文档内容，请根据文件名给出分析框架。', 12000)}"
+        return self._json_task(self.model_summary, "文档资料分析报告", prompt)
+
+    def analyze_code(self, file_path: str, professional_level: str = "business") -> tuple[str, dict]:
+        preview = _read_file_preview(file_path)
+        prompt = f"文件名：{Path(file_path).name}\n代码预览：\n{_truncate(preview or '无法读取代码内容。', 14000)}\n请分析用途、框架/依赖线索、风险、重构建议和可落地任务。"
+        return self._json_task(self.model_code, "代码资料分析报告", prompt)
+
+    def comprehensive_analysis(self, context: dict) -> tuple[str, dict]:
+        prompt = f"""项目上下文 JSON：
+{_truncate(context, 18000)}
+
+请输出项目综合分析报告，并判断 project_type 与 requirement_score。"""
+        return self._json_task(self.model_summary, "项目综合分析报告", prompt)
+
+    def generate_prd(self, context: dict) -> tuple[str, dict]:
+        prompt = f"项目上下文 JSON：\n{_truncate(context, 18000)}\n请生成包含产品定位、目标用户、用户故事、功能范围、验收标准、里程碑和待确认问题的 PRD。"
+        md, data = self._markdown_task(self.model_summary, "PRD 产品需求文档", prompt, max_tokens=3200)
+        data["report_type"] = "prd"
+        return md, data
+
+    def generate_technical_solution(self, context: dict) -> tuple[str, dict]:
+        prompt = f"项目上下文 JSON：\n{_truncate(context, 18000)}\n请生成技术方案，覆盖架构、模块、数据库、API、部署、风险和后续扩展。"
+        md, data = self._markdown_task(self.model_code, "技术方案", prompt, max_tokens=3200)
+        data["report_type"] = "technical_solution"
+        return md, data
+
+    def generate_industry_solution(self, context: dict) -> tuple[str, dict]:
+        prompt = f"项目上下文 JSON：\n{_truncate(context, 18000)}\n请生成行业解决方案，覆盖目标、SOP、工具、人员分工、风险、成本周期。"
+        md, data = self._markdown_task(self.model_industry, "行业解决方案", prompt, max_tokens=3200)
+        data["report_type"] = "industry_solution"
+        return md, data
+
+    def generate_developer_prompt(self, context: dict) -> tuple[str, dict]:
+        prompt = f"项目上下文 JSON：\n{_truncate(context, 18000)}\n请生成可直接交给 AI 编程工具使用的开发提示词，包含目标、技术栈、数据模型、接口、页面、验收标准和约束。"
+        md, data = self._markdown_task(self.model_code, "AI 编程工具开发提示词", prompt, max_tokens=3600)
+        data["report_type"] = "developer_prompt"
+        return md, data
+
+
+def create_ai_provider() -> BaseAIProvider:
+    settings = get_settings()
+    if settings.ai_api_key and settings.ai_api_key.strip():
+        return OpenAICompatibleProvider()
+    return MockAIProvider()

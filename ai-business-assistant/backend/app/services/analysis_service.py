@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy.orm import Session
 from app.db.models import AITaskLog, AssetAnalysisResult, Project, ProjectAsset, ProjectMessage
-from app.services.ai_providers import MockAIProvider
+from app.services.ai_providers import MockAIProvider, create_ai_provider
+from app.services.privacy_service import desensitize_text, detect_sensitive_text
 from app.services.ai_router import route_analyzer
 from app.services.document_service import upsert_report
 
@@ -11,10 +12,17 @@ from app.services.document_service import upsert_report
 class AnalysisService:
     def __init__(self, db: Session):
         self.db = db
-        self.provider = MockAIProvider()
+        self.provider = create_ai_provider()
+
+    def _safe_log_text(self, text: str, limit: int = 500) -> str:
+        if not text:
+            return ""
+        detected = detect_sensitive_text(text)
+        safe_text = desensitize_text(text)["desensitized_text"] if detected["is_sensitive"] else text
+        return safe_text[:limit]
 
     def _log(self, project_id: int, asset_id: int | None, task_type: str, status: str, input_summary: str = "") -> AITaskLog:
-        log = AITaskLog(project_id=project_id, asset_id=asset_id, task_type=task_type, status=status, input_summary=input_summary)
+        log = AITaskLog(project_id=project_id, asset_id=asset_id, task_type=task_type, status=status, input_summary=self._safe_log_text(input_summary))
         self.db.add(log)
         self.db.commit()
         self.db.refresh(log)
@@ -22,8 +30,8 @@ class AnalysisService:
 
     def _finish_log(self, log: AITaskLog, status: str, output: str = "", error: str = "") -> None:
         log.status = status
-        log.output_summary = output[:500]
-        log.error_message = error
+        log.output_summary = self._safe_log_text(output)
+        log.error_message = self._safe_log_text(error)
         log.finished_at = datetime.now(timezone.utc)
         self.db.commit()
 
@@ -34,21 +42,27 @@ class AnalysisService:
         project = self.db.get(Project, asset.project_id)
         if not project:
             raise ValueError("项目不存在")
+        if asset.status == "local_only" or not asset.file_path and not asset.desensitized_path:
+            raise ValueError("本地模式资料未上传云端，无法进行云端 AI 分析；请选择临时上传或脱敏上传。")
+        if asset.status == "need_user_decision":
+            raise ValueError("该资料可能包含敏感信息，请先完成隐私处理选择。")
         analyzer = route_analyzer(asset.file_type)
-        log = self._log(project.id, asset.id, f"analyze_{analyzer}", "running", asset.original_filename)
+        log = self._log(project.id, asset.id, f"analyze_{analyzer}", "running", f"asset_id={asset.id}; file_type={asset.file_type}; privacy_level={asset.privacy_level}")
         asset.status = "analyzing"
         self.db.commit()
         try:
             level = project.user.professional_level if project.user else "business"
             text_preview = self._read_text_preview(asset)
+            provider = self._provider_for_project(project)
+            analysis_path = asset.desensitized_path or asset.file_path
             method_map = {
-                "text_ai": lambda: self.provider.analyze_text(text_preview or project.description, level),
-                "vision_ai": lambda: self.provider.analyze_image(asset.file_path, level),
-                "audio_ai": lambda: self.provider.analyze_audio(asset.file_path, level),
-                "video_ai": lambda: self.provider.analyze_video(asset.file_path, level),
-                "table_ai": lambda: self.provider.analyze_table(asset.file_path, level),
-                "document_ai": lambda: self.provider.analyze_document(asset.file_path, level),
-                "code_ai": lambda: self.provider.analyze_code(asset.file_path, level),
+                "text_ai": lambda: provider.analyze_text(text_preview or project.description, level),
+                "vision_ai": lambda: provider.analyze_image(analysis_path, level),
+                "audio_ai": lambda: provider.analyze_audio(analysis_path, level),
+                "video_ai": lambda: provider.analyze_video(analysis_path, level),
+                "table_ai": lambda: provider.analyze_table(analysis_path, level),
+                "document_ai": lambda: provider.analyze_document(analysis_path, level),
+                "code_ai": lambda: provider.analyze_code(analysis_path, level),
             }
             markdown, data = method_map[analyzer]()
             result = AssetAnalysisResult(
@@ -60,6 +74,8 @@ class AnalysisService:
             )
             self.db.add(result)
             asset.status = "analyzed"
+            if project.storage_mode == "temporary" or project.data_retention_policy == "delete_after_analysis":
+                self._delete_original(asset)
             self._finish_log(log, "success", markdown)
             self.db.commit()
             self.db.refresh(result)
@@ -70,23 +86,45 @@ class AnalysisService:
             self.db.commit()
             raise
 
+    def _delete_original(self, asset: ProjectAsset) -> None:
+        if asset.file_path:
+            Path(asset.file_path).unlink(missing_ok=True)
+        asset.original_deleted_at = datetime.now(timezone.utc)
+        asset.file_path = ""
+
+    def _provider_for_project(self, project: Project):
+        if not project.allow_third_party_ai:
+            return MockAIProvider()
+        return self.provider
+
     def _read_text_preview(self, asset: ProjectAsset) -> str:
         if asset.file_type not in {"text", "code", "spreadsheet"}:
             return ""
+        source = asset.desensitized_path or asset.file_path
+        if not source:
+            return ""
         try:
-            return Path(asset.file_path).read_text(encoding="utf-8", errors="ignore")[:4000]
+            text = Path(source).read_text(encoding="utf-8", errors="ignore")[:4000]
+            if asset.is_sensitive and not asset.desensitized_path:
+                return desensitize_text(text)["desensitized_text"]
+            return text
         except OSError:
             return ""
 
     def _context(self, project: Project) -> dict:
         messages = self.db.query(ProjectMessage).filter(ProjectMessage.project_id == project.id).all()
         results = self.db.query(AssetAnalysisResult).filter(AssetAnalysisResult.project_id == project.id).all()
+        safe = project.auto_desensitize
+        clean = (lambda value: desensitize_text(value)["desensitized_text"] if safe and detect_sensitive_text(value)["is_sensitive"] else value)
         return {
-            "title": project.title,
-            "description": project.description,
+            "title": clean(project.title),
+            "description": clean(project.description),
             "project_type": project.project_type,
-            "messages": [m.content for m in messages],
-            "asset_results": [r.summary for r in results],
+            "storage_mode": project.storage_mode,
+            "allow_third_party_ai": project.allow_third_party_ai,
+            "auto_desensitize": project.auto_desensitize,
+            "messages": [clean(m.content) for m in messages],
+            "asset_results": [clean(r.summary) for r in results],
         }
 
     def analyze_project(self, project_id: int) -> list:
@@ -94,16 +132,23 @@ class AnalysisService:
         if not project:
             raise ValueError("项目不存在")
         log = self._log(project.id, None, "comprehensive_analysis", "running", project.description)
-        markdown, data = self.provider.comprehensive_analysis(self._context(project))
-        project.project_type = data.get("project_type", "unknown")
-        project.requirement_score = float(data.get("requirement_score", 60))
-        project.status = "analyzed"
-        comprehensive = upsert_report(self.db, project.id, "comprehensive_analysis", markdown, data)
-        reports = [comprehensive]
-        reports.extend(self.generate_final_outputs(project.id))
-        self._finish_log(log, "success", markdown)
-        self.db.commit()
-        return reports
+        try:
+            provider = self._provider_for_project(project)
+            markdown, data = provider.comprehensive_analysis(self._context(project))
+            project.project_type = data.get("project_type", "unknown")
+            project.requirement_score = float(data.get("requirement_score", 60))
+            project.status = "analyzed"
+            comprehensive = upsert_report(self.db, project.id, "comprehensive_analysis", markdown, data)
+            reports = [comprehensive]
+            reports.extend(self.generate_final_outputs(project.id))
+            self._finish_log(log, "success", markdown)
+            self.db.commit()
+            return reports
+        except Exception as exc:
+            project.status = "failed"
+            self._finish_log(log, "failed", error=str(exc))
+            self.db.commit()
+            raise
 
     def classify_project_type(self, project_id: int) -> str:
         project = self.db.get(Project, project_id)
@@ -150,15 +195,27 @@ class AnalysisService:
         reports.append(upsert_report(self.db, project.id, "requirement_analysis", requirement_md, {"report_type": "requirement_analysis"}))
         if project.project_type in {"software_development", "office_automation"}:
             for report_type, generator in [
-                ("prd", self.provider.generate_prd),
-                ("technical_solution", self.provider.generate_technical_solution),
-                ("developer_prompt", self.provider.generate_developer_prompt),
+                ("prd", self._provider_for_project(project).generate_prd),
+                ("technical_solution", self._provider_for_project(project).generate_technical_solution),
+                ("developer_prompt", self._provider_for_project(project).generate_developer_prompt),
             ]:
-                md, data = generator(context)
-                reports.append(upsert_report(self.db, project.id, report_type, md, data))
+                log = self._log(project.id, None, report_type, "running", project.title)
+                try:
+                    md, data = generator(context)
+                    reports.append(upsert_report(self.db, project.id, report_type, md, data))
+                    self._finish_log(log, "success", md)
+                except Exception as exc:
+                    self._finish_log(log, "failed", error=str(exc))
+                    raise
         else:
-            md, data = self.provider.generate_industry_solution(context)
-            reports.append(upsert_report(self.db, project.id, "industry_solution", md, data))
+            log = self._log(project.id, None, "industry_solution", "running", project.title)
+            try:
+                md, data = self._provider_for_project(project).generate_industry_solution(context)
+                reports.append(upsert_report(self.db, project.id, "industry_solution", md, data))
+                self._finish_log(log, "success", md)
+            except Exception as exc:
+                self._finish_log(log, "failed", error=str(exc))
+                raise
             reports.append(upsert_report(self.db, project.id, "sop", md.replace("# 行业解决方案", "# 执行 SOP"), data))
             risk = "# 风险分析报告\n\n## 1. 范围风险\n需求不清会导致返工。\n\n## 2. 执行风险\n人员分工不明确会影响推进。\n\n## 3. 成本风险\n建议先做小范围试点再扩大投入。\n"
             reports.append(upsert_report(self.db, project.id, "risk_report", risk, {"report_type": "risk_report"}))

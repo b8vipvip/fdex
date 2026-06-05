@@ -1,10 +1,15 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
+from app.schemas.privacy import RetentionPolicy, StorageMode
 
 
 class ProjectBase(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = ""
+    storage_mode: StorageMode = "hybrid"
+    data_retention_policy: RetentionPolicy = "keep_forever"
+    allow_third_party_ai: bool = True
+    auto_desensitize: bool = True
 
 
 class ProjectCreate(ProjectBase):
@@ -15,6 +20,10 @@ class ProjectUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     status: str | None = None
+    storage_mode: StorageMode | None = None
+    data_retention_policy: RetentionPolicy | None = None
+    allow_third_party_ai: bool | None = None
+    auto_desensitize: bool | None = None
 
 
 class ProjectRead(ProjectBase):
