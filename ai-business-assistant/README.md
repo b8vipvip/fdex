@@ -63,6 +63,62 @@ npm run dev -- --host 0.0.0.0 --port 5173
 VITE_API_BASE_URL=http://localhost:8000/api npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
+## 服务器部署
+
+以下示例假设前端通过 `http://服务器IP:5173` 访问，后端使用 `8001` 端口。请将命令中的 `服务器IP` 替换为服务器实际公网 IP 或域名，并在防火墙或安全组中放行 `5173` 和 `8001` 端口。
+
+### 1. 配置并启动后端
+
+```bash
+cd ai-business-assistant/backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+编辑后端 `.env`，至少确认密钥和 CORS 配置。公网部署时，`CORS_ORIGINS` 必须包含实际前端访问地址：
+
+```dotenv
+SECRET_KEY=请替换为安全的随机密钥
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://服务器IP:5173
+```
+
+使用 `8001` 端口启动后端：
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+后端健康检查地址为 `http://服务器IP:8001/api/health`，API 文档地址为 `http://服务器IP:8001/docs`。
+
+### 2. 配置、构建并启动前端
+
+在前端目录创建 `.env.local`，让浏览器访问服务器的 `8001` 端口：
+
+```bash
+cd ai-business-assistant/frontend
+printf 'VITE_API_BASE_URL=http://服务器IP:8001/api\n' > .env.local
+npm install
+npm run build
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+生产环境可以使用 Nginx 等静态文件服务器托管 `frontend/dist/`。`.env` 和 `.env.local` 包含部署环境配置，不要提交到 Git。
+
+### 3. 运行后端烟测
+
+安装后端依赖并进入 `backend` 目录后，以下两种运行方式都应可用：
+
+```bash
+cd ai-business-assistant/backend
+source .venv/bin/activate
+python scripts/smoke_test.py
+PYTHONPATH=. python scripts/smoke_test.py
+```
+
+烟测使用临时 SQLite 数据库和临时上传目录，不会污染部署数据。
+
 ## 数据库与上传目录
 
 - 默认数据库：`ai-business-assistant/backend/ai_business_assistant.db`
@@ -109,7 +165,9 @@ VITE_API_BASE_URL=http://localhost:8000/api npm run dev -- --host 0.0.0.0 --port
 ```bash
 cd ai-business-assistant/backend
 source .venv/bin/activate
+# 以下两种运行方式任选其一
 python scripts/smoke_test.py
+PYTHONPATH=. python scripts/smoke_test.py
 ```
 
 该脚本覆盖：健康检查、数据库自动建表、注册、登录、JWT 鉴权、创建项目、文件上传、资料列表刷新对应接口、单资料分析、综合分析、多报告生成、Markdown 导出。
