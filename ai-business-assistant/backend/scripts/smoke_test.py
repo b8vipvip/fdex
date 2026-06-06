@@ -2,6 +2,7 @@
 
 Run from ai-business-assistant/backend after installing requirements:
     python scripts/smoke_test.py
+    PYTHONPATH=. python scripts/smoke_test.py
 
 The script uses an isolated temporary SQLite database and upload directory,
 then verifies auth, JWT-protected requests, upload, asset analysis,
@@ -11,8 +12,14 @@ comprehensive report generation, and Markdown export.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 def main() -> None:

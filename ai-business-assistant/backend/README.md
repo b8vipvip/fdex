@@ -72,7 +72,9 @@ AI_TIMEOUT_SECONDS=60
 ```bash
 cd ai-business-assistant/backend
 source .venv/bin/activate
+# 以下两种运行方式任选其一
 python scripts/smoke_test.py
+PYTHONPATH=. python scripts/smoke_test.py
 ```
 
 烟测会使用临时 SQLite 数据库和上传目录，覆盖注册登录、JWT、项目创建、文件上传、资料分析、综合分析、多文档生成和 Markdown 导出。
