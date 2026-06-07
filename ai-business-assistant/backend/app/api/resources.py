@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.config import get_settings
-from app.db.models import AIEmployee, DeletedMessageBatch, EmployeeMessage, JobRole, Project, ProjectAsset, User
+from app.db.models import AIEmployee, DeletedMessageBatch, EmployeeMessage, JobRole, Project, ProjectAsset, User, WorkGroup, WorkGroupMessage
 from app.db.session import get_db
 from app.services.job_role_service import seed_job_roles
 
@@ -46,14 +46,23 @@ def search(q:str=Query(min_length=1),db:Session=Depends(get_db),user:User=Depend
     for x in db.query(Project).filter(Project.user_id==user.id,or_(Project.title.ilike(like),Project.description.ilike(like))).limit(20): out.append({'source':'来自项目','title':x.title,'content':x.description,'url':f'/projects/{x.id}'})
     for x in db.query(ProjectAsset).join(Project).filter(Project.user_id==user.id,ProjectAsset.original_filename.ilike(like)).limit(20): out.append({'source':'来自资料','title':x.original_filename,'content':'项目资料','url':f'/projects/{x.project_id}'})
     return out
-def profile_dict(user): return {k:getattr(user,k) for k in ('id','email','name','avatar','company_name','is_verified_company','realname_verified','deleted_retention_days','professional_level','created_at')}
+def profile_dict(user): return {k:getattr(user,k) for k in ('id','email','name','avatar','company_name','company_industry','is_verified_company','realname_verified','deleted_retention_days','professional_level','auto_company_mode_enabled','auto_company_mode_requires_confirm','default_auto_group_all_employees','default_industry_required','created_at')}
 @router.get('/account/profile')
 def profile(user:User=Depends(get_current_user)): return profile_dict(user)
 @router.put('/account/profile')
 def update_profile(payload:dict,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
-    for k in ('name','company_name','deleted_retention_days'):
+    for k in ('name','company_name','company_industry','deleted_retention_days','auto_company_mode_enabled','auto_company_mode_requires_confirm','default_auto_group_all_employees','default_industry_required'):
         if k in payload: setattr(user,k,payload[k])
     db.commit(); db.refresh(user); return profile_dict(user)
+
+@router.get('/account/automation-settings')
+def automation_settings(user:User=Depends(get_current_user)): return profile_dict(user)
+@router.put('/account/automation-settings')
+def update_automation_settings(payload:dict,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    for k in ('auto_company_mode_enabled','auto_company_mode_requires_confirm','default_auto_group_all_employees','default_industry_required'):
+        if k in payload: setattr(user,k,bool(payload[k]))
+    db.commit(); return profile_dict(user)
+
 @router.post('/account/name-risk-check')
 def risk(payload:dict,user:User=Depends(get_current_user)):
     brands=['腾讯','阿里巴巴','字节跳动','百度','华为','苹果','微软','谷歌','OpenAI','Meta','京东','美团','小米','拼多多']; found=[x for x in brands if x.lower() in str(payload.get('company_name','')).lower()]; return {'risk':bool(found),'matched':found,'message':'仅做知名品牌词提示，请自行核实名称是否可用。'}

@@ -14,6 +14,7 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     professional_level: str | None = None
+    start_auto_operation: bool = False
 
 
 class ProjectUpdate(BaseModel):
@@ -32,6 +33,11 @@ class ProjectRead(ProjectBase):
     project_type: str
     status: str
     requirement_score: float
+    industry: str = ""
+    auto_operation_status: str = "not_started"
+    auto_operation_group_id: int | None = None
+    stage: str = ""
+    stage_summary: str = ""
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}

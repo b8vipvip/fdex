@@ -2,7 +2,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import analysis, assets, auth, documents, employees, messages, projects, resources
+from app.api import analysis, assets, auth, automation, documents, employees, messages, projects, resources, work_groups
 from app.core.config import get_settings
 from app.db.database import Base, engine
 from app.db.migrations import run_lightweight_migrations
@@ -30,6 +30,8 @@ app.include_router(assets.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(resources.router, prefix="/api")
+app.include_router(work_groups.router, prefix="/api")
+app.include_router(automation.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -1,12 +1,14 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {getJobRoles} from '../api/employees';
 import type {JobRole} from '../types';
+import {useAuthStore} from '../store/authStore';
 
 export default function JobRolePicker({value,onChange,disabled=false}:{value?:number;onChange:(x:JobRole)=>void;disabled?:boolean}){
   const [open,setOpen]=useState(false),[q,setQ]=useState(''),[industry,setIndustry]=useState('');const [rows,setRows]=useState<JobRole[]>([]);const root=useRef<HTMLDivElement>(null);
   useEffect(()=>{getJobRoles().then(setRows)},[]);
   useEffect(()=>{const close=(e:PointerEvent)=>{if(!root.current?.contains(e.target as Node))setOpen(false)};document.addEventListener('pointerdown',close);return()=>document.removeEventListener('pointerdown',close)},[]);
-  const selected=rows.find(x=>x.id===value);const industries=useMemo(()=>[...new Set(rows.map(x=>x.industry))],[rows]);
+  const defaultIndustry=useAuthStore(x=>x.user?.company_industry)||'';
+  const selected=rows.find(x=>x.id===value);const industries=useMemo(()=>{const all=[...new Set(rows.map(x=>x.industry))];return defaultIndustry?[defaultIndustry,...all.filter(x=>x!==defaultIndustry)]:all},[rows,defaultIndustry]);
   const filtered=rows.filter(x=>(!industry||x.industry===industry)&&(!q.trim()||`${x.title} ${x.aliases} ${x.description} ${x.category}`.toLowerCase().includes(q.trim().toLowerCase())));const categories=[...new Set(filtered.map(x=>x.category))];
   return <div ref={root} className="relative">
     <button type="button" disabled={disabled} onClick={()=>setOpen(!open)} className={`flex w-full items-center justify-between rounded-xl border bg-white px-3 text-left ${open?'border-emerald-500 ring-2 ring-emerald-100':''}`}><span className={selected?'text-slate-900':'text-slate-400'}>{selected?`${selected.industry} · ${selected.title}`:'请选择行业职位'}</span><span className={`text-slate-400 ${open?'rotate-180':''}`}>⌄</span></button>
