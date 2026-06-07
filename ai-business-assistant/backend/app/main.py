@@ -1,7 +1,8 @@
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import analysis, assets, auth, documents, employees, projects
+from app.api import analysis, assets, auth, documents, employees, projects, resources
 from app.core.config import get_settings
 from app.db.database import Base, engine
 from app.db.migrations import run_lightweight_migrations
@@ -12,6 +13,7 @@ run_lightweight_migrations(engine)
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title=settings.app_name)
+app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -26,6 +28,7 @@ app.include_router(employees.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
+app.include_router(resources.router, prefix="/api")
 
 
 @app.get("/api/health")

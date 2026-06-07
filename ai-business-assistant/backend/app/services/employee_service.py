@@ -29,7 +29,11 @@ AVATARS = ["👔", "🧭", "📋", "🧑‍💻", "💻", "⚙️", "🎨", "�
 def ensure_default_employees(db: Session, user: User) -> list[AIEmployee]:
     existing = db.query(AIEmployee).filter(AIEmployee.user_id == user.id).all()
     if existing:
-        return existing
+        if not any(x.is_material_manager for x in existing):
+            db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="负责接收、整理并关联项目资料。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
+            db.commit()
+        return db.query(AIEmployee).filter(AIEmployee.user_id == user.id).all()
+    db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="负责接收、整理并关联项目资料。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
     used = set()
     for index, (department, position, prompt, can_create) in enumerate(DEFAULT_ROLES):
         name = random.choice(SURNAMES) + random.choice(GIVEN)

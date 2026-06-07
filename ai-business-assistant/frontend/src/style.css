@@ -1,13 +1,14 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-html { font-size: 16px; }
-body { @apply bg-slate-100 text-slate-900 antialiased; min-width: 320px; }
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; min-width: 0; min-height: 100%; font-size: 16px; }
+body { @apply m-0 overflow-x-hidden bg-slate-100 text-slate-900 antialiased; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 button, a { @apply transition-colors; }
-button, input, select { min-height: 44px; }
+button, input, select, textarea { min-height: 44px; font-size: 16px; }
 .prose-lite h1 { @apply mb-5 mt-2 border-b border-slate-200 pb-4 text-2xl font-bold sm:text-3xl; }
 .prose-lite h2 { @apply mb-3 mt-8 text-xl font-bold text-slate-900; }
 .prose-lite h3 { @apply mb-2 mt-6 text-lg font-semibold text-slate-900; }
 .prose-lite p { @apply my-3 break-words text-[15px] leading-7 text-slate-700 sm:text-base sm:leading-8; }
-.prose-lite ul { @apply list-disc pl-6; }
-.prose-lite li { @apply my-2 leading-7 text-slate-700; }
+.prose-lite ul { @apply list-disc pl-6; }.prose-lite li { @apply my-2 leading-7 text-slate-700; }
+.safe-bottom { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }

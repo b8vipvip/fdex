@@ -27,7 +27,7 @@ export default function ProjectCreatePage() {
     nav(`/projects/${p.id}`);
   }
 
-  return <Layout><div className="mx-auto max-w-3xl rounded-3xl bg-white p-6 shadow-sm"><h1 className="text-2xl font-bold">新建项目</h1><form onSubmit={submit} className="mt-6 space-y-5">
+  return <Layout back><div className="mx-auto max-w-3xl rounded-3xl bg-white p-6 shadow-sm"><h1 className="text-2xl font-bold">新建项目</h1><form onSubmit={submit} className="mt-6 space-y-5">
     <input className="w-full rounded-xl border p-3" placeholder="项目标题" value={title} onChange={e => setTitle(e.target.value)} />
     <textarea className="min-h-40 w-full rounded-xl border p-3" placeholder="用大白话描述需求：你想解决什么问题？现在怎么做？希望 AI 或系统帮你做什么？" value={description} onChange={e => setDescription(e.target.value)} />
     <select className="w-full rounded-xl border p-3" value={professional_level} onChange={e => setLevel(e.target.value as ProfessionalLevel)}><option value="beginner">完全小白</option><option value="business">懂业务不懂技术</option><option value="product">产品/项目经理</option><option value="developer">技术人员</option><option value="auto">AI自动判断</option></select>
