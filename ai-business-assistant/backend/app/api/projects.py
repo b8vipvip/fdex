@@ -5,6 +5,7 @@ from app.db.models import Project, ProjectAsset, ProjectMessage, User
 from app.db.session import get_db
 from app.schemas.privacy import PrivacySummaryRead
 from app.schemas.project import MessageCreate, MessageRead, ProjectCreate, ProjectRead, ProjectUpdate
+from app.services.project_context_service import build_project_context
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -101,3 +102,10 @@ def create_message(project_id: int, payload: MessageCreate, db: Session = Depend
 def list_messages(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     get_owned_project(db, project_id, user)
     return db.query(ProjectMessage).filter(ProjectMessage.project_id == project_id).order_by(ProjectMessage.created_at.asc()).all()
+
+
+@router.get("/{project_id}/context")
+def get_project_context(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    get_owned_project(db, project_id, user)
+    context = build_project_context(db, project_id)
+    return {"project": {"id": context["project"].id, "title": context["project"].title, "description": context["project"].description}, "project_messages": [{"id": x.id, "content": x.content, "role": x.role} for x in context["project_messages"]], "asset_analysis_results": [{"id": x.id, "summary": x.summary} for x in context["asset_analysis_results"]], "related_employee_messages": [{"id": x.id, "employee_id": x.employee_id, "role": x.role, "content": x.content} for x in context["related_employee_messages"]], "context_markdown": context["context_markdown"]}

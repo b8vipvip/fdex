@@ -5,6 +5,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.user import LoginRequest, TokenResponse, UserCreate, UserRead
+from app.services.employee_service import ensure_default_employees
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -17,6 +18,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_default_employees(db, user)
     return TokenResponse(access_token=create_access_token(str(user.id)), user=user)
 
 

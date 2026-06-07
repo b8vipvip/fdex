@@ -1,8 +1,10 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { @apply bg-slate-50 text-slate-900 antialiased; }
+html { font-size: 16px; }
+body { @apply bg-slate-100 text-slate-900 antialiased; min-width: 320px; }
 button, a { @apply transition-colors; }
+button, input, select { min-height: 44px; }
 .prose-lite h1 { @apply mb-5 mt-2 border-b border-slate-200 pb-4 text-2xl font-bold sm:text-3xl; }
 .prose-lite h2 { @apply mb-3 mt-8 text-xl font-bold text-slate-900; }
 .prose-lite h3 { @apply mb-2 mt-6 text-lg font-semibold text-slate-900; }
