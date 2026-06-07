@@ -17,6 +17,11 @@ class User(Base):
     professional_level: Mapped[str] = mapped_column(String(30), default="business")
     avatar: Mapped[str] = mapped_column(String(500), default="")
     company_name: Mapped[str] = mapped_column(String(200), default="我的 AI 公司")
+    company_industry: Mapped[str] = mapped_column(String(100), default="")
+    auto_company_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_company_mode_requires_confirm: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_auto_group_all_employees: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_industry_required: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified_company: Mapped[bool] = mapped_column(Boolean, default=False)
     realname_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_retention_days: Mapped[int] = mapped_column(Integer, default=7)
@@ -37,6 +42,11 @@ class Project(Base):
     data_retention_policy: Mapped[str] = mapped_column(String(40), default="keep_forever")
     allow_third_party_ai: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_desensitize: Mapped[bool] = mapped_column(Boolean, default=True)
+    industry: Mapped[str] = mapped_column(String(100), default="")
+    auto_operation_status: Mapped[str] = mapped_column(String(50), default="not_started")
+    auto_operation_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage: Mapped[str] = mapped_column(String(100), default="")
+    stage_summary: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     user: Mapped[User] = relationship(back_populates="projects")
@@ -193,4 +203,63 @@ class EmployeeMessageAttachment(Base):
     file_type: Mapped[str] = mapped_column(String(50), default="file")
     mime_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     file_size: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class WorkGroup(Base):
+    __tablename__ = "work_groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    work_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    group_type: Mapped[str] = mapped_column(String(30), default="manual")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    avatar_url: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(30), default="user")
+    auto_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+class WorkGroupMember(Base):
+    __tablename__ = "work_group_members"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("work_groups.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("ai_employees.id"), index=True)
+    role_in_group: Mapped[str] = mapped_column(String(30), default="member")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    is_host: Mapped[bool] = mapped_column(Boolean, default=False)
+
+class WorkGroupMessage(Base):
+    __tablename__ = "work_group_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("work_groups.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("ai_employees.id"), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(30), default="user")
+    content: Mapped[str] = mapped_column(Text)
+    message_type: Mapped[str] = mapped_column(String(30), default="text")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class IndustryKnowledge(Base):
+    __tablename__ = "industry_knowledge"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    industry: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    content_markdown: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String(30), default="mock")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+class WorkStageReport(Base):
+    __tablename__ = "work_stage_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("work_groups.id"), index=True)
+    stage: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(200))
+    summary_markdown: Mapped[str] = mapped_column(Text)
+    owner_employee_id: Mapped[int | None] = mapped_column(ForeignKey("ai_employees.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

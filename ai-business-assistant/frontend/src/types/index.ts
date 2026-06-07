@@ -3,9 +3,9 @@ export type StorageMode = 'local_only' | 'cloud' | 'hybrid' | 'temporary';
 export type RetentionPolicy = 'keep_forever' | 'delete_after_analysis' | 'delete_after_1_day' | 'delete_after_7_days' | 'delete_after_30_days';
 export type PrivacyLevel = 'public' | 'normal' | 'sensitive' | 'highly_sensitive';
 export type PrivacyDecision = 'desensitize' | 'temporary' | 'local_only' | 'confirm_upload';
-export interface User { id: number; email: string; name: string; avatar?:string; company_name?:string; is_verified_company?:boolean; realname_verified?:boolean; deleted_retention_days?:number; professional_level: ProfessionalLevel; created_at: string }
+export interface User { id: number; email: string; name: string; avatar?:string; company_name?:string; company_industry?:string; auto_company_mode_enabled?:boolean; auto_company_mode_requires_confirm?:boolean; is_verified_company?:boolean; realname_verified?:boolean; deleted_retention_days?:number; professional_level: ProfessionalLevel; created_at: string }
 export interface AuthResponse { access_token: string; token_type: string; user: User }
-export interface Project { id: number; user_id: number; title: string; description: string; storage_mode: StorageMode; data_retention_policy: RetentionPolicy; allow_third_party_ai: boolean; auto_desensitize: boolean; project_type: string; status: string; requirement_score: number; created_at: string; updated_at: string }
+export interface Project { id: number; user_id: number; title: string; description: string; storage_mode: StorageMode; data_retention_policy: RetentionPolicy; allow_third_party_ai: boolean; auto_desensitize: boolean; project_type: string; status: string; requirement_score: number; industry?:string; auto_operation_status?:string; auto_operation_group_id?:number|null; stage?:string; stage_summary?:string; created_at: string; updated_at: string }
 export interface Message { id: number; project_id: number; role: string; content: string; created_at: string }
 export interface PrivacyDetectionItem { type: string; count: number; examples: string[] }
 export interface PrivacyDetection { is_sensitive: boolean; privacy_level: PrivacyLevel | string; detected_items: PrivacyDetectionItem[]; suggested_action: string }
@@ -18,3 +18,6 @@ export interface EmployeeMessage { id:number; user_id:number; employee_id:number
 export interface ConversationResponse { user_message:EmployeeMessage; employee_message:EmployeeMessage }
 
 export interface JobRole{id:number;industry:string;category:string;title:string;aliases:string;description:string;role_prompt_template:string;is_common:boolean;sort_order:number}
+export interface WorkGroup{id:number;user_id:number;work_id?:number|null;name:string;description:string;group_type:string;status:string;avatar_url:string;auto_mode_enabled:boolean;work_name?:string|null;last_message?:string|null;last_message_at?:string|null;member_count:number;created_at:string;updated_at:string}
+export interface WorkGroupMember{id:number;group_id:number;employee_id:number;role_in_group:string;is_host:boolean;employee_name:string;employee_position:string;employee_avatar:string;joined_at:string}
+export interface WorkGroupMessage{id:number;group_id:number;user_id:number;employee_id?:number|null;role:'user'|'employee'|'system';content:string;message_type:string;metadata_json:string;created_at:string;employee_name?:string;employee_position?:string;employee_avatar?:string}

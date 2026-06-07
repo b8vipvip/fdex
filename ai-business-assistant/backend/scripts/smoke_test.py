@@ -94,6 +94,26 @@ def main() -> None:
             assert project.status_code == 200, project.text
             project_id = project.json()["id"]
 
+            profile = client.put("/api/account/profile", headers=headers, json={"company_industry": "互联网 / 软件 / AI", "auto_company_mode_enabled": True})
+            assert profile.status_code == 200, profile.text
+            assert profile.json()["company_industry"] == "互联网 / 软件 / AI"
+
+            group = client.post("/api/work-groups", headers=headers, json={"name": "烟测协作群", "work_id": project_id, "employee_ids": [employee_id]})
+            assert group.status_code == 200, group.text
+            group_id = group.json()["id"]
+            assert client.get(f"/api/work-groups/{group_id}/members", headers=headers).status_code == 200
+            sent = client.post(f"/api/work-groups/{group_id}/messages", headers=headers, json={"content": "@项目经理 重新安排一下任务"})
+            assert sent.status_code == 200, sent.text
+            assert len(client.get(f"/api/work-groups/{group_id}/messages", headers=headers).json()) >= 3
+
+            auto = client.post(f"/api/works/{project_id}/auto-operation/start", headers=headers)
+            assert auto.status_code == 200, auto.text
+            auto_group_id = auto.json()["group_id"]
+            auto_messages = client.get(f"/api/work-groups/{auto_group_id}/messages", headers=headers).json()
+            assert any("行业基础资料" in item["content"] for item in auto_messages)
+            stage_report = client.post(f"/api/works/{project_id}/auto-operation/stage-report", headers=headers)
+            assert stage_report.status_code == 200, stage_report.text
+
             uploaded = client.post(
                 f"/api/projects/{project_id}/assets/upload",
                 headers=headers,

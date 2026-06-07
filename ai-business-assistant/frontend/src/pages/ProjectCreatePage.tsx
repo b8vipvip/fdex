@@ -2,6 +2,8 @@ import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { createProject } from '../api/projects';
+import {startAutoOperation} from '../api/workGroups';
+import {useAuthStore} from '../store/authStore';
 import type { ProfessionalLevel, RetentionPolicy, StorageMode } from '../types';
 
 const storageModeOptions: { value: StorageMode; title: string; desc: string }[] = [
@@ -20,10 +22,13 @@ export default function ProjectCreatePage() {
   const [allow_third_party_ai, setAllowThirdPartyAI] = useState(true);
   const [auto_desensitize, setAutoDesensitize] = useState(true);
   const nav = useNavigate();
+  const user=useAuthStore(x=>x.user);
+  const [startAuto,setStartAuto]=useState(!!user?.auto_company_mode_enabled);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     const p = await createProject({ title, description, professional_level, storage_mode, data_retention_policy, allow_third_party_ai, auto_desensitize });
+    if(startAuto){if(!user?.company_industry){alert('公司自动化运行模式需要先选择公司行业。');nav('/me/account');return}if(!user?.auto_company_mode_requires_confirm||confirm('公司自动化运行模式即将启动：系统将召集 AI 员工开会、检查资料并安排任务。你拥有最高指挥权。确认启动？')){const result=await startAutoOperation(p.id);nav(`/groups/${result.group_id}`);return}}
     nav(`/projects/${p.id}`);
   }
 
@@ -33,6 +38,6 @@ export default function ProjectCreatePage() {
     <select className="w-full rounded-xl border p-3" value={professional_level} onChange={e => setLevel(e.target.value as ProfessionalLevel)}><option value="beginner">完全小白</option><option value="business">懂业务不懂技术</option><option value="product">产品/项目经理</option><option value="developer">技术人员</option><option value="auto">AI自动判断</option></select>
     <section className="rounded-2xl border bg-slate-50 p-4"><h2 className="font-semibold">数据存储方式</h2><div className="mt-3 grid gap-3 md:grid-cols-2">{storageModeOptions.map(opt => <label key={opt.value} className={`cursor-pointer rounded-xl border p-3 ${storage_mode === opt.value ? 'border-blue-500 bg-blue-50' : 'bg-white'}`}><input type="radio" className="mr-2" checked={storage_mode === opt.value} onChange={() => setStorageMode(opt.value)} /><span className="font-medium">{opt.title}</span><p className="mt-1 text-xs text-slate-500">{opt.desc}</p></label>)}</div>{storage_mode === 'local_only' && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-700">本地模式暂使用浏览器本地存储占位，换设备不同步；如需云端 AI 分析，请选择临时上传或脱敏上传。</p>}</section>
     <section className="grid gap-3 rounded-2xl border p-4 md:grid-cols-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={allow_third_party_ai} onChange={e => setAllowThirdPartyAI(e.target.checked)} />允许第三方 AI 分析</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={auto_desensitize} onChange={e => setAutoDesensitize(e.target.checked)} />自动脱敏后再分析</label><label className="text-sm md:col-span-2">原始文件保留时间<select className="mt-2 w-full rounded-xl border p-3" value={data_retention_policy} onChange={e => setRetention(e.target.value as RetentionPolicy)}><option value="keep_forever">长期保留</option><option value="delete_after_analysis">分析后删除</option><option value="delete_after_1_day">1 天后删除</option><option value="delete_after_7_days">7 天后删除</option><option value="delete_after_30_days">30 天后删除</option></select></label></section>
-    <button className="rounded-xl bg-blue-600 px-5 py-3 text-white">创建工作</button>
+    <label className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><input type="checkbox" checked={startAuto} onChange={e=>setStartAuto(e.target.checked)}/><span><b>创建后启动公司自动运营</b><small className="mt-1 block text-slate-600">自动创建工作会议群、检查资料、分工并生成阶段汇报。</small></span></label><button className="rounded-xl bg-blue-600 px-5 py-3 text-white">创建工作</button>
   </form></div></Layout>;
 }
