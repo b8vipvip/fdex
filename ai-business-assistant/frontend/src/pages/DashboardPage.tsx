@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import Layout from '../components/Layout';
-import ProjectCard from '../components/ProjectCard';
-import { getProjects } from '../api/projects';
-import type { Project } from '../types';
-export default function DashboardPage(){const [projects,setProjects]=useState<Project[]>([]);useEffect(()=>{getProjects().then(setProjects)},[]);return <Layout><div className="mb-6 flex items-center justify-between"><div><h1 className="text-2xl font-bold">项目空间</h1><p className="text-slate-500">PC 和手机浏览器登录同一账号即可同步项目数据。</p></div><Link className="rounded-xl bg-blue-600 px-4 py-2 text-white" to="/projects/new">新建项目</Link></div><div className="grid gap-4 md:grid-cols-2">{projects.map(p=><ProjectCard key={p.id} project={p}/>)}</div>{!projects.length&&<div className="rounded-2xl bg-white p-8 text-center text-slate-500">暂无项目，点击右上角新建。</div>}</Layout>}
+import Layout from '../components/Layout'; import ProjectCard from '../components/ProjectCard'; import EmptyState from '../components/EmptyState';
+import { getProjects } from '../api/projects'; import type { Project } from '../types';
+export default function DashboardPage(){const [projects,setProjects]=useState<Project[]>([]);useEffect(()=>{getProjects().then(setProjects)},[]);return <Layout><div className="mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-sm font-medium text-blue-600">项目空间</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">我的项目</h1><p className="mt-1 text-sm text-slate-500">从业务问题开始，让 AI 帮你分析资料并生成可执行方案。</p></div><Link className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-center font-medium text-white shadow-sm sm:w-auto" to="/projects/new">新建项目</Link></div>{projects.length ? <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{projects.map(p=><ProjectCard key={p.id} project={p}/>)}</div> : <EmptyState icon="🚀" title="你还没有项目" description="先创建一个项目，告诉 AI 你想解决什么业务问题。" action={<Link className="inline-block rounded-xl bg-blue-600 px-4 py-2.5 text-white" to="/projects/new">创建第一个项目</Link>} />}</Layout>}
