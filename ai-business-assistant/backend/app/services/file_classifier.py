@@ -1,7 +1,7 @@
 from pathlib import Path
 
 EXTENSION_MAP = {
-    "text": {".txt", ".md"},
+    "text": {".txt", ".md", ".log", ".conf", ".ini", ".yaml", ".yml"},
     "image": {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg"},
     "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg"},
     "video": {".mp4", ".mov", ".avi", ".mkv", ".webm"},
@@ -20,6 +20,9 @@ MIME_PREFIX_MAP = {
 
 
 def classify_file(filename: str, mime_type: str | None = None) -> str:
+    normalized_name = filename.lower()
+    if normalized_name.endswith(".env.example"):
+        return "text"
     ext = Path(filename).suffix.lower()
     for file_type, extensions in EXTENSION_MAP.items():
         if ext in extensions:

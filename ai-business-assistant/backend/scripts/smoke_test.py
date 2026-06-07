@@ -33,6 +33,10 @@ def main() -> None:
         # isolated smoke-test database/upload paths.
         from fastapi.testclient import TestClient
         from app.main import app
+        from app.services.file_classifier import classify_file
+
+        for filename in ("server.log", "app.conf", "settings.ini", "config.yaml", "config.yml", ".env.example"):
+            assert classify_file(filename) == "text", filename
 
         with TestClient(app) as client:
             health = client.get("/api/health")

@@ -1,20 +1,4 @@
 import type { ReactNode } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
-
-export default function Layout({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuthStore(); const navigate = useNavigate();
-  return <div className="min-h-screen">
-    <header className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <Link to="/" className="text-lg font-bold">AI业务落地助手</Link>
-        <nav className="flex items-center gap-3 text-sm">
-          <NavLink className="hover:text-blue-600" to="/">项目</NavLink><NavLink className="hover:text-blue-600" to="/settings">设置</NavLink>
-          <span className="hidden sm:inline text-slate-500">{user?.name}</span>
-          <button className="rounded-lg bg-slate-900 px-3 py-1.5 text-white" onClick={() => { logout(); navigate('/login'); }}>退出</button>
-        </nav>
-      </div>
-    </header>
-    <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
-  </div>;
-}
+export default function Layout({ children }: { children: ReactNode }) { const { user, logout } = useAuthStore(); const navigate = useNavigate(); const navClass = ({ isActive }: { isActive: boolean }) => `rounded-lg px-2.5 py-2 text-sm font-medium ${isActive ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`; return <div className="min-h-screen"><header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur"><div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-3 py-2.5 sm:px-5 sm:py-3"><Link to="/" className="shrink-0 text-base font-bold tracking-tight text-slate-900 sm:text-lg"><span className="sm:hidden">AI 落地助手</span><span className="hidden sm:inline">AI业务落地助手</span></Link><nav className="flex items-center gap-0.5 sm:gap-2"><NavLink className={navClass} to="/">我的项目</NavLink><NavLink className={navClass} to="/settings">设置</NavLink><span className="hidden text-sm text-slate-500 lg:inline">{user?.name}</span><button className="rounded-lg bg-slate-900 px-2.5 py-2 text-sm text-white sm:px-3" onClick={() => { logout(); navigate('/login'); }}>退出</button></nav></div></header><main className="mx-auto max-w-7xl px-3 py-4 sm:px-5 sm:py-6 lg:px-6">{children}</main></div>; }

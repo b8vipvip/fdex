@@ -1,9 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { @apply bg-slate-50 text-slate-900; }
-.prose-lite h1 { @apply text-2xl font-bold mt-4 mb-3; }
-.prose-lite h2 { @apply text-lg font-semibold mt-4 mb-2; }
-.prose-lite p { @apply my-2 leading-7; }
+body { @apply bg-slate-50 text-slate-900 antialiased; }
+button, a { @apply transition-colors; }
+.prose-lite h1 { @apply mb-5 mt-2 border-b border-slate-200 pb-4 text-2xl font-bold sm:text-3xl; }
+.prose-lite h2 { @apply mb-3 mt-8 text-xl font-bold text-slate-900; }
+.prose-lite h3 { @apply mb-2 mt-6 text-lg font-semibold text-slate-900; }
+.prose-lite p { @apply my-3 break-words text-[15px] leading-7 text-slate-700 sm:text-base sm:leading-8; }
 .prose-lite ul { @apply list-disc pl-6; }
-.prose-lite li { @apply my-1; }
+.prose-lite li { @apply my-2 leading-7 text-slate-700; }
