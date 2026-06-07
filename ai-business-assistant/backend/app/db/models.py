@@ -134,6 +134,8 @@ class AIEmployee(Base):
     can_view_project_reports: Mapped[bool] = mapped_column(Boolean, default=True)
     can_view_other_employee_messages: Mapped[bool] = mapped_column(Boolean, default=False)
     can_view_project_progress: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    resigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 

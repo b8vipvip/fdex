@@ -7,7 +7,7 @@ export default function ChatInputBar({text,onTextChange,onSend,onAttach,plusOpen
   function submit(e:FormEvent){e.preventDefault();onSend()}
   function action(x:ChatPlusAction){
     if(x==='gallery')gallery.current?.click();else if(x==='camera')camera.current?.click();else if(x==='file')file.current?.click();else if(x==='video')video.current?.click();
-    else if(x==='call')onToast('语音通话功能即将上线');else if(x==='transcribe')onToast('语音转文字功能即将上线');else onToast(`${x==='project'?'项目':'更多'}功能即将上线`);
+    else if(x==='call')onToast('语音通话功能即将上线');else if(x==='transcribe')onToast('语音转文字功能即将上线');else onToast(`${x==='project'?'工作':'更多'}功能即将上线`);
   }
   const pick=(e:ChangeEvent<HTMLInputElement>)=>{const picked=e.target.files?.[0];if(picked)onAttach(picked);e.target.value=''};
   return <form onSubmit={submit} className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t bg-white shadow-[0_-4px_18px_rgba(15,23,42,0.06)] lg:left-60">

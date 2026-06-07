@@ -3,7 +3,7 @@ import {Link,NavLink,useLocation} from 'react-router-dom';
 import {useAuthStore} from '../store/authStore';
 import BackButton from './BackButton';
 
-const tabs=[['💬','消息','/messages'],['📁','项目','/projects'],['🧭','发现','/discover'],['👤','我的','/me']];
+const tabs=[['💬','消息','/messages'],['📁','工作','/projects'],['🧭','发现','/discover'],['👤','我的','/me']];
 const primaryPaths=new Set(tabs.map(([, ,path])=>path));
 
 export default function Layout({children,title,back=false,hideTabs=false,actions}:{children:ReactNode;title?:string;back?:boolean;hideTabs?:boolean;actions?:ReactNode}){
