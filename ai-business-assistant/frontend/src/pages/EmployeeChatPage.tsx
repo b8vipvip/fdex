@@ -23,9 +23,9 @@ export default function EmployeeChatPage(){
       {m.message_type==='image'&&meta.url?<img src={absoluteUrl(meta.url)} alt={meta.filename||'聊天图片'} className="mb-2 max-h-64 w-full rounded-xl object-cover"/>:null}
       {m.message_type!=='image'&&meta.filename?<div className="mb-2 rounded-xl bg-black/5 p-2">{m.message_type==='video'?'🎬':'📎'} {meta.filename}</div>:null}
       {(!meta.filename||m.message_type==='text')&&<p className="whitespace-pre-wrap break-words">{m.content}</p>}
-      {meta.action==='confirm_create_project'&&meta.status==='pending'&&<button onClick={async e=>{e.stopPropagation();nav(`/projects/${(await confirmCreateProject(id,m.id)).id}`)}} className="mt-3 w-full rounded-xl bg-emerald-700 px-3 text-white">确认创建项目</button>}
+      {meta.action==='confirm_create_project'&&meta.status==='pending'&&<button onClick={async e=>{e.stopPropagation();nav(`/projects/${(await confirmCreateProject(id,m.id)).id}`)}} className="mt-3 w-full rounded-xl bg-emerald-700 px-3 text-white">确认创建工作</button>}
     </div></div></div>})}<div ref={end}/></div>
-    <ChatInputBar text={text} onTextChange={setText} onSend={()=>void send()} onAttach={file=>void attach(file)} plusOpen={plus} onPlusChange={setPlus} placeholder={projectId?'发送并关联当前项目…':'给员工安排任务...'} onToast={notify}/>
+    <ChatInputBar text={text} onTextChange={setText} onSend={()=>void send()} onAttach={file=>void attach(file)} plusOpen={plus} onPlusChange={setPlus} placeholder={projectId?'发送并关联当前工作…':'给员工安排任务...'} onToast={notify}/>
     {toast&&<div className="fixed left-1/2 top-1/2 z-[70] -translate-x-1/2 rounded-xl bg-black/75 px-4 py-3 text-sm text-white shadow-lg">{toast}</div>}
   </Layout>;
 }

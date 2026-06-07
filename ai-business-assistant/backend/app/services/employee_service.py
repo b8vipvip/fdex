@@ -30,10 +30,10 @@ def ensure_default_employees(db: Session, user: User) -> list[AIEmployee]:
     existing = db.query(AIEmployee).filter(AIEmployee.user_id == user.id).all()
     if existing:
         if not any(x.is_material_manager for x in existing):
-            db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="负责接收、整理并关联项目资料。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
+            db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="资料员负责接收你发来的文字、图片、文件、视频，并整理进对应工作。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
             db.commit()
         return db.query(AIEmployee).filter(AIEmployee.user_id == user.id).all()
-    db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="负责接收、整理并关联项目资料。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
+    db.add(AIEmployee(user_id=user.id, name="资料员", avatar="🗂️", department="资料管理部", position="资料员", role_prompt="资料员负责接收你发来的文字、图片、文件、视频，并整理进对应工作。", is_system=True, is_material_manager=True, allow_upload_assets=True, allow_receive_project_context=True))
     used = set()
     for index, (department, position, prompt, can_create) in enumerate(DEFAULT_ROLES):
         name = random.choice(SURNAMES) + random.choice(GIVEN)
@@ -50,11 +50,11 @@ def ensure_default_employees(db: Session, user: User) -> list[AIEmployee]:
 
 def mock_reply(employee: AIEmployee, content: str) -> tuple[str, dict]:
     metadata = {}
-    create_match = re.search(r"(?:创建|新建)(?:一个)?项目[，,：:\s]*(?:做|名称是|叫)?[：:\s]*(.+)", content)
+    create_match = re.search(r"(?:创建|新建)(?:一个)?(?:项目|工作)[，,：:\s]*(?:做|名称是|叫)?[：:\s]*(.+)", content)
     if create_match and employee.can_create_project:
-        title = create_match.group(1).strip("。！？!? ，,")[:80] or "新项目"
+        title = create_match.group(1).strip("。！？!? ，,")[:80] or "新工作"
         metadata = {"action": "confirm_create_project", "status": "pending", "suggested_title": title, "source_content": content}
-        return f"我可以帮你创建项目，项目名称建议为：{title}。请确认后我再创建，避免执行敏感操作。", metadata
+        return f"我可以帮你创建工作，工作名称建议为：{title}。请确认后我再创建，避免执行敏感操作。", metadata
     styles = {
         "产品经理": "我先把需求拆成目标用户、核心场景、功能范围和验收标准。建议先确认最重要的使用流程，再排 MVP。",
         "技术负责人": "从技术方案看，建议先明确数据来源、接口边界、数据库结构和部署方式，并优先验证高风险环节。",
@@ -69,8 +69,8 @@ def mock_reply(employee: AIEmployee, content: str) -> tuple[str, dict]:
 def confirm_create_project(db: Session, employee: AIEmployee, message: EmployeeMessage, user: User) -> Project:
     metadata = json.loads(message.metadata_json or "{}")
     if metadata.get("action") != "confirm_create_project" or metadata.get("status") != "pending":
-        raise ValueError("该消息没有待确认的创建项目操作")
-    project = Project(user_id=user.id, title=metadata.get("suggested_title", "新项目"), description=metadata.get("source_content", ""), requirement_score=25)
+        raise ValueError("该消息没有待确认的创建工作操作")
+    project = Project(user_id=user.id, title=metadata.get("suggested_title", "新工作"), description=metadata.get("source_content", ""), requirement_score=25)
     db.add(project)
     db.flush()
     db.add(ProjectMessage(project_id=project.id, role="user", content=f"来源：与 {employee.name} · {employee.position} 的聊天\n{project.description}"))
@@ -78,7 +78,7 @@ def confirm_create_project(db: Session, employee: AIEmployee, message: EmployeeM
     metadata["status"] = "confirmed"
     metadata["project_id"] = project.id
     message.metadata_json = json.dumps(metadata, ensure_ascii=False)
-    db.add(EmployeeMessage(user_id=user.id, employee_id=employee.id, project_id=project.id, role="employee", content=f"已按你的确认创建项目「{project.title}」，并关联本次聊天记录。"))
+    db.add(EmployeeMessage(user_id=user.id, employee_id=employee.id, project_id=project.id, role="employee", content=f"已按你的确认创建工作「{project.title}」，并关联本次聊天记录。"))
     db.commit()
     db.refresh(project)
     return project

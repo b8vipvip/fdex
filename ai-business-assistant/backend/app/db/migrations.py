@@ -27,6 +27,8 @@ def run_lightweight_migrations(engine: Engine) -> None:
         _add_column(engine, "ai_employees", "is_material_manager", "is_material_manager BOOLEAN DEFAULT 0 NOT NULL")
         _add_column(engine, "ai_employees", "allow_upload_assets", "allow_upload_assets BOOLEAN DEFAULT 1 NOT NULL")
         _add_column(engine, "ai_employees", "allow_receive_project_context", "allow_receive_project_context BOOLEAN DEFAULT 1 NOT NULL")
+        _add_column(engine, "ai_employees", "is_active", "is_active BOOLEAN DEFAULT 1 NOT NULL")
+        _add_column(engine, "ai_employees", "resigned_at", "resigned_at DATETIME")
     if "employee_messages" in tables:
         _add_column(engine, "employee_messages", "deleted_at", "deleted_at DATETIME")
         _add_column(engine, "employee_messages", "deleted_batch_id", "deleted_batch_id INTEGER")
