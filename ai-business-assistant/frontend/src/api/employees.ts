@@ -1,0 +1,10 @@
+import { apiClient } from './client';
+import type { ConversationResponse, Employee, EmployeeMessage, Project } from '../types';
+export const getEmployees=()=>apiClient.get<Employee[]>('/employees').then(r=>r.data);
+export const getEmployee=(id:number)=>apiClient.get<Employee>(`/employees/${id}`).then(r=>r.data);
+export const createEmployee=(data:Partial<Employee>)=>apiClient.post<Employee>('/employees',data).then(r=>r.data);
+export const updateEmployee=(id:number,data:Partial<Employee>)=>apiClient.put<Employee>(`/employees/${id}`,data).then(r=>r.data);
+export const deleteEmployee=(id:number)=>apiClient.delete(`/employees/${id}`).then(r=>r.data);
+export const getEmployeeMessages=(id:number)=>apiClient.get<EmployeeMessage[]>(`/employees/${id}/messages`).then(r=>r.data);
+export const sendEmployeeMessage=(id:number,content:string,project_id?:number)=>apiClient.post<ConversationResponse>(`/employees/${id}/messages`,{content,project_id,message_type:'text'}).then(r=>r.data);
+export const confirmCreateProject=(employeeId:number,messageId:number)=>apiClient.post<Project>(`/employees/${employeeId}/messages/${messageId}/confirm-create-project`).then(r=>r.data);

@@ -104,3 +104,37 @@ class AITaskLog(Base):
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AIEmployee(Base):
+    __tablename__ = "ai_employees"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    avatar: Mapped[str] = mapped_column(String(20), default="🤖")
+    department: Mapped[str] = mapped_column(String(100), default="综合管理部")
+    position: Mapped[str] = mapped_column(String(100))
+    role_prompt: Mapped[str] = mapped_column(Text, default="")
+    industry: Mapped[str] = mapped_column(String(100), default="通用")
+    reply_mode: Mapped[str] = mapped_column(String(20), default="text")
+    can_create_project: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_delete_project: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_view_project_data: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_view_project_reports: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_view_other_employee_messages: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_view_project_progress: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class EmployeeMessage(Base):
+    __tablename__ = "employee_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("ai_employees.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(30), default="user")
+    content: Mapped[str] = mapped_column(Text)
+    message_type: Mapped[str] = mapped_column(String(30), default="text")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")

@@ -1,7 +1,7 @@
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import analysis, assets, auth, documents, projects
+from app.api import analysis, assets, auth, documents, employees, projects
 from app.core.config import get_settings
 from app.db.database import Base, engine
 from app.db.migrations import run_lightweight_migrations
@@ -22,6 +22,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(employees.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")

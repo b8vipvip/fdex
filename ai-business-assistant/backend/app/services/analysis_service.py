@@ -7,6 +7,7 @@ from app.services.ai_providers import MockAIProvider, create_ai_provider
 from app.services.privacy_service import desensitize_text, detect_sensitive_text
 from app.services.ai_router import route_analyzer
 from app.services.document_service import upsert_report
+from app.services.project_context_service import build_project_context
 
 
 class AnalysisService:
@@ -112,8 +113,9 @@ class AnalysisService:
             return ""
 
     def _context(self, project: Project) -> dict:
-        messages = self.db.query(ProjectMessage).filter(ProjectMessage.project_id == project.id).all()
-        results = self.db.query(AssetAnalysisResult).filter(AssetAnalysisResult.project_id == project.id).all()
+        project_context = build_project_context(self.db, project.id)
+        messages = project_context["project_messages"]
+        results = project_context["asset_analysis_results"]
         safe = project.auto_desensitize
         clean = (lambda value: desensitize_text(value)["desensitized_text"] if safe and detect_sensitive_text(value)["is_sensitive"] else value)
         return {
@@ -125,6 +127,8 @@ class AnalysisService:
             "auto_desensitize": project.auto_desensitize,
             "messages": [clean(m.content) for m in messages],
             "asset_results": [clean(r.summary) for r in results],
+            "related_employee_messages": [clean(m.content) for m in project_context["related_employee_messages"]],
+            "context_markdown": clean(project_context["context_markdown"]),
         }
 
     def analyze_project(self, project_id: int) -> list:

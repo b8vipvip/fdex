@@ -53,6 +53,24 @@ def main() -> None:
             token = registered.json()["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
+            employees = client.get("/api/employees", headers=headers)
+            assert employees.status_code == 200, employees.text
+            assert len(employees.json()) >= 11
+            project_manager = next(item for item in employees.json() if item["position"] == "项目经理")
+            employee_id = project_manager["id"]
+            conversation = client.post(
+                f"/api/employees/{employee_id}/messages",
+                headers=headers,
+                json={"content": "帮我创建一个项目，做一个订单自动分析系统。"},
+            )
+            assert conversation.status_code == 200, conversation.text
+            reply = conversation.json()["employee_message"]
+            confirmed = client.post(
+                f"/api/employees/{employee_id}/messages/{reply['id']}/confirm-create-project",
+                headers=headers,
+            )
+            assert confirmed.status_code == 200, confirmed.text
+
             me = client.get("/api/auth/me", headers=headers)
             assert me.status_code == 200, me.text
             assert me.json()["email"] == register_payload["email"]
@@ -93,6 +111,10 @@ def main() -> None:
             assert asset_analysis.status_code == 200, asset_analysis.text
             assert "文本资料分析报告" in asset_analysis.json()["summary"]
 
+            context = client.get(f"/api/projects/{project_id}/context", headers=headers)
+            assert context.status_code == 200, context.text
+            assert context.json()["project"]["id"] == project_id
+
             reports = client.post(f"/api/projects/{project_id}/analyze", headers=headers)
             assert reports.status_code == 200, reports.text
             report_list = reports.json()
@@ -106,7 +128,7 @@ def main() -> None:
             assert exported.headers["content-type"].startswith("text/markdown")
             assert exported.text.endswith("\n")
 
-    print("Smoke test passed: auth, JWT, DB init, upload, analysis, reports, and Markdown export are OK.")
+    print("Smoke test passed: auth, employees, chat confirmation, project context, upload, analysis, reports, and Markdown export are OK.")
 
 
 if __name__ == "__main__":
