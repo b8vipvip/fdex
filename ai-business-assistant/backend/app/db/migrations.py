@@ -14,6 +14,22 @@ def run_lightweight_migrations(engine: Engine) -> None:
     """Small SQLite-friendly migrations for the MVP without Alembic."""
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
+    if "users" in tables:
+        _add_column(engine, "users", "avatar", "avatar VARCHAR(500) DEFAULT '' NOT NULL")
+        _add_column(engine, "users", "company_name", "company_name VARCHAR(200) DEFAULT '我的 AI 公司' NOT NULL")
+        _add_column(engine, "users", "is_verified_company", "is_verified_company BOOLEAN DEFAULT 0 NOT NULL")
+        _add_column(engine, "users", "realname_verified", "realname_verified BOOLEAN DEFAULT 0 NOT NULL")
+        _add_column(engine, "users", "deleted_retention_days", "deleted_retention_days INTEGER DEFAULT 7 NOT NULL")
+    if "ai_employees" in tables:
+        _add_column(engine, "ai_employees", "avatar_url", "avatar_url VARCHAR(500) DEFAULT '' NOT NULL")
+        _add_column(engine, "ai_employees", "job_role_id", "job_role_id INTEGER")
+        _add_column(engine, "ai_employees", "is_system", "is_system BOOLEAN DEFAULT 0 NOT NULL")
+        _add_column(engine, "ai_employees", "is_material_manager", "is_material_manager BOOLEAN DEFAULT 0 NOT NULL")
+        _add_column(engine, "ai_employees", "allow_upload_assets", "allow_upload_assets BOOLEAN DEFAULT 1 NOT NULL")
+        _add_column(engine, "ai_employees", "allow_receive_project_context", "allow_receive_project_context BOOLEAN DEFAULT 1 NOT NULL")
+    if "employee_messages" in tables:
+        _add_column(engine, "employee_messages", "deleted_at", "deleted_at DATETIME")
+        _add_column(engine, "employee_messages", "deleted_batch_id", "deleted_batch_id INTEGER")
     if "projects" in tables:
         _add_column(engine, "projects", "storage_mode", "storage_mode VARCHAR(30) DEFAULT 'hybrid' NOT NULL")
         _add_column(engine, "projects", "data_retention_policy", "data_retention_policy VARCHAR(40) DEFAULT 'keep_forever' NOT NULL")

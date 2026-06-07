@@ -15,6 +15,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(100))
     professional_level: Mapped[str] = mapped_column(String(30), default="business")
+    avatar: Mapped[str] = mapped_column(String(500), default="")
+    company_name: Mapped[str] = mapped_column(String(200), default="我的 AI 公司")
+    is_verified_company: Mapped[bool] = mapped_column(Boolean, default=False)
+    realname_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    deleted_retention_days: Mapped[int] = mapped_column(Integer, default=7)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     projects: Mapped[list["Project"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
@@ -115,6 +120,12 @@ class AIEmployee(Base):
     department: Mapped[str] = mapped_column(String(100), default="综合管理部")
     position: Mapped[str] = mapped_column(String(100))
     role_prompt: Mapped[str] = mapped_column(Text, default="")
+    avatar_url: Mapped[str] = mapped_column(String(500), default="")
+    job_role_id: Mapped[int | None] = mapped_column(ForeignKey("job_roles.id"), nullable=True, index=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_material_manager: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_upload_assets: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_receive_project_context: Mapped[bool] = mapped_column(Boolean, default=True)
     industry: Mapped[str] = mapped_column(String(100), default="通用")
     reply_mode: Mapped[str] = mapped_column(String(20), default="text")
     can_create_project: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -138,3 +149,46 @@ class EmployeeMessage(Base):
     message_type: Mapped[str] = mapped_column(String(30), default="text")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    deleted_batch_id: Mapped[int | None] = mapped_column(ForeignKey("deleted_message_batches.id"), nullable=True, index=True)
+
+
+class JobRole(Base):
+    __tablename__ = "job_roles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    industry: Mapped[str] = mapped_column(String(100), index=True)
+    category: Mapped[str] = mapped_column(String(100), default="")
+    title: Mapped[str] = mapped_column(String(100), index=True)
+    aliases: Mapped[str] = mapped_column(Text, default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    role_prompt_template: Mapped[str] = mapped_column(Text, default="")
+    is_common: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class DeletedMessageBatch(Base):
+    __tablename__ = "deleted_message_batches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("ai_employees.id"), index=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    retention_days: Mapped[int] = mapped_column(Integer, default=7)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EmployeeMessageAttachment(Base):
+    __tablename__ = "employee_message_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("employee_messages.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("ai_employees.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    original_filename: Mapped[str] = mapped_column(String(255))
+    file_path: Mapped[str] = mapped_column(String(500))
+    file_type: Mapped[str] = mapped_column(String(50), default="file")
+    mime_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

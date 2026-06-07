@@ -16,6 +16,11 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
+    avatar: str = ""
+    company_name: str = "我的 AI 公司"
+    is_verified_company: bool = False
+    realname_verified: bool = False
+    deleted_retention_days: int = 7
     created_at: datetime
     model_config = {"from_attributes": True}
 
