@@ -1,3 +1,0 @@
-import {useLocation} from 'react-router-dom'; import Layout from '../components/Layout';
-const copy:Record<string,[string,string]>={'/me/profile':['个人资料','个人资料编辑功能即将开放。'],'/me/help':['使用说明','在消息页与 AI 员工协作，在工作页持续追加资料并生成完整方案。'],'/me/privacy':['隐私与安全','系统将逐步提供更完整的脱敏、权限与数据保留策略。'],'/me/about':['关于我们','我们致力于帮助每个人拥有一支可协作的 AI 虚拟公司团队。'],'/me/contact':['联系我们','如需帮助，请通过产品运营渠道联系我们。']};
-export default function InfoPage(){const x=copy[useLocation().pathname]||['页面','功能即将上线。'];return <Layout title={x[0]}><section className="rounded-2xl bg-white p-6 shadow-sm"><h2 className="text-xl font-bold">{x[0]}</h2><p className="mt-4 leading-7 text-slate-600">{x[1]}</p></section></Layout>}

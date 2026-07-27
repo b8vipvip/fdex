@@ -1,0 +1,11 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: FDEX Server
+      APP_VERSION: 1.0.0
+      ENVIRONMENT: production
+      CORS_ORIGINS: "*"
+    restart: unless-stopped
