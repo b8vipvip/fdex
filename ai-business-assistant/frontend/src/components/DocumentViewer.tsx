@@ -1,3 +1,0 @@
-import type { Report } from '../types';
-const renderMarkdown = (md: string) => md.split('\n').map((line, i) => { if (line.startsWith('### ')) return <h3 key={i}>{line.slice(4)}</h3>; if (line.startsWith('## ')) return <h2 key={i}>{line.slice(3)}</h2>; if (line.startsWith('# ')) return <h1 key={i}>{line.slice(2)}</h1>; if (line.startsWith('- ')) return <li key={i}>{line.slice(2)}</li>; if (!line.trim()) return <div className="h-2" key={i} />; return <p key={i}>{line}</p>; });
-export default function DocumentViewer({ report }: { report: Report }) { return <article className="prose-lite mx-auto max-w-4xl rounded-2xl border border-slate-200 bg-white px-5 py-7 shadow-sm sm:px-10 sm:py-10">{renderMarkdown(report.content_markdown)}</article>; }
