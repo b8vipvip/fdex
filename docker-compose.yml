@@ -3,6 +3,9 @@ services:
     build: ./server
     env_file:
       - ./server/.env
+    environment:
+      FDEX_HOST: 0.0.0.0
+      FDEX_PORT: 18080
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:18080:18080"
     restart: unless-stopped
