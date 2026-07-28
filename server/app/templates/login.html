@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 · FDEX 管理后台</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body class="login-body">
+<main class="login-shell">
+    <section class="login-card">
+        <div class="login-brand"><span class="brand-mark large">F</span></div>
+        <h1>FDEX 服务端</h1>
+        <p class="muted">登录管理后台，配置 AI 接口并维护服务。</p>
+
+        {% if flash %}<div class="alert alert-{{ flash.category }}"><span>{{ flash.message }}</span></div>{% endif %}
+        {% if error %}<div class="alert alert-error"><span>{{ error }}</span></div>{% endif %}
+        {% if not admin_ready %}
+        <div class="alert alert-warning">
+            <span>管理员凭据尚未初始化。请在服务器执行 <code>bash scripts/update_server.sh</code>，脚本会生成初始账号和密码。</span>
+        </div>
+        {% endif %}
+
+        <form method="post" action="/admin/login" class="form-stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="field">
+                <span>管理员用户名</span>
+                <input name="username" autocomplete="username" required maxlength="64" autofocus>
+            </label>
+            <label class="field">
+                <span>管理员密码</span>
+                <input type="password" name="password" autocomplete="current-password" required maxlength="256">
+            </label>
+            <button class="button primary full" type="submit" {% if not admin_ready %}disabled{% endif %}>登录后台</button>
+        </form>
+        <p class="login-note">连续失败 5 次后，当前 IP 将暂时限制登录 10 分钟。</p>
+    </section>
+</main>
+</body>
+</html>
