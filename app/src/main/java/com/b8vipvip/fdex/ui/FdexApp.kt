@@ -42,6 +42,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.BuildConfig
+import com.b8vipvip.fdex.network.ServerApi
+import com.b8vipvip.fdex.network.ServerCheckResult
 import com.b8vipvip.fdex.update.ApkUpdater
 import com.b8vipvip.fdex.update.GitHubUpdateService
 import com.b8vipvip.fdex.update.ReleaseInfo
@@ -59,6 +61,8 @@ fun FdexApp() {
     val snackbar = remember { SnackbarHostState() }
     var screen by remember { mutableStateOf(Screen.HOME) }
     var isChecking by remember { mutableStateOf(false) }
+    var isCheckingServer by remember { mutableStateOf(false) }
+    var serverStatus by remember { mutableStateOf("未检测") }
     var availableRelease by remember { mutableStateOf<ReleaseInfo?>(null) }
 
     suspend fun checkUpdate(manual: Boolean) {
@@ -74,10 +78,21 @@ fun FdexApp() {
         isChecking = false
     }
 
+    suspend fun checkServer() {
+        if (isCheckingServer) return
+        isCheckingServer = true
+        serverStatus = when (val result = ServerApi.checkHealth()) {
+            is ServerCheckResult.Online -> "在线 · ${result.service} ${result.version}"
+            is ServerCheckResult.Offline -> "连接失败 · ${result.message}"
+        }
+        isCheckingServer = false
+    }
+
     LaunchedEffect(Unit) {
         if (UpdatePreferences.shouldCheckOnLaunch(context)) {
             checkUpdate(manual = false)
         }
+        checkServer()
     }
 
     Scaffold(
@@ -105,11 +120,14 @@ fun FdexApp() {
         },
     ) { padding ->
         when (screen) {
-            Screen.HOME -> HomeScreen(Modifier.padding(padding))
+            Screen.HOME -> HomeScreen(Modifier.padding(padding), serverStatus)
             Screen.ABOUT -> AboutScreen(
                 modifier = Modifier.padding(padding),
                 isChecking = isChecking,
+                isCheckingServer = isCheckingServer,
+                serverStatus = serverStatus,
                 onCheckUpdate = { scope.launch { checkUpdate(manual = true) } },
+                onCheckServer = { scope.launch { checkServer() } },
             )
         }
     }
@@ -128,7 +146,7 @@ fun FdexApp() {
 }
 
 @Composable
-private fun HomeScreen(modifier: Modifier = Modifier) {
+private fun HomeScreen(modifier: Modifier = Modifier, serverStatus: String) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -141,9 +159,19 @@ private fun HomeScreen(modifier: Modifier = Modifier) {
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "当前仓库已切换为原生 Android App 与 FastAPI 服务端架构。后续业务功能可直接在此基础上开发。",
+            text = "客户端只访问 FDEX 服务端，第三方 AI 接口地址、模型和密钥统一在服务器配置。",
             style = MaterialTheme.typography.bodyLarge,
         )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("服务端", fontWeight = FontWeight.SemiBold)
+                Text(BuildConfig.SERVER_BASE_URL)
+                Text(serverStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(18.dp),
@@ -160,7 +188,10 @@ private fun HomeScreen(modifier: Modifier = Modifier) {
 private fun AboutScreen(
     modifier: Modifier = Modifier,
     isChecking: Boolean,
+    isCheckingServer: Boolean,
+    serverStatus: String,
     onCheckUpdate: () -> Unit,
+    onCheckServer: () -> Unit,
 ) {
     Column(
         modifier = modifier
@@ -179,7 +210,25 @@ private fun AboutScreen(
                 InfoRow("版本名称", BuildConfig.VERSION_NAME)
                 InfoRow("版本号", BuildConfig.VERSION_CODE.toString())
                 InfoRow("构建提交", BuildConfig.GIT_SHA)
+                InfoRow("服务端", BuildConfig.SERVER_BASE_URL)
+                InfoRow("服务状态", serverStatus)
                 InfoRow("更新来源", "GitHub Releases")
+            }
+        }
+
+        Button(
+            onClick = onCheckServer,
+            enabled = !isCheckingServer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (isCheckingServer) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(end = 10.dp),
+                    strokeWidth = 2.dp,
+                )
+                Text("正在连接")
+            } else {
+                Text("检测服务端")
             }
         }
 
@@ -200,7 +249,7 @@ private fun AboutScreen(
         }
 
         Text(
-            text = "新版本必须由 GitHub Release 提供 APK。Android 首次应用内更新时可能要求授予安装未知应用权限。",
+            text = "新版本必须由 GitHub Release 提供 APK。第三方 API Key 仅保存在服务端 .env 中，不会包含在 APK 内。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
