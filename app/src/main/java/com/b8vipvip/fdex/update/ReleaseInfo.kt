@@ -7,6 +7,8 @@ data class ReleaseInfo(
     val htmlUrl: String,
     val apkUrl: String?,
     val publishedAt: String,
+    val sha256: String = "",
+    val size: Long = 0L,
 ) {
     val normalizedVersion: String
         get() = tagName.trim().removePrefix("v").removePrefix("V")
