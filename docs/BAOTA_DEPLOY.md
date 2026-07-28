@@ -5,25 +5,91 @@
 ```text
 /opt/fdex/                  # Git 仓库
 /opt/fdex/server/.env       # 服务端私密配置，不提交 Git
+/opt/fdex/server/data/      # 审计日志和 .env 备份
 /etc/systemd/system/fdex.service
 宝塔网站：fdex.k2n.cn -> 127.0.0.1:18080
 ```
 
-FDEX 默认使用独立端口 `18080`，而不是常见的 `8000`。端口只监听本机，不需要开放服务器安全组。
+FDEX 默认使用独立端口 `18080`，只监听本机，不需要开放服务器安全组。
 
-## 一、首次部署
-
-以 root 登录服务器：
+## 一、部署或更新
 
 ```bash
-cd /opt
-git clone https://github.com/b8vipvip/fdex.git
 cd /opt/fdex
-cp server/.env.example server/.env
-nano server/.env
+sudo bash scripts/update_server.sh
 ```
 
-至少确认：
+脚本会自动：
+
+1. 备份并恢复现有 `server/.env`
+2. 拉取 GitHub `main`
+3. 初始化缺失的管理员密码和会话密钥
+4. 检查目标端口，且不会结束占用端口的其他服务
+5. 更新 Python 依赖和 systemd 服务
+6. 重启 FDEX 并检查健康接口
+
+首次生成管理员密码时，终端会显示：
+
+```text
+管理后台：https://fdex.k2n.cn/admin
+管理员用户名：admin
+首次生成的管理员密码：随机密码
+```
+
+该密码只在生成时显示一次。登录后应立即在“服务配置 → 修改管理员密码”中更换。
+
+## 二、宝塔反向代理
+
+在宝塔面板打开：
+
+```text
+网站 -> fdex.k2n.cn -> 设置 -> 反向代理
+```
+
+配置：
+
+```text
+代理目录：/
+目标 URL：http://127.0.0.1:18080
+发送域名：$host
+```
+
+根目录 `/` 必须代理，这样以下地址都会转发到 FastAPI：
+
+```text
+/                       管理后台入口
+/admin                  服务端管理后台
+/static                 后台静态资源
+/docs                   Swagger API 文档
+/openapi.json            OpenAPI 定义
+/api/*                   Android 与公开 API
+```
+
+不再需要旧目录：
+
+```text
+/opt/fdex/ai-business-assistant/frontend/dist
+```
+
+站点配置中可以把旧的 `root` 改为普通空目录，例如：
+
+```nginx
+root /www/wwwroot/fdex.k2n.cn;
+```
+
+宝塔反向代理生成的规则已包含 `location /` 时，不要再手工添加重复的 `location /api/`、`location /docs` 或 `location /openapi.json`。
+
+完成后开启 SSL 和强制 HTTPS。
+
+## 三、服务端配置
+
+配置文件：
+
+```text
+/opt/fdex/server/.env
+```
+
+主要配置：
 
 ```dotenv
 APP_NAME=FDEX Server
@@ -42,105 +108,74 @@ AI_BASE_URL=https://你的接口地址/v1
 AI_API_KEY=你的密钥
 AI_MODEL=你的模型名称
 AI_TIMEOUT_SECONDS=60
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=至少12位强密码
+ADMIN_SESSION_SECRET=至少32位随机字符串
+ADMIN_COOKIE_SECURE=true
+ADMIN_SESSION_HOURS=12
 ```
 
-随后执行：
+这些内容可以在管理后台可视化修改。API Key 在页面中只显示脱敏结果，留空表示保持当前密钥。
 
-```bash
-cd /opt/fdex
-sudo bash scripts/update_server.sh
-```
+## 四、端口冲突处理
 
-更新脚本在启动前会检查 `FDEX_PORT`。如果该端口已经被其他服务使用，脚本只显示占用进程并退出，不会结束其他服务。
-
-验证本机服务：
-
-```bash
-curl http://127.0.0.1:18080/api/health
-```
-
-## 二、端口冲突处理
-
-检查默认端口：
+检查端口：
 
 ```bash
 ss -lntp 'sport = :18080'
 ```
 
-如果有输出，在 `/opt/fdex/server/.env` 中改成其他空闲端口，例如：
+如果被占用，在 `.env` 中修改：
 
 ```dotenv
 FDEX_PORT=18081
 ```
 
-然后宝塔反向代理也必须同步改为：
+并把宝塔目标 URL 同步改为：
 
 ```text
 http://127.0.0.1:18081
 ```
 
-重新执行：
+更新脚本只会停止 `fdex.service`，不会结束占用目标端口的其他程序。
 
-```bash
-cd /opt/fdex
-sudo bash scripts/update_server.sh
-```
+## 五、管理后台
 
-不要使用 `kill`、`pkill` 或结束占用进程，除非你确认那个进程本来就应该停止。
-
-## 三、宝塔站点配置
-
-在宝塔面板打开：
+访问：
 
 ```text
-网站 -> fdex.k2n.cn -> 设置 -> 反向代理
+https://fdex.k2n.cn/admin
 ```
 
-默认目标 URL：
+功能：
 
-```text
-http://127.0.0.1:18080
-```
+- 服务、主机、资源和 GitHub 状态仪表盘
+- 服务地址、API 路由、CORS、端口和工作进程配置
+- AI Provider、接口地址、密钥和模型配置
+- AI 接口连通性测试
+- systemd 日志和管理员审计日志
+- GitHub main/Release 检查
+- 服务重启和后台更新
+- 管理员密码修改
 
-也可以把 `deploy/baota/nginx-location.conf` 中的配置放入该站点的 `server {}` 内。
+后台安全措施：Secure/HttpOnly Cookie、CSRF Token、登录失败限速、配置原子写入、自动备份和操作审计。
 
-完成后申请并开启 SSL，强制 HTTPS。
-
-外网验证：
+## 六、验证
 
 ```bash
+curl http://127.0.0.1:18080/api/health
 curl https://fdex.k2n.cn/api/health
-curl https://fdex.k2n.cn/api/public-config
 ```
 
-浏览器可访问：
+浏览器：
 
 ```text
-https://fdex.k2n.cn/
+https://fdex.k2n.cn/admin
 https://fdex.k2n.cn/docs
 ```
 
-## 四、以后更新服务端
-
-每次 GitHub `main` 更新后，在服务器执行：
-
-```bash
-cd /opt/fdex
-sudo bash scripts/update_server.sh
-```
-
-脚本会：
-
-1. 备份 `server/.env`
-2. 拉取 GitHub `main`
-3. 恢复 `.env`
-4. 读取并验证 `FDEX_PORT`
-5. 停止旧的 FDEX systemd 服务
-6. 检查端口是否被其他服务占用
-7. 更新 Python 依赖和 systemd 服务
-8. 重启 FDEX 并检查 `/api/health`
-
-## 五、常用维护命令
+## 七、常用维护命令
 
 ```bash
 systemctl status fdex
@@ -149,26 +184,4 @@ journalctl -u fdex -n 100 --no-pager
 journalctl -u fdex -f
 ```
 
-检查默认监听端口：
-
-```bash
-ss -lntp 'sport = :18080'
-```
-
-服务默认只监听 `127.0.0.1:18080`，不需要在服务器安全组中开放 `18080`。
-
-## 六、Android 服务地址
-
-Android 默认编译地址：
-
-```text
-https://fdex.k2n.cn
-```
-
-如需为测试环境构建不同地址：
-
-```bash
-gradle :app:assembleDebug -PSERVER_BASE_URL=https://test.example.com
-```
-
-第三方 API Key、AI 模型地址等只配置在服务器 `.env`，不要放进 Android 工程或 GitHub 仓库。
+Android 默认访问 `https://fdex.k2n.cn`。第三方 API Key 只保存在服务端，不要放进 Android 工程或 GitHub 仓库。
