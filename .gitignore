@@ -18,6 +18,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+server/data/
 
 # OS / editors
 .DS_Store
