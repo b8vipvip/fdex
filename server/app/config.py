@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # GitHub is only used by the server-side release synchronizer. Android never talks to GitHub.
     github_repo: str = "b8vipvip/fdex"
     github_token: str = ""
-    release_cache_dir: str = "/opt/fdex/server/data/releases"
+    release_cache_dir: str = str(SERVER_DIR / "data" / "releases")
 
     app_dir: str = "/opt/fdex"
     service_name: str = "fdex"
