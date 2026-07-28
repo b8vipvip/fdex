@@ -1,15 +1,32 @@
-from fastapi.testclient import TestClient
+import os
+import re
 
-from app.config import get_settings
-from app.main import app
+os.environ["ENVIRONMENT"] = "test"
+os.environ["ADMIN_USERNAME"] = "testadmin"
+os.environ["ADMIN_PASSWORD"] = "test-password-12345"
+os.environ["ADMIN_SESSION_SECRET"] = "test-session-secret-that-is-longer-than-32-characters"
+os.environ["ADMIN_COOKIE_SECURE"] = "false"
+os.environ["APP_DIR"] = "/tmp/fdex-test"
+os.environ["SERVICE_NAME"] = "fdex-test"
 
-client = TestClient(app)
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.config import get_settings  # noqa: E402
+from app.main import app  # noqa: E402
+
+client = TestClient(app, base_url="http://testserver")
 
 
-def test_root() -> None:
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json()["status"] == "running"
+def _csrf(html: str) -> str:
+    match = re.search(r'name="csrf_token" value="([^"]+)"', html)
+    assert match
+    return match.group(1)
+
+
+def test_root_redirects_to_admin() -> None:
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/admin"
 
 
 def test_health() -> None:
@@ -26,15 +43,63 @@ def test_version() -> None:
     assert response.json()["service"] == "FDEX Server"
 
 
-def test_public_config_never_exposes_api_key() -> None:
+def test_info_includes_admin_without_secrets() -> None:
+    response = client.get("/api/info")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["admin"].endswith("/admin")
+    assert "test-password" not in response.text
+    assert "session-secret" not in response.text
+
+
+def test_public_config_never_exposes_secrets() -> None:
     response = client.get("/api/public-config")
     assert response.status_code == 200
     payload = response.json()
     assert payload["public_base_url"]
     assert "api_key" not in payload
     assert "ai_base_url" not in payload
+    assert "admin_password" not in payload
+    assert "admin_session_secret" not in payload
 
 
 def test_default_server_port_is_isolated() -> None:
     assert get_settings().fdex_host == "127.0.0.1"
     assert get_settings().fdex_port == 18080
+
+
+def test_admin_requires_login() -> None:
+    response = client.get("/admin", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
+
+
+def test_admin_login_and_dashboard() -> None:
+    login_page = client.get("/admin/login")
+    assert login_page.status_code == 200
+    assert "FDEX 服务端" in login_page.text
+    token = _csrf(login_page.text)
+
+    response = client.post(
+        "/admin/login",
+        data={
+            "username": "testadmin",
+            "password": "test-password-12345",
+            "csrf_token": token,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+
+    dashboard = client.get("/admin")
+    assert dashboard.status_code == 200
+    assert "服务运行状态" in dashboard.text
+    assert "test-password-12345" not in dashboard.text
+    assert "test-session-secret" not in dashboard.text
+
+
+def test_static_admin_css() -> None:
+    response = client.get("/static/admin.css")
+    assert response.status_code == 200
+    assert ".app-shell" in response.text
