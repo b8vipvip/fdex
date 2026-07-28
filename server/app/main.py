@@ -10,7 +10,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.admin import router as admin_router
+from app.admin_routes import router as admin_router
 from app.config import SERVER_DIR, get_settings
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
