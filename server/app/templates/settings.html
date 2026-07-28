@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}服务配置 · FDEX{% endblock %}
+{% block heading %}服务配置{% endblock %}
+{% block subheading %}统一管理服务地址、运行参数和第三方 AI 接口{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin">返回仪表盘</a>{% endblock %}
+
+{% block content %}
+<form method="post" action="/admin/settings" class="settings-form" data-confirm="保存配置后，部分设置需要重启服务才能生效。确定保存吗？">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>基础信息</h2><p>服务名称、版本和公开访问地址</p></div></div>
+    <div class="form-grid">
+        <label class="field"><span>服务名称</span><input name="app_name" value="{{ settings.app_name }}" required maxlength="100"></label>
+        <label class="field"><span>服务版本</span><input name="app_version" value="{{ settings.app_version }}" required maxlength="32"></label>
+        <label class="field"><span>运行环境</span>
+            <select name="environment">
+                {% for item in ['production','staging','development','test'] %}<option value="{{ item }}" {% if settings.environment == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+            </select>
+        </label>
+        <label class="field"><span>公开服务地址</span><input type="url" name="public_base_url" value="{{ settings.public_base_url }}" required></label>
+        <label class="field"><span>API 前缀</span><input name="api_prefix" value="{{ settings.api_prefix }}" required></label>
+        <label class="field"><span>CORS 来源</span><input name="cors_origins" value="{{ settings.cors_origins }}" required><small>多个来源使用英文逗号分隔</small></label>
+    </div>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>监听与进程</h2><p>只允许监听本机回环地址，避免后端端口直接暴露公网</p></div><span class="badge success">安全限制</span></div>
+    <div class="form-grid three">
+        <label class="field"><span>监听地址</span>
+            <select name="fdex_host">
+                {% for item in ['127.0.0.1','localhost','::1'] %}<option value="{{ item }}" {% if settings.fdex_host == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+            </select>
+        </label>
+        <label class="field"><span>监听端口</span><input type="number" name="fdex_port" value="{{ settings.fdex_port }}" min="1" max="65535" required><small>宝塔反向代理必须使用同一端口</small></label>
+        <label class="field"><span>工作进程</span><input type="number" name="fdex_workers" value="{{ settings.fdex_workers }}" min="1" max="16" required></label>
+    </div>
+</section>
+
+<section class="panel form-section" id="ai">
+    <div class="panel-header"><div><h2>AI 接口配置</h2><p>兼容 OpenAI Chat Completions 的中转站或官方接口</p></div><span class="badge {{ 'success' if settings.ai_enabled else 'warning' }}">{{ '已配置' if settings.ai_enabled else '未完整配置' }}</span></div>
+    <div class="form-grid">
+        <label class="field"><span>Provider</span><input name="ai_provider" value="{{ settings.ai_provider }}" required><small>当前建议使用 openai_compatible</small></label>
+        <label class="field"><span>模型名称</span><input name="ai_model" value="{{ settings.ai_model }}" placeholder="例如 gpt-4.1-mini"></label>
+        <label class="field full-row"><span>AI Base URL</span><input type="url" name="ai_base_url" value="{{ settings.ai_base_url }}" placeholder="https://api.example.com/v1"></label>
+        <label class="field"><span>API Key</span><input type="password" name="ai_api_key" autocomplete="new-password" placeholder="留空则保持当前密钥"><small>当前：<code>{{ masked_api_key }}</code></small></label>
+        <label class="field"><span>请求超时（秒）</span><input type="number" name="ai_timeout_seconds" value="{{ settings.ai_timeout_seconds }}" min="5" max="600" step="1"></label>
+        <label class="checkbox-field full-row"><input type="checkbox" name="clear_ai_api_key" value="yes"><span>清除当前 API Key</span></label>
+    </div>
+    <div class="inline-note warning-note">“测试 AI 接口”会优先请求 <code>/models</code>；不支持该接口时，会发送一次最多 2 token 的最小对话请求。</div>
+</section>
+
+<section class="panel form-section" id="security">
+    <div class="panel-header"><div><h2>后台安全</h2><p>管理员账号、HTTPS Cookie 和会话有效期</p></div></div>
+    <div class="form-grid three">
+        <label class="field"><span>管理员用户名</span><input name="admin_username" value="{{ settings.admin_username }}" required maxlength="64"></label>
+        <label class="field"><span>会话时长（小时）</span><input type="number" name="admin_session_hours" value="{{ settings.admin_session_hours }}" min="1" max="168"></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="admin_cookie_secure" value="true" {% if settings.admin_cookie_secure %}checked{% endif %}><span>仅通过 HTTPS 发送登录 Cookie</span></label>
+    </div>
+    <p class="path-note">配置文件：<code>{{ env_path }}</code>。保存时自动创建权限为 600 的备份。</p>
+</section>
+
+<div class="sticky-actions">
+    <button class="button primary" type="submit">保存全部配置</button>
+    <span>配置保存后不会自动暴露密钥；涉及端口或路由的修改需重启。</span>
+</div>
+</form>
+
+<div class="content-grid equal lower-grid">
+    <section class="panel">
+        <div class="panel-header"><div><h2>接口连通性</h2><p>使用当前已保存的服务端配置</p></div></div>
+        <form method="post" action="/admin/test-ai">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button secondary full" type="submit" {% if not settings.ai_enabled %}disabled{% endif %}>测试 AI 接口</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><div><h2>修改管理员密码</h2><p>修改后当前会话会立即退出</p></div></div>
+        <form method="post" action="/admin/password" class="form-stack" data-confirm="确定修改管理员密码吗？修改后需要重新登录。">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="field"><span>当前密码</span><input type="password" name="current_password" autocomplete="current-password" required></label>
+            <label class="field"><span>新密码</span><input type="password" name="new_password" autocomplete="new-password" minlength="12" required></label>
+            <label class="field"><span>再次输入新密码</span><input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required></label>
+            <button class="button danger-outline full" type="submit">修改密码并退出</button>
+        </form>
+    </section>
+</div>
+{% endblock %}
