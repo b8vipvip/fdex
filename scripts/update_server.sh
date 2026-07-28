@@ -6,6 +6,7 @@ REPO_URL="${REPO_URL:-https://github.com/b8vipvip/fdex.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="fdex"
 ENV_BACKUP=""
+GENERATED_ADMIN_PASSWORD=""
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "请使用 root 执行：sudo bash scripts/update_server.sh" >&2
@@ -31,8 +32,85 @@ if [[ -n "${ENV_BACKUP}" ]]; then
   rm -f "${ENV_BACKUP}"
 elif [[ ! -f "${APP_DIR}/server/.env" ]]; then
   cp "${APP_DIR}/server/.env.example" "${APP_DIR}/server/.env"
-  echo "已创建 ${APP_DIR}/server/.env，请填写 AI_API_KEY 等配置。"
+  echo "已创建 ${APP_DIR}/server/.env。"
 fi
+
+# Initialize secure dashboard credentials without overwriting existing values.
+GENERATED_ADMIN_PASSWORD="$(python3 - "${APP_DIR}/server/.env" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+values: dict[str, str] = {}
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        continue
+    key, raw = stripped.split("=", 1)
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        try:
+            value = json.loads(value) if value[0] == '"' else value[1:-1]
+        except json.JSONDecodeError:
+            value = value[1:-1]
+    values[key.strip()] = value
+
+updates: dict[str, str] = {}
+if not values.get("ADMIN_USERNAME", "").strip():
+    updates["ADMIN_USERNAME"] = "admin"
+if len(values.get("ADMIN_PASSWORD", "")) < 12:
+    updates["ADMIN_PASSWORD"] = secrets.token_urlsafe(18)
+if len(values.get("ADMIN_SESSION_SECRET", "")) < 32:
+    updates["ADMIN_SESSION_SECRET"] = secrets.token_urlsafe(48)
+if not values.get("ADMIN_COOKIE_SECURE", "").strip():
+    updates["ADMIN_COOKIE_SECURE"] = "true"
+if not values.get("ADMIN_SESSION_HOURS", "").strip():
+    updates["ADMIN_SESSION_HOURS"] = "12"
+if not values.get("ADMIN_LOG_LINES", "").strip():
+    updates["ADMIN_LOG_LINES"] = "300"
+
+remaining = dict(updates)
+output: list[str] = []
+for line in lines:
+    stripped = line.strip()
+    if stripped and not stripped.startswith("#") and "=" in stripped:
+        key = stripped.split("=", 1)[0].strip()
+        if key in remaining:
+            output.append(f"{key}={remaining.pop(key)}")
+            continue
+    output.append(line)
+if remaining:
+    if output and output[-1].strip():
+        output.append("")
+    output.append("# Generated securely by scripts/update_server.sh")
+    output.extend(f"{key}={value}" for key, value in remaining.items())
+
+content = "\n".join(output).rstrip() + "\n"
+fd, name = tempfile.mkstemp(prefix=".env.", dir=str(path.parent), text=True)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(name, 0o600)
+    os.replace(name, path)
+finally:
+    if os.path.exists(name):
+        os.unlink(name)
+
+print(updates.get("ADMIN_PASSWORD", ""))
+PY
+)"
+chmod 600 "${APP_DIR}/server/.env"
+mkdir -p "${APP_DIR}/server/data/backups"
+chmod 700 "${APP_DIR}/server/data" "${APP_DIR}/server/data/backups"
 
 read_env_value() {
   local key="$1"
@@ -47,6 +125,10 @@ read_env_value() {
 
 FDEX_PORT="$(read_env_value FDEX_PORT)"
 FDEX_PORT="${FDEX_PORT:-18080}"
+ADMIN_USERNAME="$(read_env_value ADMIN_USERNAME)"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+PUBLIC_BASE_URL="$(read_env_value PUBLIC_BASE_URL)"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fdex.k2n.cn}"
 
 if ! [[ "${FDEX_PORT}" =~ ^[0-9]+$ ]] || (( FDEX_PORT < 1 || FDEX_PORT > 65535 )); then
   echo "server/.env 中 FDEX_PORT=${FDEX_PORT} 无效，必须是 1-65535。" >&2
@@ -72,17 +154,23 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 systemctl restart "${SERVICE_NAME}.service"
 
-for _ in {1..20}; do
+for _ in {1..30}; do
   if curl --silent --fail "http://127.0.0.1:${FDEX_PORT}/api/health" >/dev/null; then
     echo "FDEX 服务端更新成功，监听 127.0.0.1:${FDEX_PORT}。"
     curl --silent "http://127.0.0.1:${FDEX_PORT}/api/health"
     echo
+    echo "管理后台：${PUBLIC_BASE_URL}/admin"
+    echo "管理员用户名：${ADMIN_USERNAME}"
+    if [[ -n "${GENERATED_ADMIN_PASSWORD}" ]]; then
+      echo "首次生成的管理员密码：${GENERATED_ADMIN_PASSWORD}"
+      echo "请立即登录后台并修改密码；该密码只在本次终端输出。"
+    fi
     exit 0
   fi
   sleep 1
 done
 
 systemctl status "${SERVICE_NAME}.service" --no-pager || true
-journalctl -u "${SERVICE_NAME}.service" -n 80 --no-pager || true
+journalctl -u "${SERVICE_NAME}.service" -n 120 --no-pager || true
 echo "服务启动失败，请查看上方日志。" >&2
 exit 1
