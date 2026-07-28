@@ -7,6 +7,8 @@ plugins {
 val versionNameValue = providers.gradleProperty("VERSION_NAME").orElse("1.0.0")
 val versionCodeValue = providers.gradleProperty("VERSION_CODE").orElse("1000000")
 val gitSha = System.getenv("GITHUB_SHA")?.take(7) ?: "local"
+val serverBaseUrl = providers.gradleProperty("SERVER_BASE_URL")
+    .orElse(System.getenv("FDEX_SERVER_BASE_URL") ?: "https://fdex.k2n.cn")
 
 android {
     namespace = "com.b8vipvip.fdex"
@@ -22,6 +24,7 @@ android {
         buildConfigField("String", "GITHUB_OWNER", "\"b8vipvip\"")
         buildConfigField("String", "GITHUB_REPO", "\"fdex\"")
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "SERVER_BASE_URL", "\"${serverBaseUrl.get().trimEnd('/')}\"")
     }
 
     signingConfigs {
