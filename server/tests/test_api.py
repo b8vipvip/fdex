@@ -23,6 +23,24 @@ def _csrf(html: str) -> str:
     return match.group(1)
 
 
+def _login(test_client: TestClient = client) -> None:
+    response = test_client.get("/admin", follow_redirects=False)
+    if response.status_code == 200:
+        return
+    login_page = test_client.get("/admin/login")
+    token = _csrf(login_page.text)
+    response = test_client.post(
+        "/admin/login",
+        data={
+            "username": "testadmin",
+            "password": "test-password-12345",
+            "csrf_token": token,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+
 def test_root_redirects_to_admin() -> None:
     response = client.get("/", follow_redirects=False)
     assert response.status_code == 302
@@ -69,29 +87,24 @@ def test_default_server_port_is_isolated() -> None:
 
 
 def test_admin_requires_login() -> None:
-    response = client.get("/admin", follow_redirects=False)
+    isolated = TestClient(app, base_url="http://testserver")
+    response = isolated.get("/admin", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/login"
 
 
-def test_admin_login_and_dashboard() -> None:
-    login_page = client.get("/admin/login")
-    assert login_page.status_code == 200
-    assert "FDEX 服务端" in login_page.text
-    token = _csrf(login_page.text)
-
-    response = client.post(
+def test_login_rejects_invalid_csrf() -> None:
+    isolated = TestClient(app, base_url="http://testserver")
+    isolated.get("/admin/login")
+    response = isolated.post(
         "/admin/login",
-        data={
-            "username": "testadmin",
-            "password": "test-password-12345",
-            "csrf_token": token,
-        },
-        follow_redirects=False,
+        data={"username": "testadmin", "password": "test-password-12345", "csrf_token": "invalid"},
     )
-    assert response.status_code == 303
-    assert response.headers["location"] == "/admin"
+    assert response.status_code == 403
 
+
+def test_admin_login_and_dashboard() -> None:
+    _login()
     dashboard = client.get("/admin")
     assert dashboard.status_code == 200
     assert "服务运行状态" in dashboard.text
@@ -99,7 +112,25 @@ def test_admin_login_and_dashboard() -> None:
     assert "test-session-secret" not in dashboard.text
 
 
-def test_static_admin_css() -> None:
-    response = client.get("/static/admin.css")
-    assert response.status_code == 200
-    assert ".app-shell" in response.text
+def test_all_admin_pages_render_without_secrets() -> None:
+    _login()
+    expected = {
+        "/admin/settings": "AI 接口配置",
+        "/admin/logs?lines=100": "后台审计日志",
+        "/admin/maintenance": "版本与维护",
+    }
+    for path, text in expected.items():
+        response = client.get(path)
+        assert response.status_code == 200
+        assert text in response.text
+        assert "test-password-12345" not in response.text
+        assert "test-session-secret" not in response.text
+
+
+def test_static_admin_assets() -> None:
+    css = client.get("/static/admin.css")
+    favicon = client.get("/static/favicon.svg")
+    assert css.status_code == 200
+    assert ".app-shell" in css.text
+    assert favicon.status_code == 200
+    assert "<svg" in favicon.text
