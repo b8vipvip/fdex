@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{% block title %}FDEX 管理后台{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+        <a class="brand" href="/admin">
+            <span class="brand-mark">F</span>
+            <span><strong>FDEX</strong><small>服务端管理后台</small></span>
+        </a>
+        <nav class="nav-list" aria-label="后台导航">
+            <a href="/admin" class="nav-item {% if current_path == '/admin' %}active{% endif %}"><span>◫</span>仪表盘</a>
+            <a href="/admin/settings" class="nav-item {% if current_path.startswith('/admin/settings') %}active{% endif %}"><span>⚙</span>服务配置</a>
+            <a href="/admin/logs" class="nav-item {% if current_path.startswith('/admin/logs') %}active{% endif %}"><span>≡</span>运行日志</a>
+            <a href="/admin/maintenance" class="nav-item {% if current_path.startswith('/admin/maintenance') %}active{% endif %}"><span>↻</span>版本与维护</a>
+            <a href="/docs" target="_blank" rel="noopener" class="nav-item"><span>⌘</span>API 文档</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="server-dot"><i></i><span>{{ settings.environment }} · {{ settings.app_version }}</span></div>
+            <form action="/admin/logout" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="logout-button" type="submit">退出登录</button>
+            </form>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="topbar">
+            <button type="button" class="menu-button" onclick="document.body.classList.toggle('sidebar-open')" aria-label="打开菜单">☰</button>
+            <div>
+                <h1>{% block heading %}FDEX{% endblock %}</h1>
+                <p>{% block subheading %}服务端控制中心{% endblock %}</p>
+            </div>
+            <div class="topbar-actions">{% block actions %}{% endblock %}</div>
+        </header>
+
+        {% if flash %}
+        <div class="alert alert-{{ flash.category }}" role="alert">
+            <span>{{ flash.message }}</span>
+            <button type="button" onclick="this.parentElement.remove()" aria-label="关闭">×</button>
+        </div>
+        {% endif %}
+
+        <section class="page-content">
+            {% block content %}{% endblock %}
+        </section>
+    </main>
+</div>
+<script>
+document.addEventListener('click', function (event) {
+    if (document.body.classList.contains('sidebar-open') && !event.target.closest('.sidebar') && !event.target.closest('.menu-button')) {
+        document.body.classList.remove('sidebar-open');
+    }
+});
+for (const form of document.querySelectorAll('form[data-confirm]')) {
+    form.addEventListener('submit', function (event) {
+        const message = form.dataset.confirm;
+        if (message && !window.confirm(message)) event.preventDefault();
+    });
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

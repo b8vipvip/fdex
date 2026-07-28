@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}运行日志 · FDEX{% endblock %}
+{% block heading %}运行日志{% endblock %}
+{% block subheading %}查看 systemd 服务日志和后台安全审计{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/logs?lines={{ requested_lines }}">刷新日志</a>{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="panel-header">
+        <div><h2>FDEX 服务日志</h2><p>来自 <code>journalctl -u {{ settings.service_name }}</code></p></div>
+        <form method="get" action="/admin/logs" class="inline-form">
+            <select name="lines" aria-label="日志行数">
+                {% for amount in [100,300,500,1000,2000] %}<option value="{{ amount }}" {% if requested_lines == amount %}selected{% endif %}>最近 {{ amount }} 行</option>{% endfor %}
+            </select>
+            <button class="button secondary small" type="submit">加载</button>
+        </form>
+    </div>
+    <pre class="log-viewer">{{ logs }}</pre>
+</section>
+
+<section class="panel audit-panel">
+    <div class="panel-header"><div><h2>后台审计日志</h2><p>最近 100 条登录、配置与维护操作</p></div></div>
+    {% if audit %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead><tr><th>时间（UTC）</th><th>用户</th><th>IP</th><th>操作</th><th>结果</th><th>详情</th></tr></thead>
+            <tbody>
+            {% for item in audit %}
+                <tr>
+                    <td>{{ item.time }}</td>
+                    <td>{{ item.user }}</td>
+                    <td>{{ item.ip }}</td>
+                    <td><code>{{ item.action }}</code></td>
+                    <td><span class="badge {{ 'success' if item.success else 'error' }}">{{ '成功' if item.success else '失败' }}</span></td>
+                    <td class="details-cell">{{ item.details }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}<p class="empty-text">暂无后台审计记录。</p>{% endif %}
+</section>
+{% endblock %}

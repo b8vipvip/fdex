@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}版本与维护 · FDEX{% endblock %}
+{% block heading %}版本与维护{% endblock %}
+{% block subheading %}检查 GitHub main、Release，并安全执行服务维护{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/maintenance?refresh=1">重新检查 GitHub</a>{% endblock %}
+
+{% block content %}
+<div class="content-grid equal">
+    <section class="panel">
+        <div class="panel-header"><div><h2>本地代码</h2><p>{{ settings.app_dir }}</p></div><span class="badge {{ 'warning' if local_git.dirty else 'success' }}">{{ '存在修改' if local_git.dirty else '工作区干净' }}</span></div>
+        <dl class="kv-list">
+            <div><dt>当前分支</dt><dd>{{ local_git.branch }}</dd></div>
+            <div><dt>当前提交</dt><dd><code>{{ local_git.sha }}</code></dd></div>
+            <div><dt>服务版本</dt><dd>{{ settings.app_version }}</dd></div>
+            <div><dt>部署目录</dt><dd class="wrap">{{ settings.app_dir }}</dd></div>
+        </dl>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><div><h2>GitHub main</h2><p>{{ settings.github_repo }}</p></div><span class="badge {{ 'success' if github.ok else 'error' }}">{{ '连接正常' if github.ok else '获取失败' }}</span></div>
+        {% if github.ok %}
+        <dl class="kv-list">
+            <div><dt>远程提交</dt><dd><code>{{ github.remote_commit.sha or '未知' }}</code></dd></div>
+            <div><dt>提交说明</dt><dd class="wrap">{{ github.remote_commit.message or '无' }}</dd></div>
+            <div><dt>最新 Release</dt><dd>{{ github.latest_release.tag or '暂无 Release' }}</dd></div>
+            <div><dt>发布时间</dt><dd>{{ github.latest_release.published_at or '—' }}</dd></div>
+        </dl>
+        {% if github.remote_commit.url %}<a class="button secondary full" href="{{ github.remote_commit.url }}" target="_blank" rel="noopener">查看远程提交</a>{% endif %}
+        {% else %}<p class="empty-text">{{ github.error }}</p>{% endif %}
+    </section>
+</div>
+
+<section class="panel update-banner {{ 'has-update' if update_available else '' }}">
+    <div>
+        <span class="eyebrow">服务端更新状态</span>
+        <h2>{{ '发现新的 main 提交' if update_available else '当前代码已是最新状态' }}</h2>
+        <p>{% if update_available %}本地 {{ local_git.sha }}，远程 {{ github.remote_commit.sha }}。更新任务会备份并保留 <code>server/.env</code>，随后重启服务。{% else %}本地提交与 GitHub main 一致，暂时不需要更新。{% endif %}</p>
+    </div>
+    <span class="large-status">{{ 'UPDATE' if update_available else 'OK' }}</span>
+</section>
+
+<div class="content-grid equal">
+    <section class="panel danger-panel">
+        <div class="panel-header"><div><h2>重启 FDEX 服务</h2><p>用于应用刚保存的端口、路由和会话配置</p></div></div>
+        <p>重启期间页面可能短暂无法访问，systemd 会在约 2 秒后执行操作。</p>
+        <form method="post" action="/admin/restart" data-confirm="确定重启 FDEX 服务吗？页面会短暂断开。">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="checkbox-field"><input type="checkbox" name="confirm" value="restart" required><span>我确认要重启 FDEX 服务</span></label>
+            <button class="button danger-outline full" type="submit">安排服务重启</button>
+        </form>
+    </section>
+
+    <section class="panel danger-panel">
+        <div class="panel-header"><div><h2>从 GitHub 更新服务端</h2><p>执行仓库内固定的 update_server.sh</p></div></div>
+        <p>更新任务会拉取 <code>origin/main</code>、更新依赖、重新安装 systemd 配置并进行健康检查。</p>
+        {% if local_git.dirty %}<div class="inline-note error-note">仓库有未提交修改，网页更新已被安全锁定。</div>{% endif %}
+        <form method="post" action="/admin/update" data-confirm="确定从 GitHub main 更新服务端吗？当前服务会在更新过程中重启。">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="checkbox-field"><input type="checkbox" name="confirm" value="update" required><span>我确认要拉取 main 并更新服务端</span></label>
+            <button class="button danger full" type="submit" {% if local_git.dirty %}disabled{% endif %}>启动后台更新任务</button>
+        </form>
+    </section>
+</div>
+
+<section class="panel">
+    <div class="panel-header"><div><h2>维护说明</h2><p>操作边界与安全策略</p></div></div>
+    <ul class="info-list">
+        <li>网页更新只能执行固定路径 <code>{{ settings.app_dir }}/scripts/update_server.sh</code>，不能提交任意 Shell 命令。</li>
+        <li>目标端口被其他服务占用时，更新脚本只会报错退出，不会结束其他进程。</li>
+        <li><code>server/.env</code> 在更新前自动备份并恢复，第三方 API Key 不会提交到 GitHub。</li>
+        <li>所有重启和更新操作都会记录管理员、IP、时间和执行结果。</li>
+    </ul>
+</section>
+{% endblock %}
