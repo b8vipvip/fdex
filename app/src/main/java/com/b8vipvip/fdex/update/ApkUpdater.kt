@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
+import java.security.MessageDigest
 
 object ApkUpdater {
     private const val APK_MIME = "application/vnd.android.package-archive"
@@ -21,7 +22,7 @@ object ApkUpdater {
         val apkUrl = release.apkUrl
         if (apkUrl.isNullOrBlank()) {
             openReleasePage(appContext, release.htmlUrl)
-            Toast.makeText(appContext, "该版本未附带 APK，已打开发布页面", Toast.LENGTH_LONG).show()
+            Toast.makeText(appContext, "该版本未附带 APK", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -45,7 +46,7 @@ object ApkUpdater {
 
         val request = DownloadManager.Request(Uri.parse(apkUrl))
             .setTitle("FDEX ${release.normalizedVersion}")
-            .setDescription("正在下载更新")
+            .setDescription("正在从 FDEX 服务端下载更新")
             .setMimeType(APK_MIME)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, fileName)
@@ -54,7 +55,7 @@ object ApkUpdater {
 
         val manager = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val downloadId = manager.enqueue(request)
-        Toast.makeText(appContext, "已开始下载更新", Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, "已开始从 FDEX 服务端下载更新", Toast.LENGTH_SHORT).show()
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context, intent: Intent) {
@@ -71,6 +72,12 @@ object ApkUpdater {
                         return
                     }
                 }
+
+                if (!verifyDownloadedApk(destination, release)) {
+                    destination.delete()
+                    Toast.makeText(receiverContext, "更新包校验失败，请重新下载", Toast.LENGTH_LONG).show()
+                    return
+                }
                 installApk(receiverContext, destination)
             }
         }
@@ -82,6 +89,24 @@ object ApkUpdater {
             @Suppress("DEPRECATION")
             appContext.registerReceiver(receiver, filter)
         }
+    }
+
+    private fun verifyDownloadedApk(file: File, release: ReleaseInfo): Boolean {
+        if (!file.exists() || file.length() <= 0L) return false
+        if (release.size > 0L && file.length() != release.size) return false
+        if (release.sha256.isBlank()) return true
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count <= 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        return actual.equals(release.sha256.trim(), ignoreCase = true)
     }
 
     private fun installApk(context: Context, file: File) {
