@@ -6,8 +6,10 @@
 /opt/fdex/                  # Git 仓库
 /opt/fdex/server/.env       # 服务端私密配置，不提交 Git
 /etc/systemd/system/fdex.service
-宝塔网站：fdex.k2n.cn -> 127.0.0.1:8000
+宝塔网站：fdex.k2n.cn -> 127.0.0.1:18080
 ```
+
+FDEX 默认使用独立端口 `18080`，而不是常见的 `8000`。端口只监听本机，不需要开放服务器安全组。
 
 ## 一、首次部署
 
@@ -31,6 +33,10 @@ PUBLIC_BASE_URL=https://fdex.k2n.cn
 API_PREFIX=/api
 CORS_ORIGINS=https://fdex.k2n.cn
 
+FDEX_HOST=127.0.0.1
+FDEX_PORT=18080
+FDEX_WORKERS=2
+
 AI_PROVIDER=openai_compatible
 AI_BASE_URL=https://你的接口地址/v1
 AI_API_KEY=你的密钥
@@ -45,13 +51,44 @@ cd /opt/fdex
 sudo bash scripts/update_server.sh
 ```
 
+更新脚本在启动前会检查 `FDEX_PORT`。如果该端口已经被其他服务使用，脚本只显示占用进程并退出，不会结束其他服务。
+
 验证本机服务：
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:18080/api/health
 ```
 
-## 二、宝塔站点配置
+## 二、端口冲突处理
+
+检查默认端口：
+
+```bash
+ss -lntp 'sport = :18080'
+```
+
+如果有输出，在 `/opt/fdex/server/.env` 中改成其他空闲端口，例如：
+
+```dotenv
+FDEX_PORT=18081
+```
+
+然后宝塔反向代理也必须同步改为：
+
+```text
+http://127.0.0.1:18081
+```
+
+重新执行：
+
+```bash
+cd /opt/fdex
+sudo bash scripts/update_server.sh
+```
+
+不要使用 `kill`、`pkill` 或结束占用进程，除非你确认那个进程本来就应该停止。
+
+## 三、宝塔站点配置
 
 在宝塔面板打开：
 
@@ -59,10 +96,10 @@ curl http://127.0.0.1:8000/api/health
 网站 -> fdex.k2n.cn -> 设置 -> 反向代理
 ```
 
-目标 URL：
+默认目标 URL：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:18080
 ```
 
 也可以把 `deploy/baota/nginx-location.conf` 中的配置放入该站点的 `server {}` 内。
@@ -83,7 +120,7 @@ https://fdex.k2n.cn/
 https://fdex.k2n.cn/docs
 ```
 
-## 三、以后更新服务端
+## 四、以后更新服务端
 
 每次 GitHub `main` 更新后，在服务器执行：
 
@@ -97,12 +134,13 @@ sudo bash scripts/update_server.sh
 1. 备份 `server/.env`
 2. 拉取 GitHub `main`
 3. 恢复 `.env`
-4. 更新 Python 依赖
-5. 安装或更新 systemd 服务
-6. 重启 FDEX
-7. 检查 `/api/health`
+4. 读取并验证 `FDEX_PORT`
+5. 停止旧的 FDEX systemd 服务
+6. 检查端口是否被其他服务占用
+7. 更新 Python 依赖和 systemd 服务
+8. 重启 FDEX 并检查 `/api/health`
 
-## 四、常用维护命令
+## 五、常用维护命令
 
 ```bash
 systemctl status fdex
@@ -111,15 +149,15 @@ journalctl -u fdex -n 100 --no-pager
 journalctl -u fdex -f
 ```
 
-检查监听端口：
+检查默认监听端口：
 
 ```bash
-ss -lntp | grep 8000
+ss -lntp 'sport = :18080'
 ```
 
-服务只应监听 `127.0.0.1:8000`，不需要在服务器安全组中开放 8000 端口。
+服务默认只监听 `127.0.0.1:18080`，不需要在服务器安全组中开放 `18080`。
 
-## 五、Android 服务地址
+## 六、Android 服务地址
 
 Android 默认编译地址：
 

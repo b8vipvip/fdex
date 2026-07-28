@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.main import app
 
 client = TestClient(app)
@@ -32,3 +33,8 @@ def test_public_config_never_exposes_api_key() -> None:
     assert payload["public_base_url"]
     assert "api_key" not in payload
     assert "ai_base_url" not in payload
+
+
+def test_default_server_port_is_isolated() -> None:
+    assert get_settings().fdex_host == "127.0.0.1"
+    assert get_settings().fdex_port == 18080

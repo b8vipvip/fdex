@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,11 @@ class Settings(BaseSettings):
     public_base_url: str = "https://fdex.k2n.cn"
     api_prefix: str = "/api"
     cors_origins: str = "https://fdex.k2n.cn"
+
+    # FDEX uses its own loopback-only port. Change FDEX_PORT when the default is occupied.
+    fdex_host: str = "127.0.0.1"
+    fdex_port: int = Field(default=18080, ge=1, le=65535)
+    fdex_workers: int = Field(default=2, ge=1, le=16)
 
     # Third-party AI/API credentials are server-only. Never return api_key to clients.
     ai_provider: str = "openai_compatible"
