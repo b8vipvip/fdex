@@ -75,6 +75,8 @@ if not values.get("ADMIN_SESSION_HOURS", "").strip():
     updates["ADMIN_SESSION_HOURS"] = "12"
 if not values.get("ADMIN_LOG_LINES", "").strip():
     updates["ADMIN_LOG_LINES"] = "300"
+if not values.get("RELEASE_CACHE_DIR", "").strip():
+    updates["RELEASE_CACHE_DIR"] = "/opt/fdex/server/data/releases"
 
 remaining = dict(updates)
 output: list[str] = []
@@ -129,11 +131,16 @@ ADMIN_USERNAME="$(read_env_value ADMIN_USERNAME)"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 PUBLIC_BASE_URL="$(read_env_value PUBLIC_BASE_URL)"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fdex.k2n.cn}"
+RELEASE_CACHE_DIR="$(read_env_value RELEASE_CACHE_DIR)"
+RELEASE_CACHE_DIR="${RELEASE_CACHE_DIR:-${APP_DIR}/server/data/releases}"
 
 if ! [[ "${FDEX_PORT}" =~ ^[0-9]+$ ]] || (( FDEX_PORT < 1 || FDEX_PORT > 65535 )); then
   echo "server/.env 中 FDEX_PORT=${FDEX_PORT} 无效，必须是 1-65535。" >&2
   exit 1
 fi
+
+mkdir -p "${RELEASE_CACHE_DIR}"
+chmod 755 "${RELEASE_CACHE_DIR}"
 
 # Stop only our own service. Never terminate an unrelated process occupying the selected port.
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
@@ -150,9 +157,15 @@ python3 -m venv "${APP_DIR}/server/.venv"
 "${APP_DIR}/server/.venv/bin/pip" install -r "${APP_DIR}/server/requirements.txt"
 
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+install -m 0644 "${APP_DIR}/deploy/systemd/fdex-release-sync.service" "/etc/systemd/system/fdex-release-sync.service"
+install -m 0644 "${APP_DIR}/deploy/systemd/fdex-release-sync.timer" "/etc/systemd/system/fdex-release-sync.timer"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
+systemctl enable --now fdex-release-sync.timer
 systemctl restart "${SERVICE_NAME}.service"
+
+# Try once immediately. Failure is non-fatal because the timer keeps retrying every minute.
+systemctl start fdex-release-sync.service 2>/dev/null || true
 
 for _ in {1..30}; do
   if curl --silent --fail "http://127.0.0.1:${FDEX_PORT}/api/health" >/dev/null; then
@@ -160,6 +173,9 @@ for _ in {1..30}; do
     curl --silent "http://127.0.0.1:${FDEX_PORT}/api/health"
     echo
     echo "管理后台：${PUBLIC_BASE_URL}/admin"
+    echo "APK 更新接口：${PUBLIC_BASE_URL}/api/client/update"
+    echo "APK 缓存目录：${RELEASE_CACHE_DIR}"
+    echo "GitHub Release 轮询：每 60 秒自动检查一次"
     echo "管理员用户名：${ADMIN_USERNAME}"
     if [[ -n "${GENERATED_ADMIN_PASSWORD}" ]]; then
       echo "首次生成的管理员密码：${GENERATED_ADMIN_PASSWORD}"
