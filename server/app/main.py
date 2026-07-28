@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin_routes import router as admin_router
+from app.client_ai import router as client_ai_router
 from app.config import SERVER_DIR, get_settings
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
@@ -45,6 +46,7 @@ app.add_middleware(
 static_dir = Path(SERVER_DIR) / "app" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.include_router(admin_router)
+app.include_router(client_ai_router)
 
 
 @app.get("/", include_in_schema=False)
