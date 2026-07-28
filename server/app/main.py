@@ -12,6 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin_routes import router as admin_router
 from app.client_ai import router as client_ai_router
+from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
@@ -44,9 +45,13 @@ app.add_middleware(
 )
 
 static_dir = Path(SERVER_DIR) / "app" / "static"
+release_dir = Path(settings.release_cache_dir)
+release_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.include_router(admin_router)
 app.include_router(client_ai_router)
+app.include_router(client_update_router)
 
 
 @app.get("/", include_in_schema=False)
