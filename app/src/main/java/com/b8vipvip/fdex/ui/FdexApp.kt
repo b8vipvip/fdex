@@ -33,8 +33,8 @@ import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.network.ServerApi
 import com.b8vipvip.fdex.network.ServerCheckResult
 import com.b8vipvip.fdex.update.ApkUpdater
-import com.b8vipvip.fdex.update.GitHubUpdateService
 import com.b8vipvip.fdex.update.ReleaseInfo
+import com.b8vipvip.fdex.update.ServerUpdateService
 import com.b8vipvip.fdex.update.UpdateCheckResult
 import com.b8vipvip.fdex.update.UpdatePreferences
 import kotlinx.coroutines.launch
@@ -84,7 +84,7 @@ fun FdexApp() {
     suspend fun checkUpdate(manual: Boolean) {
         if (updateChecking) return
         updateChecking = true
-        when (val result = GitHubUpdateService.checkForUpdate(BuildConfig.VERSION_NAME)) {
+        when (val result = ServerUpdateService.checkForUpdate(BuildConfig.VERSION_NAME)) {
             is UpdateCheckResult.UpdateAvailable -> availableRelease = result.release
             UpdateCheckResult.UpToDate -> if (manual) snackbar.showSnackbar("当前已是最新版本")
             is UpdateCheckResult.Failed -> if (manual) snackbar.showSnackbar(result.message)
@@ -198,13 +198,12 @@ fun FdexApp() {
         AlertDialog(
             onDismissRequest = { availableRelease = null },
             title = { Text("发现新版本 ${release.normalizedVersion}") },
-            text = { Text(release.body.ifBlank { "GitHub 已发布新版本。" }.take(800)) },
+            text = { Text(release.body.ifBlank { "FDEX 服务端已同步新版本。" }.take(800)) },
             confirmButton = {
                 Button(onClick = {
-                    if (release.apkUrl != null) ApkUpdater.downloadAndInstall(context, release)
-                    else ApkUpdater.openReleasePage(context, release.htmlUrl)
+                    ApkUpdater.downloadAndInstall(context, release)
                     availableRelease = null
-                }) { Text(if (release.apkUrl != null) "立即更新" else "打开发布页") }
+                }) { Text("立即更新") }
             },
             dismissButton = { TextButton(onClick = { availableRelease = null }) { Text("稍后") } },
         )

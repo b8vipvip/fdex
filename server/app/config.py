@@ -35,7 +35,11 @@ class Settings(BaseSettings):
     admin_cookie_secure: bool = True
     admin_session_hours: int = Field(default=12, ge=1, le=168)
 
+    # GitHub is only used by the server-side release synchronizer. Android never talks to GitHub.
     github_repo: str = "b8vipvip/fdex"
+    github_token: str = ""
+    release_cache_dir: str = str(SERVER_DIR / "data" / "releases")
+
     app_dir: str = "/opt/fdex"
     service_name: str = "fdex"
     admin_log_lines: int = Field(default=300, ge=50, le=2000)

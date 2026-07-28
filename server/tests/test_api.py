@@ -1,5 +1,7 @@
+import json
 import os
 import re
+from pathlib import Path
 
 os.environ["ENVIRONMENT"] = "test"
 os.environ["ADMIN_USERNAME"] = "testadmin"
@@ -8,6 +10,7 @@ os.environ["ADMIN_SESSION_SECRET"] = "test-session-secret-that-is-longer-than-32
 os.environ["ADMIN_COOKIE_SECURE"] = "false"
 os.environ["APP_DIR"] = "/tmp/fdex-test"
 os.environ["SERVICE_NAME"] = "fdex-test"
+os.environ["RELEASE_CACHE_DIR"] = "/tmp/fdex-test/releases"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -79,11 +82,61 @@ def test_public_config_never_exposes_secrets() -> None:
     assert "ai_base_url" not in payload
     assert "admin_password" not in payload
     assert "admin_session_secret" not in payload
+    assert "github_token" not in payload
 
 
 def test_default_server_port_is_isolated() -> None:
     assert get_settings().fdex_host == "127.0.0.1"
     assert get_settings().fdex_port == 18080
+
+
+def test_update_endpoint_waits_when_cache_is_empty() -> None:
+    release_dir = Path(os.environ["RELEASE_CACHE_DIR"])
+    release_dir.mkdir(parents=True, exist_ok=True)
+    for child in release_dir.iterdir():
+        if child.is_file():
+            child.unlink()
+    response = client.get("/api/client/update?current_version=1.0.0")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["status"] == "waiting_for_server_cache"
+
+
+def test_update_endpoint_serves_cached_release() -> None:
+    release_dir = Path(os.environ["RELEASE_CACHE_DIR"])
+    release_dir.mkdir(parents=True, exist_ok=True)
+    apk = release_dir / "fdex-1.1.0.apk"
+    apk.write_bytes(b"fake-apk-for-api-test")
+    manifest = {
+        "tag_name": "v1.1.0",
+        "version": "1.1.0",
+        "name": "FDEX 1.1.0",
+        "body": "test release",
+        "published_at": "2026-07-28T00:00:00Z",
+        "filename": apk.name,
+        "sha256": "abc123",
+        "size": apk.stat().st_size,
+        "synced_at": "2026-07-28T00:01:00Z",
+    }
+    (release_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    response = client.get("/api/client/update?current_version=1.0.0")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["latest_version"] == "1.1.0"
+    assert payload["apk_url"].endswith("/downloads/fdex-1.1.0.apk")
+
+    download = client.get("/downloads/fdex-1.1.0.apk")
+    assert download.status_code == 200
+    assert download.content == b"fake-apk-for-api-test"
+
+
+def test_update_endpoint_reports_up_to_date() -> None:
+    response = client.get("/api/client/update?current_version=1.1.0")
+    assert response.status_code == 200
+    assert response.json()["available"] is False
 
 
 def test_admin_requires_login() -> None:
