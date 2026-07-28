@@ -8,6 +8,8 @@ FDEX 已重构为 **Android 原生客户端 + FastAPI 服务端**。旧的 `ai-b
 .
 ├── app/                    # Android 客户端（Kotlin + Jetpack Compose）
 ├── server/                 # FastAPI 服务端
+├── deploy/                 # systemd 与宝塔配置
+├── scripts/                # 服务端更新脚本
 ├── .github/workflows/      # GitHub Actions 构建与发布
 ├── build.gradle.kts
 ├── settings.gradle.kts
@@ -24,6 +26,7 @@ FDEX 已重构为 **Android 原生客户端 + FastAPI 服务端**。旧的 `ai-b
 - App 启动时每 6 小时自动检查一次更新
 - 发现新版本时弹出更新提示
 - 可从 GitHub Release 下载 APK 并调用系统安装器更新
+- 默认通过 `https://fdex.k2n.cn` 访问服务端
 
 ### 本地构建
 
@@ -43,16 +46,34 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ```bash
 cd server
+cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m app.run
 ```
+
+默认监听：
+
+```text
+127.0.0.1:18080
+```
+
+服务端端口由 `server/.env` 配置：
+
+```dotenv
+FDEX_HOST=127.0.0.1
+FDEX_PORT=18080
+FDEX_WORKERS=2
+```
+
+端口被占用时，修改 `FDEX_PORT` 并同步修改宝塔反向代理，不要结束其他服务。完整部署步骤见 `docs/BAOTA_DEPLOY.md`。
 
 接口：
 
 - `GET /api/health`
 - `GET /api/version`
+- `GET /api/public-config`
 
 ## GitHub Actions
 
