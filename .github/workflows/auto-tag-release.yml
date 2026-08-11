@@ -1,0 +1,45 @@
+name: Auto Tag Release
+
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      contains(github.event.workflow_run.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Create next patch tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          LATEST="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+          if [[ -z "$LATEST" ]]; then
+            NEXT="v1.0.0"
+          else
+            VERSION="${LATEST#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            NEXT="v${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
+          fi
+          if git rev-parse "$NEXT" >/dev/null 2>&1; then
+            echo "$NEXT already exists; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$NEXT" "${{ github.event.workflow_run.head_sha }}"
+          git push origin "$NEXT"
+          echo "Created release tag $NEXT"
