@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/fdex/server
-EnvironmentFile=/opt/fdex/server/.env
 ExecStart=/opt/fdex/server/.venv/bin/python -m app.run
 Restart=always
 RestartSec=5
