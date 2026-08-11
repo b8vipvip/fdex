@@ -13,7 +13,7 @@ sealed interface AiGatewayResult {
 }
 
 object ClientAiApi {
-    suspend fun ask(system: String, prompt: String, maxTokens: Int = 1200): AiGatewayResult = withContext(Dispatchers.IO) {
+    suspend fun ask(system: String?, prompt: String, maxTokens: Int = 1200): AiGatewayResult = withContext(Dispatchers.IO) {
         val connection = runCatching {
             URL("${BuildConfig.SERVER_BASE_URL}/api/client/ai").openConnection() as HttpURLConnection
         }.getOrElse { return@withContext AiGatewayResult.Failure("服务地址无效") }
@@ -26,11 +26,10 @@ object ClientAiApi {
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             val payload = JSONObject()
-                .put("system", system)
                 .put("prompt", prompt)
                 .put("max_tokens", maxTokens.coerceIn(32, 4000))
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            if (!system.isNullOrBlank()) payload.put("system", system)
+            connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
