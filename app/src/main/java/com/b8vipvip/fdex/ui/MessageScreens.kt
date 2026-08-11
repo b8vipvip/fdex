@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.ChatMessage
 import com.b8vipvip.fdex.data.Employee
+import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.ClientAiApi
 import kotlinx.coroutines.launch
@@ -151,7 +152,8 @@ internal fun EmployeeChatScreen(
                     onChanged()
                     busy = true
                     scope.launch {
-                        val system = "你是 FDEX AI 虚拟公司的员工：${employee.name}，职位：${employee.position}，部门：${employee.department}。${employee.rolePrompt}。像真实同事一样简洁、主动、可执行地回答。"
+                        val system = if (employee.isPrivateAssistant()) null else
+                            "你是 FDEX AI 虚拟公司的员工：${employee.name}，职位：${employee.position}，部门：${employee.department}。${employee.rolePrompt}。像真实同事一样简洁、主动、可执行地回答。"
                         when (val result = ClientAiApi.ask(system, prompt)) {
                             is AiGatewayResult.Success -> repo.addMessage(employeeId, "employee", result.content)
                             is AiGatewayResult.Failure -> {
@@ -222,9 +224,14 @@ internal fun EmployeeManageScreen(
                     Avatar(employeeEmoji(employee))
                     Column(Modifier.weight(1f).padding(start = 10.dp).clickable { onChat(employee.id) }) {
                         Text("${employee.name} · ${employee.position}", fontWeight = FontWeight.SemiBold)
-                        Text("${employee.department}${if (employee.materialManager) " · 系统资料员" else ""}", color = Muted)
+                        val systemLabel = when {
+                            employee.isPrivateAssistant() -> " · 内置私人助理"
+                            employee.materialManager -> " · 系统资料员"
+                            else -> ""
+                        }
+                        Text("${employee.department}$systemLabel", color = Muted)
                     }
-                    if (!employee.materialManager) {
+                    if (!employee.materialManager && !employee.isPrivateAssistant()) {
                         TextButton(onClick = { repo.resignEmployee(employee.id); onChanged() }) { Text("离职") }
                     }
                 }
@@ -356,10 +363,9 @@ internal fun GroupChatScreen(
                         val reply = if (target == null) {
                             "当前群里还没有 AI 员工。"
                         } else {
-                            when (val result = ClientAiApi.ask(
-                                "你是工作群里的${target.position} ${target.name}。${target.rolePrompt}。从团队协作角度简洁、可执行地回复。",
-                                prompt,
-                            )) {
+                            val system = if (target.isPrivateAssistant()) null else
+                                "你是工作群里的${target.position} ${target.name}。${target.rolePrompt}。从团队协作角度简洁、可执行地回复。"
+                            when (val result = ClientAiApi.ask(system, prompt)) {
                                 is AiGatewayResult.Success -> result.content
                                 is AiGatewayResult.Failure -> {
                                     snackbar.showSnackbar(result.message)
