@@ -93,6 +93,14 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "fdex-${{ steps.version.outputs.name }}.apk"
           sha256sum "fdex-${{ steps.version.outputs.name }}.apk"
 
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdex-${{ steps.version.outputs.name }}-release-apk
+          path: fdex-${{ steps.version.outputs.name }}.apk
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
