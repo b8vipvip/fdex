@@ -38,7 +38,7 @@ private data class ChatMarkdownLine(
 )
 
 @Composable
-internal fun ChatMarkdownText(
+internal fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.onSurface,
