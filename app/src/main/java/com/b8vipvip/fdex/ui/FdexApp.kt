@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -72,13 +74,16 @@ fun FdexApp() {
     var availableRelease by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateChecking by remember { mutableStateOf(false) }
     var serverStatus by remember { mutableStateOf("检测中…") }
+    var employeeMenu by remember { mutableStateOf(false) }
 
     fun touch() { revision++ }
     fun go(next: Route, keepCurrent: Boolean = true) {
         if (keepCurrent && route != next) history.add(route)
+        employeeMenu = false
         route = next
     }
     fun back() {
+        employeeMenu = false
         route = if (history.isNotEmpty()) history.removeAt(history.lastIndex) else Route.Messages
     }
     suspend fun checkUpdate(manual: Boolean) {
@@ -132,9 +137,34 @@ fun FdexApp() {
                         if (!mainTab) TextButton(onClick = { back() }) { Text("‹", fontSize = 30.sp) }
                     },
                     actions = {
-                        when (route) {
+                        when (val current = route) {
                             Route.Messages -> TextButton(onClick = { go(Route.NewGroup) }) { Text("＋", fontSize = 26.sp) }
                             Route.Work -> TextButton(onClick = { go(Route.NewProject) }) { Text("＋", fontSize = 26.sp) }
+                            is Route.EmployeeChat -> {
+                                Box {
+                                    TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
+                                    DropdownMenu(
+                                        expanded = employeeMenu,
+                                        onDismissRequest = { employeeMenu = false },
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("员工管理") },
+                                            onClick = {
+                                                employeeMenu = false
+                                                go(Route.Employees)
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("清空聊天记录") },
+                                            onClick = {
+                                                repo.clearMessages(current.id)
+                                                employeeMenu = false
+                                                touch()
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                             else -> Unit
                         }
                     },
@@ -153,7 +183,7 @@ fun FdexApp() {
                     ).forEach { (target, icon, label) ->
                         NavigationBarItem(
                             selected = route == target,
-                            onClick = { history.clear(); route = target },
+                            onClick = { history.clear(); employeeMenu = false; route = target },
                             icon = { Text(icon, fontSize = 20.sp) },
                             label = { Text(label) },
                         )
@@ -179,7 +209,7 @@ fun FdexApp() {
                     onAbout = { go(Route.About) },
                     onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
                 )
-                is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, onOpenManage = { go(Route.Employees) }, snackbar = snackbar)
+                is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Employees -> EmployeeManageScreen(repo, revision, onAdd = { go(Route.AddEmployee) }, onChat = { go(Route.EmployeeChat(it)) }, onChanged = { touch() })
                 Route.AddEmployee -> AddEmployeeScreen(repo) { touch(); back() }
                 Route.NewProject -> NewProjectScreen(repo) { id -> touch(); go(Route.ProjectDetail(id), keepCurrent = false) }
