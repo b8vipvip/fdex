@@ -52,8 +52,9 @@ def _sse(event_type: str, **payload: Any) -> str:
 def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
     """Return public status, public reasoning summary delta, and answer delta.
 
-    FDEX deliberately does not attempt to expose hidden chain-of-thought. It only
-    forwards status/reasoning fields that the upstream API explicitly returns.
+    FDEX deliberately does not expose hidden chain-of-thought. It only forwards
+    status or reasoning-summary fields that the upstream protocol explicitly
+    marks as user-visible summaries.
     """
     status = ""
     reasoning = ""
@@ -62,7 +63,11 @@ def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
     extension = data.get("chat2api")
     if isinstance(extension, dict):
         status = str(extension.get("reasoning_status") or extension.get("status") or "")
-        reasoning = str(extension.get("reasoning_summary") or extension.get("reasoning_delta") or "")
+        reasoning = str(
+            extension.get("reasoning_summary_delta")
+            or extension.get("reasoning_summary")
+            or ""
+        )
 
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
@@ -73,18 +78,16 @@ def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
             if isinstance(value, str):
                 content = value
             if not reasoning:
-                for key in ("reasoning_summary", "reasoning_content", "reasoning"):
-                    value = delta.get(key)
-                    if isinstance(value, str) and value:
-                        reasoning = value
-                        break
+                value = delta.get("reasoning_summary")
+                if isinstance(value, str):
+                    reasoning = value
             if not status:
                 value = delta.get("reasoning_status")
                 if isinstance(value, str):
                     status = value
 
-    # Be tolerant of Responses-style public streaming events if an upstream
-    # compatibility layer forwards them through the same SSE connection.
+    # Responses-style events are only accepted when they explicitly identify
+    # the public reasoning summary channel.
     event_type = str(data.get("type") or "")
     if event_type == "response.output_text.delta":
         value = data.get("delta")
