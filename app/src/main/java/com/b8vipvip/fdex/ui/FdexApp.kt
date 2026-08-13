@@ -179,13 +179,13 @@ fun FdexApp() {
                     onAbout = { go(Route.About) },
                     onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
                 )
-                is Route.EmployeeChat -> EmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, onOpenManage = { go(Route.Employees) }, snackbar = snackbar)
+                is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, onOpenManage = { go(Route.Employees) }, snackbar = snackbar)
                 Route.Employees -> EmployeeManageScreen(repo, revision, onAdd = { go(Route.AddEmployee) }, onChat = { go(Route.EmployeeChat(it)) }, onChanged = { touch() })
                 Route.AddEmployee -> AddEmployeeScreen(repo) { touch(); back() }
                 Route.NewProject -> NewProjectScreen(repo) { id -> touch(); go(Route.ProjectDetail(id), keepCurrent = false) }
                 is Route.ProjectDetail -> ProjectDetailScreen(repo, current.id, revision, onChanged = { touch() }, onGroup = { go(Route.GroupChat(it)) }, snackbar = snackbar)
                 Route.NewGroup -> NewGroupScreen(repo) { id -> touch(); go(Route.GroupChat(id), keepCurrent = false) }
-                is Route.GroupChat -> GroupChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
+                is Route.GroupChat -> StreamingGroupChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Account -> AccountScreen(repo, onChanged = { touch() }, snackbar = snackbar)
                 Route.Settings -> SettingsScreen(repo, revision, onAbout = { go(Route.About) }, onChanged = { touch() })
                 Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
