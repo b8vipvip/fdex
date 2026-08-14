@@ -5,7 +5,7 @@ import os
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
@@ -14,15 +14,21 @@ from typing import Any, Iterable, Iterator
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import SERVER_DIR, fresh_settings
+from app.config import fresh_settings
 
 DEFAULT_PROTOCOLS = ["chat", "responses", "legacy"]
-DB_PATH = SERVER_DIR / "data" / "ai-providers.db"
-KEY_PATH = SERVER_DIR / "data" / "ai-providers.key"
+_RUNTIME = fresh_settings()
+_DATA_DIR = Path(_RUNTIME.app_dir) / "server" / "data"
+DB_PATH = _DATA_DIR / "ai-providers.db"
+KEY_PATH = _DATA_DIR / "ai-providers.key"
+
+
+def _now_dt() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return _now_dt().isoformat(timespec="seconds")
 
 
 def normalize_base_url(value: str) -> str:
@@ -210,13 +216,19 @@ class ProviderStore:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     name, base_url, self.encrypt(str(values.get("api_key") or "").strip()),
-                    1 if values.get("enabled", True) else 0, max(1, int(values.get("priority") or 100)),
-                    str(values.get("main_text_model") or "").strip(), _json(self._models(values.get("backup_text_models"))),
-                    str(values.get("main_vision_model") or "").strip(), _json(self._models(values.get("backup_vision_models"))),
-                    _json(self._protocols(values.get("protocol_order"))), "{}",
+                    1 if values.get("enabled", True) else 0,
+                    max(1, int(values.get("priority") or 100)),
+                    str(values.get("main_text_model") or "").strip(),
+                    _json(self._models(values.get("backup_text_models"))),
+                    str(values.get("main_vision_model") or "").strip(),
+                    _json(self._models(values.get("backup_vision_models"))),
+                    _json(self._protocols(values.get("protocol_order"))),
+                    "{}",
                     max(5, min(600, int(values.get("timeout_seconds") or 60))),
                     1 if values.get("auto_test_enabled", False) else 0,
-                    max(1, min(720, int(values.get("auto_test_interval_hours") or 12))), now, now,
+                    max(1, min(720, int(values.get("auto_test_interval_hours") or 12))),
+                    now,
+                    now,
                 ),
             )
             provider_id = int(cur.lastrowid)
@@ -237,7 +249,10 @@ class ProviderStore:
                     protocol_order_json=?,timeout_seconds=?,auto_test_enabled=?,auto_test_interval_hours=?,updated_at=?
                     WHERE id=?""",
                 (
-                    name, base_url, self.encrypt(key), 1 if values.get("enabled", old["enabled"]) else 0,
+                    name,
+                    base_url,
+                    self.encrypt(key),
+                    1 if values.get("enabled", old["enabled"]) else 0,
                     max(1, int(values.get("priority", old["priority"]))),
                     str(values.get("main_text_model", old["main_text_model"])).strip(),
                     _json(self._models(values.get("backup_text_models", old["backup_text_models"]))),
@@ -246,8 +261,9 @@ class ProviderStore:
                     _json(self._protocols(values.get("protocol_order", old["protocol_order"]))),
                     max(5, min(600, int(values.get("timeout_seconds", old["timeout_seconds"])))),
                     1 if values.get("auto_test_enabled", old["auto_test_enabled"]) else 0,
-                    max(1, min(720, int(values.get("auto_test_interval_hours", old["auto_test_interval_hours"]))),
-                    _now(), provider_id,
+                    max(1, min(720, int(values.get("auto_test_interval_hours", old["auto_test_interval_hours"])))),
+                    _now(),
+                    provider_id,
                 ),
             )
         return self.get(provider_id)
@@ -262,17 +278,32 @@ class ProviderStore:
         with self.db() as conn:
             conn.execute("DELETE FROM providers WHERE id=?", (provider_id,))
 
-    def record_probe(self, provider_id: int, *, status: str, latency_ms: int, capabilities: dict[str, Any] | None = None, main_model: str | None = None, backups: Iterable[str] | None = None, protocols: Iterable[str] | None = None) -> None:
+    def record_probe(
+        self,
+        provider_id: int,
+        *,
+        status: str,
+        latency_ms: int,
+        capabilities: dict[str, Any] | None = None,
+        main_model: str | None = None,
+        backups: Iterable[str] | None = None,
+        protocols: Iterable[str] | None = None,
+    ) -> None:
         old = self.get(provider_id)
         with self.db() as conn:
             conn.execute(
                 """UPDATE providers SET last_status=?,last_latency_ms=?,last_test_at=?,model_capabilities_json=?,
                     main_text_model=?,backup_text_models_json=?,protocol_order_json=?,updated_at=? WHERE id=?""",
                 (
-                    status, int(latency_ms), _now(), _json(capabilities if capabilities is not None else old["model_capabilities"]),
+                    status,
+                    int(latency_ms),
+                    _now(),
+                    _json(capabilities if capabilities is not None else old["model_capabilities"]),
                     old["main_text_model"] if main_model is None else main_model,
                     _json(old["backup_text_models"] if backups is None else self._models(backups)),
-                    _json(old["protocol_order"] if protocols is None else self._protocols(protocols)), _now(), provider_id,
+                    _json(old["protocol_order"] if protocols is None else self._protocols(protocols)),
+                    _now(),
+                    provider_id,
                 ),
             )
 
@@ -309,18 +340,28 @@ def provider_stats() -> dict[str, int]:
 
 
 def model_candidates(provider: dict[str, Any]) -> list[str]:
-    return list(dict.fromkeys(x for x in [provider.get("main_text_model", ""), *(provider.get("backup_text_models") or [])] if x))
+    values = [provider.get("main_text_model", ""), *(provider.get("backup_text_models") or [])]
+    return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
 
 
 def _api_roots(base_url: str) -> list[str]:
     base = normalize_base_url(base_url)
     if base.endswith("/v1"):
-        return [base, base[:-3].rstrip("/")]
-    return [base + "/v1", base]
+        roots = [base, base[:-3].rstrip("/")]
+    else:
+        roots = [base + "/v1", base]
+    return list(dict.fromkeys(x for x in roots if x))
 
 
 def _extract_models(data: Any) -> list[str]:
-    items = data.get("data") if isinstance(data, dict) else data
+    items: Any = None
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), list):
+            items = data["data"]
+        elif isinstance(data.get("models"), list):
+            items = data["models"]
+    elif isinstance(data, list):
+        items = data
     if not isinstance(items, list):
         return []
     out: list[str] = []
@@ -339,7 +380,20 @@ def _extract_chat(data: dict[str, Any]) -> str:
         value = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return ""
-    return value.strip() if isinstance(value, str) else ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "".join(
+            str(item.get("text") or item.get("content") or "")
+            for item in value
+            if isinstance(item, dict)
+        ).strip()
+    return ""
+
+
+def _version_key(model: str) -> tuple[int, ...]:
+    numbers = [int(x) for x in re.findall(r"\d+", model)]
+    return tuple(numbers[:6]) if numbers else (0,)
 
 
 async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, Any]:
@@ -347,7 +401,7 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
     provider = store.get(provider_id, include_secret=True)
     if not provider.get("api_key"):
         store.record_probe(provider_id, status="失败：API Key 未配置", latency_ms=0)
-        return {"ok": False, "message": "API Key 未配置", "models": []}
+        return {"ok": False, "message": "API Key 未配置", "models": [], "latency_ms": 0}
 
     started = perf_counter()
     discovered: list[str] = []
@@ -355,7 +409,10 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
         for root in _api_roots(provider["base_url"]):
             try:
                 async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
-                    response = await client.get(root.rstrip("/") + "/models", headers={"Authorization": f"Bearer {provider['api_key']}", "Accept": "application/json"})
+                    response = await client.get(
+                        root.rstrip("/") + "/models",
+                        headers={"Authorization": f"Bearer {provider['api_key']}", "Accept": "application/json"},
+                    )
                 if response.is_success:
                     discovered = _extract_models(response.json())
                     if discovered:
@@ -367,51 +424,110 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
     models = discovered if discovered else configured
     if mode != "deep":
         models = configured[:1]
+    models = list(dict.fromkeys(models))[:20]
     if not models:
         store.record_probe(provider_id, status="失败：没有可测试模型", latency_ms=0)
-        return {"ok": False, "message": "没有可测试模型", "models": []}
+        return {"ok": False, "message": "没有可测试模型", "models": [], "latency_ms": 0}
 
     results: list[dict[str, Any]] = []
     capabilities = dict(provider.get("model_capabilities") or {})
-    # Protect the web request from unexpectedly testing hundreds of discovered models.
-    for model in models[:20]:
+    for model in models:
         caps = dict(capabilities.get(model) or {})
-        for protocol in provider["protocol_order"]:
-            if protocol != "chat":
-                # FDEX currently serves chat2api through Chat Completions; record other protocols as unverified.
-                caps.setdefault(protocol, False)
-                if mode != "deep":
-                    continue
-            url = provider["base_url"].rstrip("/") + "/chat/completions"
-            marker = "FDEX_XAPI_OK"
-            payload = {"model": model, "messages": [{"role": "user", "content": f"Reply with {marker}."}], "max_tokens": 24, "temperature": 0, "stream": False}
-            one_started = perf_counter()
+        marker = "FDEX_XAPI_OK"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": f"Reply with {marker}."}],
+            "max_tokens": 24,
+            "temperature": 0,
+            "stream": False,
+        }
+        one_started = perf_counter()
+        success = False
+        error = ""
+        status_code: int | None = None
+        for root in _api_roots(provider["base_url"]):
+            url = root.rstrip("/") + "/chat/completions"
             try:
                 async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
-                    response = await client.post(url, headers={"Authorization": f"Bearer {provider['api_key']}", "Content-Type": "application/json"}, json=payload)
-                latency = int((perf_counter() - one_started) * 1000)
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {provider['api_key']}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                status_code = response.status_code
                 text = _extract_chat(response.json()) if response.is_success else ""
-                ok = bool(text)
-                caps["chat"] = ok
-                results.append({"model": model, "protocol": "chat", "ok": ok, "status": response.status_code, "latency_ms": latency, "preview": text[:120]})
+                success = bool(text)
+                error = "" if success else response.text[:180]
+                if success:
+                    break
             except (httpx.HTTPError, ValueError) as exc:
-                caps["chat"] = False
-                results.append({"model": model, "protocol": "chat", "ok": False, "error": str(exc)[:200]})
-            if mode != "deep":
-                break
+                error = str(exc)[:180]
+        latency = int((perf_counter() - one_started) * 1000)
+        caps["chat"] = success
+        caps.setdefault("responses", False)
+        caps.setdefault("legacy", False)
+        results.append({
+            "model": model,
+            "protocol": "chat",
+            "ok": success,
+            "status": status_code,
+            "latency_ms": latency,
+            "error": error,
+        })
         capabilities[model] = caps
 
-    usable = [model for model in models[:20] if capabilities.get(model, {}).get("chat")]
+    usable = [model for model in models if capabilities.get(model, {}).get("chat")]
     main = provider["main_text_model"]
     backups = provider["backup_text_models"]
     if mode == "deep" and usable:
         if main not in usable:
-            def version_key(value: str) -> tuple[int, ...]:
-                numbers = [int(x) for x in re.findall(r"\d+", value)]
-                return tuple(numbers[:6]) if numbers else (0,)
-            main = sorted(usable, key=version_key, reverse=True)[0]
-        backups = [x for x in usable if x != main]
+            main = sorted(usable, key=_version_key, reverse=True)[0]
+        backups = [x for x in sorted(usable, key=_version_key, reverse=True) if x != main]
+
     elapsed = int((perf_counter() - started) * 1000)
     ok = bool(usable)
-    store.record_probe(provider_id, status=(f"可用：{len(usable)} 个模型" if ok else "失败：主/备用模型不可用"), latency_ms=elapsed, capabilities=capabilities, main_model=main, backups=backups)
-    return {"ok": ok, "message": (f"发现 {len(usable)} 个可用模型" if ok else "未发现可用模型"), "models": usable, "results": results, "latency_ms": elapsed}
+    store.record_probe(
+        provider_id,
+        status=(f"可用：{len(usable)} 个模型" if ok else "失败：主/备用模型不可用"),
+        latency_ms=elapsed,
+        capabilities=capabilities,
+        main_model=main,
+        backups=backups,
+    )
+    return {
+        "ok": ok,
+        "message": (f"发现 {len(usable)} 个可用模型" if ok else "未发现可用模型"),
+        "models": usable,
+        "results": results,
+        "latency_ms": elapsed,
+    }
+
+
+def auto_test_due(provider: dict[str, Any], now: datetime | None = None) -> bool:
+    if not provider.get("enabled") or not provider.get("auto_test_enabled"):
+        return False
+    now = now or _now_dt()
+    last = provider.get("last_test_at")
+    if not last:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    hours = max(1, int(provider.get("auto_test_interval_hours") or 12))
+    return now >= parsed + timedelta(hours=hours)
+
+
+async def run_due_provider_tests() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for provider in provider_store().list():
+        if not auto_test_due(provider):
+            continue
+        try:
+            result = await probe_provider(int(provider["id"]), mode="deep")
+            results.append({"provider_id": provider["id"], "provider": provider["name"], **result})
+        except Exception as exc:
+            results.append({"provider_id": provider["id"], "provider": provider["name"], "ok": False, "message": str(exc)[:300]})
+    return results
