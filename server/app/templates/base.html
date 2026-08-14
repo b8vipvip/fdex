@@ -17,6 +17,7 @@
         </a>
         <nav class="nav-list" aria-label="后台导航">
             <a href="/admin" class="nav-item {% if current_path == '/admin' %}active{% endif %}"><span>◫</span>仪表盘</a>
+            <a href="/admin/providers" class="nav-item {% if current_path.startswith('/admin/providers') %}active{% endif %}"><span>AI</span>供应商管理</a>
             <a href="/admin/settings" class="nav-item {% if current_path.startswith('/admin/settings') %}active{% endif %}"><span>⚙</span>服务配置</a>
             <a href="/admin/logs" class="nav-item {% if current_path.startswith('/admin/logs') %}active{% endif %}"><span>≡</span>运行日志</a>
             <a href="/admin/maintenance" class="nav-item {% if current_path.startswith('/admin/maintenance') %}active{% endif %}"><span>↻</span>版本与维护</a>
