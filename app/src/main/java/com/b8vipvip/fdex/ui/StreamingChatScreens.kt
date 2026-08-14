@@ -1,24 +1,19 @@
 package com.b8vipvip.fdex.ui
 
-import androidx.compose.foundation.background
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,9 +24,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
@@ -42,6 +37,7 @@ import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.AiStreamEvent
 import com.b8vipvip.fdex.network.ClientAiApi
+import com.b8vipvip.fdex.network.parseChatContent
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -61,6 +57,7 @@ internal fun StreamingEmployeeChatScreen(
     snackbar: SnackbarHostState,
 ) {
     revision.hashCode()
+    val context = LocalContext.current
     val employee = repo.employee(employeeId) ?: return
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -96,24 +93,24 @@ internal fun StreamingEmployeeChatScreen(
             }
         }
 
-        ChatComposer(
+        AttachmentChatComposer(
             value = text,
             placeholder = "给员工安排任务…",
             busy = busy,
             onValueChange = { text = it },
-            onSend = {
-                val prompt = text.trim()
+            onSend = { messageContent ->
                 text = ""
-                repo.addMessage(employeeId, "user", prompt)
+                repo.addMessage(employeeId, "user", messageContent)
                 onChanged()
                 busy = true
                 streamMarkdown = ""
-                streamStatus = "正在连接 AI…"
+                streamStatus = "正在准备附件并连接 AI…"
                 streamReasoning = ""
                 scope.launch {
                     val result = collectStreamedReply(
+                        context = context,
                         system = employeeSystemPrompt(employee),
-                        prompt = prompt,
+                        prompt = messageContent,
                         onStatus = { streamStatus = it },
                         onMarkdown = { streamMarkdown = it },
                         onReasoning = { streamReasoning = it },
@@ -145,6 +142,7 @@ internal fun StreamingGroupChatScreen(
     snackbar: SnackbarHostState,
 ) {
     revision.hashCode()
+    val context = LocalContext.current
     val group = repo.group(groupId) ?: return
     val members = group.memberIds.mapNotNull { repo.employee(it) }
     val scope = rememberCoroutineScope()
@@ -195,33 +193,35 @@ internal fun StreamingGroupChatScreen(
             }
         }
 
-        ChatComposer(
+        AttachmentChatComposer(
             value = text,
             placeholder = "@员工 或安排团队任务…",
             busy = busy,
             onValueChange = { text = it },
-            onSend = {
-                val prompt = text.trim()
+            onSend = { messageContent ->
+                val visiblePrompt = parseChatContent(messageContent).text
                 text = ""
-                repo.addGroupMessage(groupId, "user", "我", prompt)
+                repo.addGroupMessage(groupId, "user", "我", messageContent)
                 onChanged()
-                val target = members.firstOrNull { prompt.contains("@${it.name}") || prompt.contains(it.position) }
-                    ?: members.firstOrNull()
+                val target = members.firstOrNull {
+                    visiblePrompt.contains("@${it.name}") || visiblePrompt.contains(it.position)
+                } ?: members.firstOrNull()
                 if (target == null) {
                     repo.addGroupMessage(groupId, "system", "", "当前群里还没有 AI 员工。")
                     onChanged()
-                    return@ChatComposer
+                    return@AttachmentChatComposer
                 }
 
                 busy = true
                 liveEmployee = target
                 streamMarkdown = ""
-                streamStatus = "${target.name} 正在连接 AI…"
+                streamStatus = "${target.name} 正在准备附件并连接 AI…"
                 streamReasoning = ""
                 scope.launch {
                     val result = collectStreamedReply(
+                        context = context,
                         system = groupSystemPrompt(target),
-                        prompt = prompt,
+                        prompt = messageContent,
                         onStatus = { streamStatus = it },
                         onMarkdown = { streamMarkdown = it },
                         onReasoning = { streamReasoning = it },
@@ -246,38 +246,9 @@ internal fun StreamingGroupChatScreen(
 }
 
 @Composable
-private fun ChatComposer(
-    value: String,
-    placeholder: String,
-    busy: Boolean,
-    onValueChange: (String) -> Unit,
-    onSend: () -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = { Text(placeholder) },
-            modifier = Modifier.weight(1f),
-            maxLines = 4,
-            shape = RoundedCornerShape(22.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Button(
-            enabled = value.isNotBlank() && !busy,
-            onClick = onSend,
-            shape = RoundedCornerShape(22.dp),
-        ) { Text("发送") }
-    }
-}
-
-@Composable
 private fun EmployeeChatMessage(message: ChatMessage) {
     if (message.role == "user") {
-        UserMessageBubble(message.content)
+        AttachmentUserMessage(message.content)
     } else {
         AssistantMessage(message.content)
     }
@@ -286,7 +257,7 @@ private fun EmployeeChatMessage(message: ChatMessage) {
 @Composable
 private fun GroupChatMessage(message: GroupMessage) {
     when (message.role) {
-        "user" -> UserMessageBubble(message.content)
+        "user" -> AttachmentUserMessage(message.content)
         "system" -> {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 Surface(
@@ -314,24 +285,6 @@ private fun GroupChatMessage(message: GroupMessage) {
                 }
                 AssistantMessage(message.content)
             }
-        }
-    }
-}
-
-@Composable
-private fun UserMessageBubble(content: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Surface(
-            modifier = Modifier.widthIn(max = 330.dp),
-            shape = RoundedCornerShape(18.dp),
-            color = Color(0xFFE8F2FF),
-        ) {
-            Text(
-                content,
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            )
         }
     }
 }
@@ -383,6 +336,7 @@ private fun LiveAssistantMessage(markdown: String, status: String, reasoning: St
 }
 
 private suspend fun collectStreamedReply(
+    context: Context,
     system: String?,
     prompt: String,
     onStatus: (String) -> Unit,
@@ -395,7 +349,7 @@ private suspend fun collectStreamedReply(
     var lastReasoningFlush = 0L
     var failure: String? = null
 
-    ClientAiApi.streamAsk(system, prompt).collect { event ->
+    ClientAiApi.streamAsk(system, prompt, context = context).collect { event ->
         when (event) {
             is AiStreamEvent.Status -> onStatus(event.status)
             is AiStreamEvent.Reasoning -> {
@@ -425,7 +379,7 @@ private suspend fun collectStreamedReply(
 
     if (raw.isEmpty() && failure != null) {
         onStatus("流式连接不可用，正在兼容重试…")
-        when (val fallback = ClientAiApi.ask(system, prompt)) {
+        when (val fallback = ClientAiApi.ask(system, prompt, context = context)) {
             is AiGatewayResult.Success -> {
                 raw.append(fallback.content)
                 onMarkdown(raw.toString())
