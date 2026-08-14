@@ -14,6 +14,8 @@ from app.admin_routes import router as admin_router
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
+from app.provider_admin import router as provider_admin_router
+from app.provider_manager import provider_store
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
 settings = get_settings()
@@ -50,6 +52,7 @@ release_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.include_router(admin_router)
+app.include_router(provider_admin_router)
 app.include_router(client_ai_router)
 app.include_router(client_update_router)
 
@@ -92,12 +95,14 @@ def version() -> VersionResponse:
 
 @app.get(f"{settings.api_prefix}/public-config", response_model=PublicConfigResponse)
 def public_config() -> PublicConfigResponse:
+    providers = provider_store().list(enabled_only=True)
+    primary = providers[0] if providers else None
     return PublicConfigResponse(
         service=settings.app_name,
         version=settings.app_version,
         public_base_url=settings.public_base_url,
         api_prefix=settings.api_prefix,
-        ai_provider=settings.ai_provider,
-        ai_model=settings.ai_model,
-        ai_enabled=settings.ai_enabled,
+        ai_provider=str(primary["name"]) if primary else "provider_pool",
+        ai_model=str(primary["main_text_model"]) if primary else "",
+        ai_enabled=bool(primary and primary.get("api_key_configured") and primary.get("main_text_model")),
     )
