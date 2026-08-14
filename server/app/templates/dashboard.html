@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}仪表盘 · FDEX{% endblock %}
 {% block heading %}仪表盘{% endblock %}
-{% block subheading %}服务运行状态、AI 配置和版本概况{% endblock %}
+{% block subheading %}服务运行状态、AI 供应商池和版本概况{% endblock %}
 {% block actions %}<a class="button secondary" href="/admin?refresh=1">刷新状态</a>{% endblock %}
 
 {% block content %}
@@ -15,8 +15,8 @@
         <div><span>监听地址</span><strong>{{ system.port }}</strong><small>{{ system.workers }} 个工作进程</small></div>
     </article>
     <article class="stat-card">
-        <div class="stat-icon {% if settings.ai_enabled %}success{% else %}warning{% endif %}">AI</div>
-        <div><span>AI 接口</span><strong>{{ '已配置' if settings.ai_enabled else '未完整配置' }}</strong><small>{{ settings.ai_provider }} · {{ settings.ai_model or '未选择模型' }}</small></div>
+        <div class="stat-icon success">AI</div>
+        <div><span>AI 路由</span><strong>多供应商模式</strong><small>优先级 · 主备模型 · 自动容错</small></div>
     </article>
     <article class="stat-card">
         <div class="stat-icon {% if update_available %}warning{% else %}success{% endif %}">↻</div>
@@ -44,7 +44,8 @@
     <aside class="panel">
         <div class="panel-header"><div><h2>快捷操作</h2><p>常用管理入口</p></div></div>
         <div class="quick-list">
-            <a href="/admin/settings"><span><b>配置 AI 接口</b><small>地址、密钥和模型</small></span><em>›</em></a>
+            <a href="/admin/providers"><span><b>AI 供应商管理</b><small>线路、主备模型、测试与容错</small></span><em>›</em></a>
+            <a href="/admin/settings"><span><b>服务配置</b><small>监听、公开地址和后台安全</small></span><em>›</em></a>
             <a href="/admin/logs"><span><b>查看运行日志</b><small>systemd 与审计记录</small></span><em>›</em></a>
             <a href="/admin/maintenance"><span><b>版本与维护</b><small>检查更新和重启服务</small></span><em>›</em></a>
             <a href="/docs" target="_blank" rel="noopener"><span><b>打开 API 文档</b><small>Swagger 接口调试</small></span><em>↗</em></a>
@@ -54,14 +55,14 @@
 
 <div class="content-grid equal">
     <section class="panel">
-        <div class="panel-header"><div><h2>AI 配置</h2><p>密钥始终只保存在服务端</p></div><span class="badge {{ 'success' if settings.ai_enabled else 'warning' }}">{{ '可用' if settings.ai_enabled else '待配置' }}</span></div>
+        <div class="panel-header"><div><h2>AI 供应商池</h2><p>上游密钥加密保存在服务端，Android 不接触密钥</p></div><span class="badge success">已升级</span></div>
         <dl class="kv-list">
-            <div><dt>Provider</dt><dd>{{ settings.ai_provider }}</dd></div>
-            <div><dt>接口地址</dt><dd class="wrap">{{ settings.ai_base_url or '未配置' }}</dd></div>
-            <div><dt>模型</dt><dd>{{ settings.ai_model or '未配置' }}</dd></div>
-            <div><dt>API Key</dt><dd><code>{{ masked_api_key }}</code></dd></div>
+            <div><dt>调度顺序</dt><dd>供应商优先级 → 主模型 → 备用模型</dd></div>
+            <div><dt>流式协议</dt><dd>Chat Completions SSE</dd></div>
+            <div><dt>chat2api</dt><dd>保留 reasoning/status 流式兼容</dd></div>
+            <div><dt>旧配置</dt><dd>首次自动迁移为第一个供应商</dd></div>
         </dl>
-        <a class="button secondary full" href="/admin/settings">进入服务配置</a>
+        <a class="button primary full" href="/admin/providers">管理 AI 供应商与模型</a>
     </section>
 
     <section class="panel">

@@ -161,6 +161,7 @@ def test_admin_login_and_dashboard() -> None:
     dashboard = client.get("/admin")
     assert dashboard.status_code == 200
     assert "服务运行状态" in dashboard.text
+    assert "多供应商模式" in dashboard.text
     assert "test-password-12345" not in dashboard.text
     assert "test-session-secret" not in dashboard.text
 
@@ -168,7 +169,8 @@ def test_admin_login_and_dashboard() -> None:
 def test_all_admin_pages_render_without_secrets() -> None:
     _login()
     expected = {
-        "/admin/settings": "AI 接口配置",
+        "/admin/providers": "AI 供应商与模型",
+        "/admin/settings": "AI 供应商配置",
         "/admin/logs?lines=100": "后台审计日志",
         "/admin/maintenance": "版本与维护",
     }

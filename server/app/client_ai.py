@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config import fresh_settings
+from app.provider_manager import model_candidates, provider_store
 
 router = APIRouter(prefix="/api/client", tags=["android-client"])
 
@@ -86,8 +86,6 @@ def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
                 if isinstance(value, str):
                     status = value
 
-    # Responses-style events are only accepted when they explicitly identify
-    # the public reasoning summary channel.
     event_type = str(data.get("type") or "")
     if event_type == "response.output_text.delta":
         value = data.get("delta")
@@ -109,126 +107,201 @@ def _extract_non_stream_content(data: dict[str, Any]) -> str:
     if not isinstance(message, dict):
         raise KeyError("choices[0].message")
     value = message.get("content")
-    if not isinstance(value, str):
-        raise TypeError("choices[0].message.content")
-    return value.strip()
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
+    raise TypeError("choices[0].message.content")
+
+
+def _chat_urls(base_url: str) -> list[str]:
+    """Try the conventional /v1 root first while retaining root-only relays."""
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        roots = [base, base[:-3].rstrip("/")]
+    else:
+        roots = [base + "/v1", base]
+    return list(dict.fromkeys(root.rstrip("/") + "/chat/completions" for root in roots if root))
+
+
+def _providers() -> list[dict[str, Any]]:
+    try:
+        return provider_store().list(enabled_only=True, include_secret=True)
+    except RuntimeError as exc:
+        raise HTTPException(503, f"AI 供应商配置无法加载：{exc}") from exc
+
+
+def _safe_error(value: str, api_key: str = "") -> str:
+    text = (value or "").replace("\r", " ").replace("\n", " ").strip()
+    if api_key:
+        text = text.replace(api_key, "***")
+    return text[:300]
 
 
 @router.post("/ai", response_model=AIResponse)
 async def client_ai(payload: AIRequest) -> AIResponse:
-    settings = fresh_settings()
-    if not settings.ai_enabled:
-        raise HTTPException(503, "服务端尚未配置 AI 接口，请先在管理后台完成 AI 配置。")
+    providers = _providers()
+    if not providers:
+        raise HTTPException(503, "服务端尚未配置已启用的 AI 供应商，请先在管理后台添加供应商。")
 
-    url = settings.ai_base_url.rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.ai_api_key}",
-        "Content-Type": "application/json",
-    }
-    started = perf_counter()
-    try:
-        async with httpx.AsyncClient(timeout=settings.ai_timeout_seconds) as client:
-            response = await client.post(
-                url,
-                headers=headers,
-                json=_request_body(payload, settings.ai_model, stream=False),
-            )
-            response.raise_for_status()
-            data = response.json()
-        content = _extract_non_stream_content(data)
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:300] if exc.response is not None else str(exc)
-        raise HTTPException(502, f"上游 AI 返回错误：{detail}") from exc
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-        raise HTTPException(502, f"AI 接口调用失败：{str(exc)[:300]}") from exc
+    started_all = perf_counter()
+    errors: list[str] = []
+    for provider in providers:
+        api_key = str(provider.get("api_key") or "")
+        models = model_candidates(provider)
+        if not api_key or not models:
+            errors.append(f"{provider['name']}：API Key 或文本模型未完整配置")
+            continue
+        for model in models:
+            for url in _chat_urls(provider["base_url"]):
+                try:
+                    timeout_seconds = float(provider.get("timeout_seconds") or 60)
+                    timeout = httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds))
+                    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                        response = await client.post(
+                            url,
+                            headers={
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json",
+                                "Accept": "application/json",
+                            },
+                            json=_request_body(payload, model, stream=False),
+                        )
+                    if not response.is_success:
+                        errors.append(f"{provider['name']} / {model}：HTTP {response.status_code} {_safe_error(response.text, api_key)}")
+                        continue
+                    try:
+                        content = _extract_non_stream_content(response.json())
+                    except (ValueError, KeyError, TypeError, IndexError) as exc:
+                        errors.append(f"{provider['name']} / {model}：响应解析失败 {str(exc)[:120]}")
+                        continue
+                    if not content:
+                        errors.append(f"{provider['name']} / {model}：上游未返回正文")
+                        continue
+                    return AIResponse(
+                        content=content,
+                        model=model,
+                        latency_ms=int((perf_counter() - started_all) * 1000),
+                    )
+                except httpx.HTTPError as exc:
+                    errors.append(f"{provider['name']} / {model}：{_safe_error(str(exc))}")
 
-    return AIResponse(
-        content=content,
-        model=settings.ai_model,
-        latency_ms=int((perf_counter() - started) * 1000),
-    )
+    detail = "；".join(errors[-8:]) or "没有完整配置的供应商"
+    raise HTTPException(502, f"所有 AI 供应商均调用失败：{detail}")
 
 
 @router.post("/ai/stream")
 async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
-    settings = fresh_settings()
-    if not settings.ai_enabled:
-        raise HTTPException(503, "服务端尚未配置 AI 接口，请先在管理后台完成 AI 配置。")
-
-    url = settings.ai_base_url.rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.ai_api_key}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
+    providers = _providers()
+    if not providers:
+        raise HTTPException(503, "服务端尚未配置已启用的 AI 供应商，请先在管理后台添加供应商。")
 
     async def generate() -> AsyncIterator[str]:
-        started = perf_counter()
-        answer_seen = False
-        try:
-            timeout = httpx.Timeout(settings.ai_timeout_seconds, connect=min(15.0, settings.ai_timeout_seconds))
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers=headers,
-                    json=_request_body(payload, settings.ai_model, stream=True),
-                ) as response:
-                    if response.status_code >= 400:
-                        raw = (await response.aread()).decode("utf-8", errors="replace")
-                        yield _sse("error", message=f"上游 AI 返回 HTTP {response.status_code}：{raw[:300]}")
-                        yield "data: [DONE]\n\n"
-                        return
+        started_all = perf_counter()
+        errors: list[str] = []
 
-                    content_type = response.headers.get("content-type", "").lower()
-                    if "text/event-stream" not in content_type:
-                        raw = (await response.aread()).decode("utf-8", errors="replace")
-                        try:
-                            data = json.loads(raw)
-                            content = _extract_non_stream_content(data)
-                        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-                            yield _sse("error", message=f"上游未返回可识别的 SSE/JSON：{str(exc)[:220]}")
+        for provider in providers:
+            api_key = str(provider.get("api_key") or "")
+            models = model_candidates(provider)
+            if not api_key or not models:
+                errors.append(f"{provider['name']}：API Key 或文本模型未完整配置")
+                continue
+
+            for model in models:
+                for url in _chat_urls(provider["base_url"]):
+                    answer_seen = False
+                    try:
+                        timeout_seconds = float(provider.get("timeout_seconds") or 60)
+                        timeout = httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds))
+                        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                            async with client.stream(
+                                "POST",
+                                url,
+                                headers={
+                                    "Authorization": f"Bearer {api_key}",
+                                    "Content-Type": "application/json",
+                                    "Accept": "text/event-stream",
+                                },
+                                json=_request_body(payload, model, stream=True),
+                            ) as response:
+                                if response.status_code >= 400:
+                                    raw = (await response.aread()).decode("utf-8", errors="replace")
+                                    errors.append(
+                                        f"{provider['name']} / {model}：HTTP {response.status_code} {_safe_error(raw, api_key)}"
+                                    )
+                                    continue
+
+                                content_type = response.headers.get("content-type", "").lower()
+                                if "text/event-stream" not in content_type:
+                                    raw = (await response.aread()).decode("utf-8", errors="replace")
+                                    try:
+                                        data = json.loads(raw)
+                                        content = _extract_non_stream_content(data)
+                                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                                        errors.append(f"{provider['name']} / {model}：非 SSE 响应无法解析 {str(exc)[:120]}")
+                                        continue
+                                    if not content:
+                                        errors.append(f"{provider['name']} / {model}：上游未返回正文")
+                                        continue
+                                    answer_seen = True
+                                    yield _sse("content", delta=content)
+                                else:
+                                    async for line in response.aiter_lines():
+                                        line = line.strip()
+                                        if not line or line.startswith(":") or line.startswith("event:"):
+                                            continue
+                                        if not line.startswith("data:"):
+                                            continue
+                                        raw = line[5:].strip()
+                                        if raw == "[DONE]":
+                                            break
+                                        try:
+                                            data = json.loads(raw)
+                                        except json.JSONDecodeError:
+                                            continue
+                                        if not isinstance(data, dict):
+                                            continue
+                                        status, reasoning, content = _extract_chat_chunk(data)
+                                        if status:
+                                            yield _sse("status", status=status)
+                                        if reasoning:
+                                            yield _sse("reasoning", delta=reasoning)
+                                        if content:
+                                            answer_seen = True
+                                            yield _sse("content", delta=content)
+
+                        if answer_seen:
+                            yield _sse(
+                                "done",
+                                model=model,
+                                provider=str(provider["name"]),
+                                latency_ms=int((perf_counter() - started_all) * 1000),
+                            )
                             yield "data: [DONE]\n\n"
                             return
-                        if content:
-                            answer_seen = True
-                            yield _sse("content", delta=content)
-                    else:
-                        async for line in response.aiter_lines():
-                            line = line.strip()
-                            if not line or line.startswith(":") or line.startswith("event:"):
-                                continue
-                            if not line.startswith("data:"):
-                                continue
-                            raw = line[5:].strip()
-                            if raw == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(raw)
-                            except json.JSONDecodeError:
-                                continue
-                            if not isinstance(data, dict):
-                                continue
-                            status, reasoning, content = _extract_chat_chunk(data)
-                            if status:
-                                yield _sse("status", status=status)
-                            if reasoning:
-                                yield _sse("reasoning", delta=reasoning)
-                            if content:
-                                answer_seen = True
-                                yield _sse("content", delta=content)
+                        errors.append(f"{provider['name']} / {model}：流式响应结束但没有正文")
+                    except httpx.HTTPError as exc:
+                        if answer_seen:
+                            yield _sse("error", message=f"{provider['name']} 流式连接中断：{_safe_error(str(exc))}")
+                            yield "data: [DONE]\n\n"
+                            return
+                        errors.append(f"{provider['name']} / {model}：{_safe_error(str(exc))}")
+                    except Exception as exc:
+                        if answer_seen:
+                            yield _sse("error", message=f"AI 流式处理失败：{_safe_error(str(exc))}")
+                            yield "data: [DONE]\n\n"
+                            return
+                        errors.append(f"{provider['name']} / {model}：{_safe_error(str(exc))}")
 
-            latency_ms = int((perf_counter() - started) * 1000)
-            if not answer_seen:
-                yield _sse("status", status="回答生成完成，但未收到正文内容")
-            yield _sse("done", model=settings.ai_model, latency_ms=latency_ms)
-            yield "data: [DONE]\n\n"
-        except httpx.HTTPError as exc:
-            yield _sse("error", message=f"AI 流式连接失败：{str(exc)[:300]}")
-            yield "data: [DONE]\n\n"
-        except Exception as exc:  # keep an established SSE response parseable by Android
-            yield _sse("error", message=f"AI 流式处理失败：{str(exc)[:300]}")
-            yield "data: [DONE]\n\n"
+        detail = "；".join(errors[-8:]) or "没有可用的 AI 供应商"
+        yield _sse("error", message=f"所有 AI 供应商均调用失败：{detail}")
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),
