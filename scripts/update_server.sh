@@ -159,12 +159,15 @@ python3 -m venv "${APP_DIR}/server/.venv"
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex-release-sync.service" "/etc/systemd/system/fdex-release-sync.service"
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex-release-sync.timer" "/etc/systemd/system/fdex-release-sync.timer"
+install -m 0644 "${APP_DIR}/deploy/systemd/fdex-provider-probe.service" "/etc/systemd/system/fdex-provider-probe.service"
+install -m 0644 "${APP_DIR}/deploy/systemd/fdex-provider-probe.timer" "/etc/systemd/system/fdex-provider-probe.timer"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 systemctl enable --now fdex-release-sync.timer
+systemctl enable --now fdex-provider-probe.timer
 systemctl restart "${SERVICE_NAME}.service"
 
-# Try once immediately. Failure is non-fatal because the timer keeps retrying every minute.
+# Try release sync once immediately. Failure is non-fatal because the timer keeps retrying every minute.
 systemctl start fdex-release-sync.service 2>/dev/null || true
 
 for _ in {1..30}; do
@@ -173,6 +176,8 @@ for _ in {1..30}; do
     curl --silent "http://127.0.0.1:${FDEX_PORT}/api/health"
     echo
     echo "管理后台：${PUBLIC_BASE_URL}/admin"
+    echo "AI 供应商管理：${PUBLIC_BASE_URL}/admin/providers"
+    echo "AI 供应商自动深测：每 15 分钟检查一次到期线路"
     echo "APK 更新接口：${PUBLIC_BASE_URL}/api/client/update"
     echo "APK 缓存目录：${RELEASE_CACHE_DIR}"
     echo "GitHub Release 轮询：每 60 秒自动检查一次"
