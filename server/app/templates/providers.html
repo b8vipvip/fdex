@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}AI 供应商与模型 · FDEX{% endblock %}
+{% block heading %}AI 供应商与模型{% endblock %}
+{% block subheading %}统一管理上游中转站、主备模型、协议顺序和连通性测试{% endblock %}
+{% block actions %}<a class="button primary" href="/admin/providers#editor">新增供应商</a>{% endblock %}
+
+{% block content %}
+<div class="stat-grid provider-stats">
+    <article class="stat-card"><div class="stat-icon">AI</div><div><span>供应商总数</span><strong>{{ provider_stats.total }}</strong><small>统一服务端管理</small></div></article>
+    <article class="stat-card"><div class="stat-icon success">●</div><div><span>已启用</span><strong>{{ provider_stats.enabled }}</strong><small>按优先级参与路由</small></div></article>
+    <article class="stat-card"><div class="stat-icon {% if provider_stats.healthy %}success{% else %}warning{% endif %}">✓</div><div><span>最近可用</span><strong>{{ provider_stats.healthy }}</strong><small>测试状态以最近一次为准</small></div></article>
+    <article class="stat-card"><div class="stat-icon">↪</div><div><span>路由方式</span><strong>主备容错</strong><small>供应商 → 模型 → Chat SSE</small></div></article>
+</div>
+
+<section class="panel form-section">
+    <div class="panel-header">
+        <div><h2>供应商池</h2><p>优先级数字越小越先尝试；上游 ApiKey 只以加密形式保存在服务端。</p></div>
+        <span class="badge success">Fernet 加密</span>
+    </div>
+    {% if providers %}
+    <div class="table-wrap">
+        <table class="data-table provider-table">
+            <thead><tr><th>优先级</th><th>供应商</th><th>主文本模型</th><th>备用模型</th><th>协议</th><th>自动深测</th><th>最近状态</th><th>操作</th></tr></thead>
+            <tbody>
+            {% for provider in providers %}
+            <tr>
+                <td><strong>#{{ provider.priority }}</strong><br><span class="badge {{ 'success' if provider.enabled else 'warning' }}">{{ '启用' if provider.enabled else '停用' }}</span></td>
+                <td>
+                    <strong>{{ provider.name }}</strong>
+                    <div class="provider-url">{{ provider.base_url }}</div>
+                    <div class="provider-key"><code>{{ provider.api_key_masked or '未配置 Key' }}</code></div>
+                </td>
+                <td><span class="model-pill primary-model">{{ provider.main_text_model or '未设置' }}</span>{% if provider.main_vision_model %}<div class="tiny-line">视觉：{{ provider.main_vision_model }}</div>{% endif %}</td>
+                <td>{% if provider.backup_text_models %}{% for model in provider.backup_text_models %}<span class="model-pill">{{ model }}</span>{% endfor %}{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td>{% for protocol in provider.protocol_order %}<span class="model-pill protocol-pill">{{ protocol }}</span>{% endfor %}</td>
+                <td>{% if provider.auto_test_enabled %}<span class="badge success">每 {{ provider.auto_test_interval_hours }} 小时</span>{% else %}<span class="badge">关闭</span>{% endif %}</td>
+                <td>
+                    <span class="badge {% if provider.last_status.startswith('可用') %}success{% elif provider.last_status.startswith('失败') %}error{% else %}warning{% endif %}">{{ provider.last_status }}</span>
+                    <div class="tiny-line">{{ provider.last_latency_ms }} ms{% if provider.last_test_at %} · {{ provider.last_test_at[:19].replace('T',' ') }}{% endif %}</div>
+                </td>
+                <td>
+                    <div class="provider-actions">
+                        <a class="button secondary small" href="/admin/providers?edit={{ provider.id }}#editor">编辑</a>
+                        <form method="post" action="/admin/providers/{{ provider.id }}/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="mode" value="ordinary"><button class="button secondary small" type="submit">普通测试</button></form>
+                        <form method="post" action="/admin/providers/{{ provider.id }}/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="mode" value="deep"><button class="button secondary small" type="submit">深度测试</button></form>
+                        <form method="post" action="/admin/providers/{{ provider.id }}/delete" data-confirm="删除供应商“{{ provider.name }}”？此操作不会影响其它供应商。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="confirm" value="delete"><button class="button danger-outline small" type="submit">删除</button></form>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="empty-text">尚未配置供应商。若原 FDEX 的 <code>AI_BASE_URL / AI_API_KEY / AI_MODEL</code> 配置完整，首次打开本页会自动迁移成第一个供应商。</p>
+    {% endif %}
+</section>
+
+<section class="panel form-section" id="editor">
+    <div class="panel-header">
+        <div><h2>{{ '编辑供应商' if edit_provider else '新增供应商' }}</h2><p>参考千牛 API 控制台的供应商模型：一个供应商可维护主模型、备用模型、协议优先级和深测策略。</p></div>
+        {% if edit_provider %}<a class="button secondary small" href="/admin/providers#editor">切换到新增</a>{% endif %}
+    </div>
+    <form method="post" action="/admin/providers/save" class="form-stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="provider_id" value="{{ edit_provider.id if edit_provider else '' }}">
+        <div class="form-grid">
+            <label class="field"><span>供应商名称</span><input name="name" required maxlength="100" value="{{ edit_provider.name if edit_provider else '' }}" placeholder="例如 chat2api 主线路"></label>
+            <label class="field"><span>优先级</span><input type="number" name="priority" min="1" max="10000" value="{{ edit_provider.priority if edit_provider else 100 }}" required><small>数字越小越先调用</small></label>
+            <label class="field full-row"><span>BaseUrl</span><input type="url" name="base_url" required value="{{ edit_provider.base_url if edit_provider else '' }}" placeholder="https://example.com/v1"><small>不要填写 <code>/chat/completions</code>；保存时会自动规范化</small></label>
+            <label class="field"><span>API Key</span><input type="password" name="api_key" autocomplete="new-password" placeholder="{{ '留空保持当前密钥' if edit_provider else 'sk-...' }}">{% if edit_provider %}<small>当前：<code>{{ edit_provider.api_key_masked or '未配置' }}</code></small>{% endif %}</label>
+            <label class="field"><span>请求超时（秒）</span><input type="number" name="timeout_seconds" min="5" max="600" value="{{ edit_provider.timeout_seconds if edit_provider else 60 }}"></label>
+            <label class="field"><span>主文本模型</span><input name="main_text_model" value="{{ edit_provider.main_text_model if edit_provider else '' }}" placeholder="gpt-5.6-sol"></label>
+            <label class="field"><span>文本备用模型</span><input name="backup_text_models" value="{{ edit_provider.backup_text_models|join(', ') if edit_provider else '' }}" placeholder="gpt-5.5, gpt-5.4"><small>逗号、分号或换行分隔</small></label>
+            <label class="field"><span>主视觉模型</span><input name="main_vision_model" value="{{ edit_provider.main_vision_model if edit_provider else '' }}" placeholder="可选"></label>
+            <label class="field"><span>视觉备用模型</span><input name="backup_vision_models" value="{{ edit_provider.backup_vision_models|join(', ') if edit_provider else '' }}" placeholder="可选"></label>
+        </div>
+        {% set selected_protocols = edit_provider.protocol_order if edit_provider else ['chat','responses','legacy'] %}
+        <div class="provider-options-grid">
+            <fieldset class="provider-fieldset">
+                <legend>请求协议顺序</legend>
+                <label class="checkbox-field"><input type="checkbox" name="protocol_order" value="chat" {% if 'chat' in selected_protocols %}checked{% endif %}><span>Chat Completions（FDEX / chat2api 当前流式主协议）</span></label>
+                <label class="checkbox-field"><input type="checkbox" name="protocol_order" value="responses" {% if 'responses' in selected_protocols %}checked{% endif %}><span>Responses API（记录为可扩展协议）</span></label>
+                <label class="checkbox-field"><input type="checkbox" name="protocol_order" value="legacy" {% if 'legacy' in selected_protocols %}checked{% endif %}><span>Legacy Completions（记录为可扩展协议）</span></label>
+            </fieldset>
+            <fieldset class="provider-fieldset">
+                <legend>启用与检测</legend>
+                <label class="checkbox-field"><input type="checkbox" name="enabled" value="1" {% if not edit_provider or edit_provider.enabled %}checked{% endif %}><span>启用此供应商</span></label>
+                <label class="checkbox-field"><input type="checkbox" name="auto_test_enabled" value="1" {% if edit_provider and edit_provider.auto_test_enabled %}checked{% endif %}><span>记录自动深测周期（调度器后续可接入）</span></label>
+                <label class="field compact-field"><span>深测周期（小时）</span><input type="number" name="auto_test_interval_hours" min="1" max="720" value="{{ edit_provider.auto_test_interval_hours if edit_provider else 12 }}"></label>
+                {% if edit_provider %}<label class="checkbox-field danger-check"><input type="checkbox" name="clear_api_key" value="1"><span>清除当前 API Key</span></label>{% endif %}
+            </fieldset>
+        </div>
+        <div class="inline-note warning-note">普通测试只验证主文本模型；深度测试会先尝试 <code>/models</code> 发现模型，再验证最多 20 个模型的 Chat Completions 能力，并在当前主模型不可用时自动提升可用的新模型。</div>
+        <div><button class="button primary" type="submit">{{ '保存修改' if edit_provider else '添加供应商' }}</button></div>
+    </form>
+</section>
+
+<div class="content-grid equal lower-grid">
+    <section class="panel">
+        <div class="panel-header"><div><h2>运行时容错</h2><p>Android 无需知道供应商密钥</p></div></div>
+        <ol class="info-list"><li>先按供应商优先级尝试。</li><li>同一供应商按主文本模型 → 备用模型尝试。</li><li>FDEX 的 chat2api 流式链路继续使用 Chat Completions SSE。</li><li>流式正文开始前允许切换供应商；正文开始后不会切线导致重复回答。</li></ol>
+    </section>
+    <section class="panel">
+        <div class="panel-header"><div><h2>密钥与备份</h2><p>数据库中不保存 ApiKey 明文</p></div><span class="badge success">服务端专用</span></div>
+        <dl class="kv-list"><div><dt>供应商数据库</dt><dd class="wrap"><code>{{ provider_db_path }}</code></dd></div><div><dt>Fernet 密钥</dt><dd class="wrap"><code>{{ provider_key_path }}</code></dd></div></dl>
+        <div class="inline-note warning-note">迁移服务器时必须同时备份数据库和 Fernet 密钥文件。丢失密钥后无法恢复已加密的上游 ApiKey。</div>
+    </section>
+</div>
+
+<style>
+.provider-stats{grid-template-columns:repeat(4,minmax(0,1fr))}.provider-table{min-width:1180px}.provider-url{margin-top:5px;color:var(--muted);max-width:270px;overflow-wrap:anywhere}.provider-key{margin-top:6px}.model-pill{display:inline-block;margin:2px 4px 2px 0;padding:4px 7px;border-radius:7px;background:#f1f5f9;color:#475467;font-size:11px}.primary-model{background:#eaf3ff;color:#0b5cc4;font-weight:700}.protocol-pill{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.tiny-line{margin-top:6px;color:var(--muted);font-size:11px}.provider-actions{display:flex;flex-wrap:wrap;gap:6px;min-width:220px}.provider-actions form{margin:0}.provider-options-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.provider-fieldset{border:1px solid var(--line);border-radius:11px;padding:14px;display:flex;flex-direction:column;gap:11px}.provider-fieldset legend{font-weight:700;padding:0 5px}.compact-field input{max-width:180px}.danger-check{color:#b42332}@media(max-width:1000px){.provider-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:820px){.provider-options-grid{grid-template-columns:1fr}.provider-stats{grid-template-columns:1fr}}
+</style>
+{% endblock %}
