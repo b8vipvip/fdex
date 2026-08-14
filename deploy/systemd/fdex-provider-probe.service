@@ -1,0 +1,11 @@
+[Unit]
+Description=FDEX AI Provider Deep Probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/fdex/server
+ExecStart=/opt/fdex/server/.venv/bin/python -m app.provider_probe_worker
+Nice=10
