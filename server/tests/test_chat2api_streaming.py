@@ -1,16 +1,17 @@
 import json
 
-from app.client_ai import AIRequest, _extract_chat_chunk, _messages, _sse
+from app.client_ai import AIRequest, _extract_chat_chunk, _sse
+from app.multimodal_service import build_chat_messages
 
 
 def test_private_assistant_request_has_no_system_prompt() -> None:
     payload = AIRequest(system=None, prompt="你好")
-    assert _messages(payload) == [{"role": "user", "content": "你好"}]
+    assert build_chat_messages(payload.system, payload.prompt) == [{"role": "user", "content": "你好"}]
 
 
 def test_employee_request_keeps_system_prompt() -> None:
     payload = AIRequest(system="你是资料管理员", prompt="整理资料")
-    assert _messages(payload) == [
+    assert build_chat_messages(payload.system, payload.prompt) == [
         {"role": "system", "content": "你是资料管理员"},
         {"role": "user", "content": "整理资料"},
     ]

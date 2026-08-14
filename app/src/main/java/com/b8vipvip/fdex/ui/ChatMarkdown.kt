@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -29,12 +31,13 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private enum class ChatMarkdownKind { BLANK, HEADING, QUOTE, BULLET, NUMBERED, CODE, TABLE, DIVIDER, TEXT }
+private enum class ChatMarkdownKind { BLANK, HEADING, QUOTE, BULLET, NUMBERED, CODE, TABLE, DIVIDER, LINK, TEXT }
 private data class ChatMarkdownLine(
     val kind: ChatMarkdownKind,
     val text: String,
     val level: Int = 0,
     val language: String = "",
+    val url: String = "",
 )
 
 @Composable
@@ -45,6 +48,7 @@ internal fun MarkdownText(
 ) {
     val lines = remember(markdown) { parseChatMarkdown(markdown) }
     val clipboard = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
     Column(modifier) {
         lines.forEach { line ->
             when (line.kind) {
@@ -151,6 +155,12 @@ internal fun MarkdownText(
                     modifier = Modifier.padding(vertical = 9.dp),
                     color = color.copy(alpha = .12f),
                 )
+                ChatMarkdownKind.LINK -> Button(
+                    onClick = { runCatching { uriHandler.openUri(line.url) } },
+                    modifier = Modifier.padding(vertical = 4.dp),
+                ) {
+                    Text(line.text)
+                }
                 ChatMarkdownKind.TEXT -> Text(
                     text = chatInlineMarkdown(line.text),
                     fontSize = 16.sp,
@@ -222,6 +232,15 @@ private fun parseChatMarkdown(markdown: String): List<ChatMarkdownLine> {
         val numbered = Regex("^\\s*(\\d+\\.)\\s+(.+)$").find(trimmed)
         if (numbered != null) {
             out += ChatMarkdownLine(ChatMarkdownKind.NUMBERED, "${numbered.groupValues[1]}  ${numbered.groupValues[2]}")
+            return@forEach
+        }
+        val standaloneLink = Regex("^\\s*\\[([^]]+)]\\((https?://[^)]+)\\)\\s*$", RegexOption.IGNORE_CASE).find(trimmed)
+        if (standaloneLink != null) {
+            out += ChatMarkdownLine(
+                kind = ChatMarkdownKind.LINK,
+                text = standaloneLink.groupValues[1],
+                url = standaloneLink.groupValues[2],
+            )
             return@forEach
         }
         if (trimmed.count { it == '|' } >= 2) {

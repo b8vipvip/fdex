@@ -48,9 +48,12 @@ app.add_middleware(
 
 static_dir = Path(SERVER_DIR) / "app" / "static"
 release_dir = Path(settings.release_cache_dir)
+generated_dir = Path(settings.app_dir) / "server" / "data" / "generated"
 release_dir.mkdir(parents=True, exist_ok=True)
+generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
+app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(admin_router)
 app.include_router(provider_admin_router)
 app.include_router(client_ai_router)

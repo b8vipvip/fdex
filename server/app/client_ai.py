@@ -2,46 +2,90 @@ from __future__ import annotations
 
 import json
 from time import perf_counter
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.provider_manager import model_candidates, provider_store
+from app.multimodal_service import (
+    TASK_AUDIO,
+    TASK_IMAGE,
+    TASK_TEXT,
+    TASK_VISION,
+    RouteResult,
+    chat_payload,
+    detect_task,
+    route_audio,
+    route_image_generation,
+    route_text,
+)
+from app.provider_manager import (
+    api_roots,
+    audio_model_candidates,
+    image_model_candidates,
+    provider_store,
+    text_model_candidates,
+)
 
 router = APIRouter(prefix="/api/client", tags=["android-client"])
 
 
+class ImageInput(BaseModel):
+    url: str = Field(min_length=5, max_length=12_000_000)
+    detail: Literal["auto", "low", "high"] = "auto"
+
+
+class AudioInput(BaseModel):
+    data: str = Field(min_length=4, max_length=24_000_000)
+    format: Literal["wav", "mp3"] = "wav"
+
+
 class AIRequest(BaseModel):
     system: str | None = Field(default=None, max_length=12000)
-    prompt: str = Field(min_length=1, max_length=40000)
+    prompt: str = Field(default="", max_length=40000)
     max_tokens: int = Field(default=1200, ge=32, le=4000)
+    task: Literal["auto", "text", "vision", "image_generation", "audio"] = "auto"
+    images: list[ImageInput] = Field(default_factory=list, max_length=4)
+    audio: AudioInput | None = None
+    image_size: Literal["1024x1024", "1536x1024", "1024x1536"] = "1024x1024"
+    voice: str = Field(default="", max_length=80)
+    audio_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = "wav"
+
+    @model_validator(mode="after")
+    def require_input(self) -> "AIRequest":
+        if not self.prompt.strip() and not self.images and self.audio is None:
+            raise ValueError("prompt、images 或 audio 至少需要提供一项")
+        return self
+
+
+class MediaItem(BaseModel):
+    kind: Literal["image", "audio"]
+    url: str
+    mime_type: str = ""
+    transcript: str = ""
+    revised_prompt: str = ""
 
 
 class AIResponse(BaseModel):
     content: str
     model: str
+    provider: str = ""
+    task: str = TASK_TEXT
     latency_ms: int
+    media: list[MediaItem] = Field(default_factory=list)
+    fallback_from: str = ""
 
 
-def _messages(payload: AIRequest) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    if payload.system and payload.system.strip():
-        messages.append({"role": "system", "content": payload.system.strip()})
-    messages.append({"role": "user", "content": payload.prompt})
-    return messages
+def _images(payload: AIRequest) -> list[dict[str, str]]:
+    return [{"url": item.url, "detail": item.detail} for item in payload.images]
 
 
-def _request_body(payload: AIRequest, model: str, *, stream: bool) -> dict[str, Any]:
-    return {
-        "model": model,
-        "messages": _messages(payload),
-        "temperature": 0.5,
-        "max_tokens": payload.max_tokens,
-        "stream": stream,
-    }
+def _audio(payload: AIRequest) -> dict[str, str] | None:
+    if payload.audio is None:
+        return None
+    return {"data": payload.audio.data, "format": payload.audio.format}
 
 
 def _sse(event_type: str, **payload: Any) -> str:
@@ -50,12 +94,7 @@ def _sse(event_type: str, **payload: Any) -> str:
 
 
 def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
-    """Return public status, public reasoning summary delta, and answer delta.
-
-    FDEX deliberately does not expose hidden chain-of-thought. It only forwards
-    status or reasoning-summary fields that the upstream protocol explicitly
-    marks as user-visible summaries.
-    """
+    """Return public status, public reasoning summary delta, and answer delta."""
     status = ""
     reasoning = ""
     content = ""
@@ -95,7 +134,6 @@ def _extract_chat_chunk(data: dict[str, Any]) -> tuple[str, str, str]:
         value = data.get("delta")
         if isinstance(value, str):
             reasoning = value
-
     return status, reasoning, content
 
 
@@ -110,7 +148,7 @@ def _extract_non_stream_content(data: dict[str, Any]) -> str:
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, list):
-        parts = []
+        parts: list[str] = []
         for item in value:
             if isinstance(item, dict):
                 text = item.get("text") or item.get("content")
@@ -118,16 +156,6 @@ def _extract_non_stream_content(data: dict[str, Any]) -> str:
                     parts.append(text)
         return "".join(parts).strip()
     raise TypeError("choices[0].message.content")
-
-
-def _chat_urls(base_url: str) -> list[str]:
-    """Try the conventional /v1 root first while retaining root-only relays."""
-    base = base_url.rstrip("/")
-    if base.endswith("/v1"):
-        roots = [base, base[:-3].rstrip("/")]
-    else:
-        roots = [base + "/v1", base]
-    return list(dict.fromkeys(root.rstrip("/") + "/chat/completions" for root in roots if root))
 
 
 def _providers() -> list[dict[str, Any]]:
@@ -144,56 +172,149 @@ def _safe_error(value: str, api_key: str = "") -> str:
     return text[:300]
 
 
+def _has_specialized(providers: list[dict[str, Any]], task: str) -> bool:
+    if task == TASK_IMAGE:
+        return any(image_model_candidates(provider) and provider.get("api_key") for provider in providers)
+    if task == TASK_AUDIO:
+        return any(audio_model_candidates(provider) and provider.get("api_key") for provider in providers)
+    return True
+
+
+def _failure_detail(result: RouteResult, fallback: str) -> str:
+    return "；".join(result.errors[-8:]) or fallback
+
+
+async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]]) -> RouteResult:
+    images = _images(payload)
+    audio = _audio(payload)
+    task, explicit = detect_task(
+        payload.prompt,
+        requested_task=payload.task,
+        has_images=bool(images),
+        has_audio=audio is not None,
+    )
+
+    if task == TASK_IMAGE:
+        if _has_specialized(providers, TASK_IMAGE):
+            result = await route_image_generation(prompt=payload.prompt, size=payload.image_size, providers=providers)
+            if result.ok or explicit:
+                return result
+        elif explicit:
+            return RouteResult(False, TASK_IMAGE, errors=["未配置可用的图片生成模型供应商"])
+        fallback = await route_text(
+            system=payload.system,
+            prompt=payload.prompt,
+            max_tokens=payload.max_tokens,
+            providers=providers,
+        )
+        fallback.fallback_from = TASK_IMAGE
+        return fallback
+
+    if task == TASK_AUDIO:
+        if _has_specialized(providers, TASK_AUDIO):
+            result = await route_audio(
+                system=payload.system,
+                prompt=payload.prompt,
+                max_tokens=payload.max_tokens,
+                audio_input=audio,
+                requested_voice=payload.voice,
+                requested_format=payload.audio_format,
+                providers=providers,
+            )
+            if result.ok or explicit or audio is not None:
+                return result
+        elif explicit or audio is not None:
+            return RouteResult(False, TASK_AUDIO, errors=["未配置可用的语音模型供应商"])
+        fallback = await route_text(
+            system=payload.system,
+            prompt=payload.prompt,
+            max_tokens=payload.max_tokens,
+            providers=providers,
+        )
+        fallback.fallback_from = TASK_AUDIO
+        return fallback
+
+    return await route_text(
+        system=payload.system,
+        prompt=payload.prompt,
+        max_tokens=payload.max_tokens,
+        images=images if task == TASK_VISION else None,
+        providers=providers,
+    )
+
+
 @router.post("/ai", response_model=AIResponse)
 async def client_ai(payload: AIRequest) -> AIResponse:
     providers = _providers()
     if not providers:
         raise HTTPException(503, "服务端尚未配置已启用的 AI 供应商，请先在管理后台添加供应商。")
 
-    started_all = perf_counter()
-    errors: list[str] = []
-    for provider in providers:
-        api_key = str(provider.get("api_key") or "")
-        models = model_candidates(provider)
-        if not api_key or not models:
-            errors.append(f"{provider['name']}：API Key 或文本模型未完整配置")
-            continue
-        for model in models:
-            for url in _chat_urls(provider["base_url"]):
-                try:
-                    timeout_seconds = float(provider.get("timeout_seconds") or 60)
-                    timeout = httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds))
-                    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                        response = await client.post(
-                            url,
-                            headers={
-                                "Authorization": f"Bearer {api_key}",
-                                "Content-Type": "application/json",
-                                "Accept": "application/json",
-                            },
-                            json=_request_body(payload, model, stream=False),
-                        )
-                    if not response.is_success:
-                        errors.append(f"{provider['name']} / {model}：HTTP {response.status_code} {_safe_error(response.text, api_key)}")
-                        continue
-                    try:
-                        content = _extract_non_stream_content(response.json())
-                    except (ValueError, KeyError, TypeError, IndexError) as exc:
-                        errors.append(f"{provider['name']} / {model}：响应解析失败 {str(exc)[:120]}")
-                        continue
-                    if not content:
-                        errors.append(f"{provider['name']} / {model}：上游未返回正文")
-                        continue
-                    return AIResponse(
-                        content=content,
-                        model=model,
-                        latency_ms=int((perf_counter() - started_all) * 1000),
-                    )
-                except httpx.HTTPError as exc:
-                    errors.append(f"{provider['name']} / {model}：{_safe_error(str(exc))}")
+    result = await _route_non_stream(payload, providers)
+    if not result.ok:
+        status = 503 if not result.errors else 502
+        raise HTTPException(status, f"AI 能力路由失败：{_failure_detail(result, '没有可用模型')}")
+    return AIResponse(
+        content=result.content,
+        model=result.model,
+        provider=result.provider,
+        task=result.task,
+        latency_ms=result.latency_ms,
+        media=[MediaItem(**item) for item in result.media],
+        fallback_from=result.fallback_from,
+    )
 
-    detail = "；".join(errors[-8:]) or "没有完整配置的供应商"
-    raise HTTPException(502, f"所有 AI 供应商均调用失败：{detail}")
+
+async def _emit_specialized(
+    payload: AIRequest,
+    providers: list[dict[str, Any]],
+    task: str,
+    explicit: bool,
+) -> AsyncIterator[str]:
+    if task == TASK_IMAGE:
+        if not _has_specialized(providers, TASK_IMAGE):
+            if explicit:
+                yield _sse("error", message="未配置可用的图片生成模型供应商")
+                yield "data: [DONE]\n\n"
+                return
+            return
+        yield _sse("status", status="已识别为图片生成请求，正在切换图片模型…")
+        result = await route_image_generation(prompt=payload.prompt, size=payload.image_size, providers=providers)
+    else:
+        if not _has_specialized(providers, TASK_AUDIO):
+            if explicit or payload.audio is not None:
+                yield _sse("error", message="未配置可用的语音模型供应商")
+                yield "data: [DONE]\n\n"
+                return
+            return
+        yield _sse("status", status="已识别为语音请求，正在切换语音模型…")
+        result = await route_audio(
+            system=payload.system,
+            prompt=payload.prompt,
+            max_tokens=payload.max_tokens,
+            audio_input=_audio(payload),
+            requested_voice=payload.voice,
+            requested_format=payload.audio_format,
+            providers=providers,
+        )
+
+    if not result.ok:
+        if explicit or payload.audio is not None:
+            yield _sse("error", message=f"{task} 调用失败：{_failure_detail(result, '没有可用模型')}")
+            yield "data: [DONE]\n\n"
+        return
+
+    for media in result.media:
+        yield _sse("media", **media)
+    if result.content:
+        yield _sse("content", delta=result.content)
+    yield _sse(
+        "done",
+        model=result.model,
+        provider=result.provider,
+        task=result.task,
+        latency_ms=result.latency_ms,
+    )
+    yield "data: [DONE]\n\n"
 
 
 @router.post("/ai/stream")
@@ -202,19 +323,51 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
     if not providers:
         raise HTTPException(503, "服务端尚未配置已启用的 AI 供应商，请先在管理后台添加供应商。")
 
+    images = _images(payload)
+    task, explicit = detect_task(
+        payload.prompt,
+        requested_task=payload.task,
+        has_images=bool(images),
+        has_audio=payload.audio is not None,
+    )
+
     async def generate() -> AsyncIterator[str]:
         started_all = perf_counter()
         errors: list[str] = []
 
+        if task in {TASK_IMAGE, TASK_AUDIO}:
+            specialized_events: list[str] = []
+            completed = False
+            async for event in _emit_specialized(payload, providers, task, explicit):
+                specialized_events.append(event)
+                if '"type":"done"' in event or event == "data: [DONE]\n\n":
+                    completed = True
+                yield event
+            if completed:
+                return
+            if explicit or payload.audio is not None:
+                return
+            yield _sse("status", status="专项模型不可用，已回退文本模型回答。")
+
+        vision = task == TASK_VISION
         for provider in providers:
             api_key = str(provider.get("api_key") or "")
-            models = model_candidates(provider)
+            models = text_model_candidates(provider, vision=vision)
             if not api_key or not models:
-                errors.append(f"{provider['name']}：API Key 或文本模型未完整配置")
+                errors.append(f"{provider['name']}：API Key 或模型未完整配置")
                 continue
 
             for model in models:
-                for url in _chat_urls(provider["base_url"]):
+                body = chat_payload(
+                    model=model,
+                    system=payload.system,
+                    prompt=payload.prompt,
+                    max_tokens=payload.max_tokens,
+                    stream=True,
+                    images=images if vision else None,
+                )
+                for root in api_roots(str(provider.get("base_url") or "")):
+                    url = root.rstrip("/") + "/chat/completions"
                     answer_seen = False
                     try:
                         timeout_seconds = float(provider.get("timeout_seconds") or 60)
@@ -228,7 +381,7 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
                                     "Content-Type": "application/json",
                                     "Accept": "text/event-stream",
                                 },
-                                json=_request_body(payload, model, stream=True),
+                                json=body,
                             ) as response:
                                 if response.status_code >= 400:
                                     raw = (await response.aread()).decode("utf-8", errors="replace")
@@ -241,8 +394,7 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
                                 if "text/event-stream" not in content_type:
                                     raw = (await response.aread()).decode("utf-8", errors="replace")
                                     try:
-                                        data = json.loads(raw)
-                                        content = _extract_non_stream_content(data)
+                                        content = _extract_non_stream_content(json.loads(raw))
                                     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                                         errors.append(f"{provider['name']} / {model}：非 SSE 响应无法解析 {str(exc)[:120]}")
                                         continue
@@ -281,6 +433,7 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
                                 "done",
                                 model=model,
                                 provider=str(provider["name"]),
+                                task=TASK_VISION if vision else TASK_TEXT,
                                 latency_ms=int((perf_counter() - started_all) * 1000),
                             )
                             yield "data: [DONE]\n\n"

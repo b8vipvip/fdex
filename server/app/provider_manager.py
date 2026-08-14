@@ -17,6 +17,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from app.config import fresh_settings
 
 DEFAULT_PROTOCOLS = ["chat", "responses", "legacy"]
+AUDIO_PROTOCOLS = {"auto", "chat_audio", "speech"}
+AUDIO_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
 _RUNTIME = fresh_settings()
 _DATA_DIR = Path(_RUNTIME.app_dir) / "server" / "data"
 DB_PATH = _DATA_DIR / "ai-providers.db"
@@ -37,7 +39,13 @@ def normalize_base_url(value: str) -> str:
         return ""
     if not value.startswith(("http://", "https://")):
         value = "https://" + value
-    for suffix in ("/chat/completions", "/responses", "/completions"):
+    for suffix in (
+        "/chat/completions",
+        "/images/generations",
+        "/audio/speech",
+        "/responses",
+        "/completions",
+    ):
         if value.lower().endswith(suffix):
             value = value[: -len(suffix)].rstrip("/")
             break
@@ -62,6 +70,16 @@ def mask_key(value: str) -> str:
     if len(value) <= 8:
         return "*" * len(value)
     return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+
+def _normalize_audio_protocol(value: Any) -> str:
+    protocol = str(value or "auto").strip().lower()
+    return protocol if protocol in AUDIO_PROTOCOLS else "auto"
+
+
+def _normalize_audio_format(value: Any) -> str:
+    audio_format = str(value or "wav").strip().lower()
+    return audio_format if audio_format in AUDIO_FORMATS else "wav"
 
 
 class ProviderStore:
@@ -91,6 +109,13 @@ class ProviderStore:
                     backup_text_models_json TEXT NOT NULL DEFAULT '[]',
                     main_vision_model TEXT NOT NULL DEFAULT '',
                     backup_vision_models_json TEXT NOT NULL DEFAULT '[]',
+                    main_image_model TEXT NOT NULL DEFAULT '',
+                    backup_image_models_json TEXT NOT NULL DEFAULT '[]',
+                    main_audio_model TEXT NOT NULL DEFAULT '',
+                    backup_audio_models_json TEXT NOT NULL DEFAULT '[]',
+                    audio_protocol TEXT NOT NULL DEFAULT 'auto',
+                    audio_voice TEXT NOT NULL DEFAULT 'alloy',
+                    audio_format TEXT NOT NULL DEFAULT 'wav',
                     protocol_order_json TEXT NOT NULL DEFAULT '["chat","responses","legacy"]',
                     model_capabilities_json TEXT NOT NULL DEFAULT '{}',
                     timeout_seconds INTEGER NOT NULL DEFAULT 60,
@@ -106,10 +131,27 @@ class ProviderStore:
                     ON providers(enabled, priority, id);
                 """
             )
+            self._ensure_multimodal_columns(conn)
         try:
             os.chmod(self.db_path, 0o600)
         except OSError:
             pass
+
+    @staticmethod
+    def _ensure_multimodal_columns(conn: sqlite3.Connection) -> None:
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+        additions = {
+            "main_image_model": "TEXT NOT NULL DEFAULT ''",
+            "backup_image_models_json": "TEXT NOT NULL DEFAULT '[]'",
+            "main_audio_model": "TEXT NOT NULL DEFAULT ''",
+            "backup_audio_models_json": "TEXT NOT NULL DEFAULT '[]'",
+            "audio_protocol": "TEXT NOT NULL DEFAULT 'auto'",
+            "audio_voice": "TEXT NOT NULL DEFAULT 'alloy'",
+            "audio_format": "TEXT NOT NULL DEFAULT 'wav'",
+        }
+        for column, ddl in additions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE providers ADD COLUMN {column} {ddl}")
 
     def _cipher(self) -> Fernet:
         if self._fernet is not None:
@@ -174,8 +216,12 @@ class ProviderStore:
         data["auto_test_enabled"] = bool(data["auto_test_enabled"])
         data["backup_text_models"] = _parse(data.pop("backup_text_models_json"), [])
         data["backup_vision_models"] = _parse(data.pop("backup_vision_models_json"), [])
+        data["backup_image_models"] = _parse(data.pop("backup_image_models_json"), [])
+        data["backup_audio_models"] = _parse(data.pop("backup_audio_models_json"), [])
         data["protocol_order"] = _parse(data.pop("protocol_order_json"), DEFAULT_PROTOCOLS.copy())
         data["model_capabilities"] = _parse(data.pop("model_capabilities_json"), {})
+        data["audio_protocol"] = _normalize_audio_protocol(data.get("audio_protocol"))
+        data["audio_format"] = _normalize_audio_format(data.get("audio_format"))
         cipher = data.pop("api_key_cipher")
         plain = self.decrypt(cipher) if cipher else ""
         data["api_key_masked"] = mask_key(plain)
@@ -206,30 +252,45 @@ class ProviderStore:
         if not name or not base_url.startswith(("http://", "https://")):
             raise ValueError("供应商名称或 BaseUrl 无效")
         now = _now()
+        columns = [
+            "name", "base_url", "api_key_cipher", "enabled", "priority",
+            "main_text_model", "backup_text_models_json",
+            "main_vision_model", "backup_vision_models_json",
+            "main_image_model", "backup_image_models_json",
+            "main_audio_model", "backup_audio_models_json", "audio_protocol", "audio_voice", "audio_format",
+            "protocol_order_json", "model_capabilities_json", "timeout_seconds",
+            "auto_test_enabled", "auto_test_interval_hours", "created_at", "updated_at",
+        ]
+        params = (
+            name,
+            base_url,
+            self.encrypt(str(values.get("api_key") or "").strip()),
+            1 if values.get("enabled", True) else 0,
+            max(1, int(values.get("priority") or 100)),
+            str(values.get("main_text_model") or "").strip(),
+            _json(self._models(values.get("backup_text_models"))),
+            str(values.get("main_vision_model") or "").strip(),
+            _json(self._models(values.get("backup_vision_models"))),
+            str(values.get("main_image_model") or "").strip(),
+            _json(self._models(values.get("backup_image_models"))),
+            str(values.get("main_audio_model") or "").strip(),
+            _json(self._models(values.get("backup_audio_models"))),
+            _normalize_audio_protocol(values.get("audio_protocol")),
+            str(values.get("audio_voice") or "alloy").strip() or "alloy",
+            _normalize_audio_format(values.get("audio_format")),
+            _json(self._protocols(values.get("protocol_order"))),
+            "{}",
+            max(5, min(600, int(values.get("timeout_seconds") or 60))),
+            1 if values.get("auto_test_enabled", False) else 0,
+            max(1, min(720, int(values.get("auto_test_interval_hours") or 12))),
+            now,
+            now,
+        )
+        placeholders = ",".join("?" for _ in columns)
         with self.db() as conn:
             cur = conn.execute(
-                """INSERT INTO providers(
-                    name,base_url,api_key_cipher,enabled,priority,main_text_model,
-                    backup_text_models_json,main_vision_model,backup_vision_models_json,
-                    protocol_order_json,model_capabilities_json,timeout_seconds,
-                    auto_test_enabled,auto_test_interval_hours,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    name, base_url, self.encrypt(str(values.get("api_key") or "").strip()),
-                    1 if values.get("enabled", True) else 0,
-                    max(1, int(values.get("priority") or 100)),
-                    str(values.get("main_text_model") or "").strip(),
-                    _json(self._models(values.get("backup_text_models"))),
-                    str(values.get("main_vision_model") or "").strip(),
-                    _json(self._models(values.get("backup_vision_models"))),
-                    _json(self._protocols(values.get("protocol_order"))),
-                    "{}",
-                    max(5, min(600, int(values.get("timeout_seconds") or 60))),
-                    1 if values.get("auto_test_enabled", False) else 0,
-                    max(1, min(720, int(values.get("auto_test_interval_hours") or 12))),
-                    now,
-                    now,
-                ),
+                f"INSERT INTO providers({','.join(columns)}) VALUES({placeholders})",
+                params,
             )
             provider_id = int(cur.lastrowid)
         return self.get(provider_id)
@@ -244,9 +305,12 @@ class ProviderStore:
         key = incoming_key if incoming_key else old.get("api_key", "")
         with self.db() as conn:
             conn.execute(
-                """UPDATE providers SET name=?,base_url=?,api_key_cipher=?,enabled=?,priority=?,
+                """UPDATE providers SET
+                    name=?,base_url=?,api_key_cipher=?,enabled=?,priority=?,
                     main_text_model=?,backup_text_models_json=?,main_vision_model=?,backup_vision_models_json=?,
-                    protocol_order_json=?,timeout_seconds=?,auto_test_enabled=?,auto_test_interval_hours=?,updated_at=?
+                    main_image_model=?,backup_image_models_json=?,main_audio_model=?,backup_audio_models_json=?,
+                    audio_protocol=?,audio_voice=?,audio_format=?,protocol_order_json=?,timeout_seconds=?,
+                    auto_test_enabled=?,auto_test_interval_hours=?,updated_at=?
                     WHERE id=?""",
                 (
                     name,
@@ -258,6 +322,13 @@ class ProviderStore:
                     _json(self._models(values.get("backup_text_models", old["backup_text_models"]))),
                     str(values.get("main_vision_model", old["main_vision_model"])).strip(),
                     _json(self._models(values.get("backup_vision_models", old["backup_vision_models"]))),
+                    str(values.get("main_image_model", old["main_image_model"])).strip(),
+                    _json(self._models(values.get("backup_image_models", old["backup_image_models"]))),
+                    str(values.get("main_audio_model", old["main_audio_model"])).strip(),
+                    _json(self._models(values.get("backup_audio_models", old["backup_audio_models"]))),
+                    _normalize_audio_protocol(values.get("audio_protocol", old["audio_protocol"])),
+                    str(values.get("audio_voice", old["audio_voice"]) or "alloy").strip() or "alloy",
+                    _normalize_audio_format(values.get("audio_format", old["audio_format"])),
                     _json(self._protocols(values.get("protocol_order", old["protocol_order"]))),
                     max(5, min(600, int(values.get("timeout_seconds", old["timeout_seconds"])))),
                     1 if values.get("auto_test_enabled", old["auto_test_enabled"]) else 0,
@@ -336,15 +407,45 @@ def provider_stats() -> dict[str, int]:
         "total": len(providers),
         "enabled": sum(1 for p in providers if p["enabled"]),
         "healthy": sum(1 for p in providers if str(p["last_status"]).startswith("可用")),
+        "image": sum(1 for p in providers if image_model_candidates(p)),
+        "audio": sum(1 for p in providers if audio_model_candidates(p)),
     }
 
 
-def model_candidates(provider: dict[str, Any]) -> list[str]:
-    values = [provider.get("main_text_model", ""), *(provider.get("backup_text_models") or [])]
+def _dedupe_models(values: Iterable[Any]) -> list[str]:
     return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
 
 
-def _api_roots(base_url: str) -> list[str]:
+def text_model_candidates(provider: dict[str, Any], *, vision: bool = False) -> list[str]:
+    if vision:
+        overrides = _dedupe_models(
+            [provider.get("main_vision_model", ""), *(provider.get("backup_vision_models") or [])]
+        )
+        if overrides:
+            return overrides
+    return _dedupe_models(
+        [provider.get("main_text_model", ""), *(provider.get("backup_text_models") or [])]
+    )
+
+
+def model_candidates(provider: dict[str, Any]) -> list[str]:
+    """Backward-compatible alias for text routing."""
+    return text_model_candidates(provider)
+
+
+def image_model_candidates(provider: dict[str, Any]) -> list[str]:
+    return _dedupe_models(
+        [provider.get("main_image_model", ""), *(provider.get("backup_image_models") or [])]
+    )
+
+
+def audio_model_candidates(provider: dict[str, Any]) -> list[str]:
+    return _dedupe_models(
+        [provider.get("main_audio_model", ""), *(provider.get("backup_audio_models") or [])]
+    )
+
+
+def api_roots(base_url: str) -> list[str]:
     base = normalize_base_url(base_url)
     if base.endswith("/v1"):
         roots = [base, base[:-3].rstrip("/")]
@@ -372,7 +473,7 @@ def _extract_models(data: Any) -> list[str]:
             value = item.get("id") or item.get("name") or item.get("model")
             if value:
                 out.append(str(value))
-    return list(dict.fromkeys(x.strip() for x in out if x.strip()))
+    return _dedupe_models(out)
 
 
 def _extract_chat(data: dict[str, Any]) -> str:
@@ -397,6 +498,11 @@ def _version_key(model: str) -> tuple[int, ...]:
 
 
 async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, Any]:
+    """Probe text routing only.
+
+    Periodic deep tests deliberately avoid image/audio generation so scheduled
+    health checks cannot create recurring media-generation costs.
+    """
     store = provider_store()
     provider = store.get(provider_id, include_secret=True)
     if not provider.get("api_key"):
@@ -406,7 +512,7 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
     started = perf_counter()
     discovered: list[str] = []
     if mode == "deep":
-        for root in _api_roots(provider["base_url"]):
+        for root in api_roots(provider["base_url"]):
             try:
                 async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
                     response = await client.get(
@@ -420,14 +526,14 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
             except (httpx.HTTPError, ValueError):
                 continue
 
-    configured = model_candidates(provider)
+    configured = text_model_candidates(provider)
     models = discovered if discovered else configured
     if mode != "deep":
         models = configured[:1]
-    models = list(dict.fromkeys(models))[:20]
+    models = _dedupe_models(models)[:20]
     if not models:
-        store.record_probe(provider_id, status="失败：没有可测试模型", latency_ms=0)
-        return {"ok": False, "message": "没有可测试模型", "models": [], "latency_ms": 0}
+        store.record_probe(provider_id, status="失败：没有可测试文本模型", latency_ms=0)
+        return {"ok": False, "message": "没有可测试文本模型", "models": [], "latency_ms": 0}
 
     results: list[dict[str, Any]] = []
     capabilities = dict(provider.get("model_capabilities") or {})
@@ -445,7 +551,7 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
         success = False
         error = ""
         status_code: int | None = None
-        for root in _api_roots(provider["base_url"]):
+        for root in api_roots(provider["base_url"]):
             url = root.rstrip("/") + "/chat/completions"
             try:
                 async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
@@ -466,14 +572,16 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
         caps["chat"] = success
         caps.setdefault("responses", False)
         caps.setdefault("legacy", False)
-        results.append({
-            "model": model,
-            "protocol": "chat",
-            "ok": success,
-            "status": status_code,
-            "latency_ms": latency,
-            "error": error,
-        })
+        results.append(
+            {
+                "model": model,
+                "protocol": "chat",
+                "ok": success,
+                "status": status_code,
+                "latency_ms": latency,
+                "error": error,
+            }
+        )
         capabilities[model] = caps
 
     usable = [model for model in models if capabilities.get(model, {}).get("chat")]
@@ -488,7 +596,7 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
     ok = bool(usable)
     store.record_probe(
         provider_id,
-        status=(f"可用：{len(usable)} 个模型" if ok else "失败：主/备用模型不可用"),
+        status=(f"可用：{len(usable)} 个文本模型" if ok else "失败：主/备用文本模型不可用"),
         latency_ms=elapsed,
         capabilities=capabilities,
         main_model=main,
@@ -496,7 +604,7 @@ async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, 
     )
     return {
         "ok": ok,
-        "message": (f"发现 {len(usable)} 个可用模型" if ok else "未发现可用模型"),
+        "message": (f"发现 {len(usable)} 个可用文本模型" if ok else "未发现可用文本模型"),
         "models": usable,
         "results": results,
         "latency_ms": elapsed,
@@ -529,5 +637,12 @@ async def run_due_provider_tests() -> list[dict[str, Any]]:
             result = await probe_provider(int(provider["id"]), mode="deep")
             results.append({"provider_id": provider["id"], "provider": provider["name"], **result})
         except Exception as exc:
-            results.append({"provider_id": provider["id"], "provider": provider["name"], "ok": False, "message": str(exc)[:300]})
+            results.append(
+                {
+                    "provider_id": provider["id"],
+                    "provider": provider["name"],
+                    "ok": False,
+                    "message": str(exc)[:300],
+                }
+            )
     return results
