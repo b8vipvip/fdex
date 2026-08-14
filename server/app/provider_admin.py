@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -11,6 +10,7 @@ from starlette.responses import Response
 
 from app.audit import write_audit
 from app.config import SERVER_DIR, fresh_settings
+from app.multimodal_service import probe_specialized_capabilities
 from app.provider_manager import KEY_PATH, DB_PATH, probe_provider, provider_stats, provider_store
 from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, verify_csrf
 
@@ -91,6 +91,13 @@ async def save_provider(request: Request) -> Response:
         "backup_text_models": _models(str(form.get("backup_text_models") or "")),
         "main_vision_model": str(form.get("main_vision_model") or "").strip(),
         "backup_vision_models": _models(str(form.get("backup_vision_models") or "")),
+        "main_image_model": str(form.get("main_image_model") or "").strip(),
+        "backup_image_models": _models(str(form.get("backup_image_models") or "")),
+        "main_audio_model": str(form.get("main_audio_model") or "").strip(),
+        "backup_audio_models": _models(str(form.get("backup_audio_models") or "")),
+        "audio_protocol": str(form.get("audio_protocol") or "auto").strip().lower(),
+        "audio_voice": str(form.get("audio_voice") or "alloy").strip(),
+        "audio_format": str(form.get("audio_format") or "wav").strip().lower(),
         "protocol_order": _protocols(form),
         "timeout_seconds": int(str(form.get("timeout_seconds") or "60")),
         "auto_test_enabled": form.get("auto_test_enabled") is not None,
@@ -111,18 +118,25 @@ async def save_provider(request: Request) -> Response:
     if not 1 <= int(values["auto_test_interval_hours"]) <= 720:
         set_flash(request, "自动深测周期必须在 1 到 720 小时之间。", "error")
         return _redirect(provider_id or None)
+    if values["audio_protocol"] not in {"auto", "chat_audio", "speech"}:
+        set_flash(request, "语音调用方式无效。", "error")
+        return _redirect(provider_id or None)
+    if values["audio_format"] not in {"mp3", "opus", "aac", "flac", "wav", "pcm"}:
+        set_flash(request, "语音输出格式无效。", "error")
+        return _redirect(provider_id or None)
+    if not values["audio_voice"] or len(str(values["audio_voice"])) > 80:
+        set_flash(request, "语音 Voice 不能为空且不能超过 80 个字符。", "error")
+        return _redirect(provider_id or None)
 
     store = provider_store()
     try:
         if provider_id:
-            before = store.get(provider_id)
             item = store.update(provider_id, **values)
             if form.get("clear_api_key") is not None:
                 store.clear_key(provider_id)
                 item = store.get(provider_id)
             action = "update_ai_provider"
         else:
-            before = None
             item = store.create(**values)
             action = "create_ai_provider"
     except (KeyError, ValueError, RuntimeError) as exc:
@@ -139,6 +153,8 @@ async def save_provider(request: Request) -> Response:
         enabled=item["enabled"],
         priority=item["priority"],
         main_text_model=item["main_text_model"],
+        main_image_model=item["main_image_model"],
+        main_audio_model=item["main_audio_model"],
     )
     set_flash(request, f"供应商“{item['name']}”已保存。")
     return _redirect()
@@ -179,25 +195,54 @@ async def test_provider(
     if redirect := _guard(request):
         return redirect
     verify_csrf(request, csrf_token)
-    mode = "deep" if mode == "deep" else "ordinary"
+    store = provider_store()
     try:
-        item = provider_store().get(provider_id)
-        result = await probe_provider(provider_id, mode=mode)
+        item = store.get(provider_id)
+        if mode == "specialized":
+            result = await probe_specialized_capabilities(provider_id)
+            parts: list[str] = []
+            for key, label in (("vision", "视觉"), ("image_generation", "图片"), ("audio", "语音")):
+                value = result.get(key, {})
+                if value.get("skipped"):
+                    parts.append(f"{label}=未配置")
+                elif value.get("ok"):
+                    parts.append(f"{label}=可用({value.get('model') or '-'})")
+                else:
+                    parts.append(f"{label}=失败")
+            ok = any(bool(result.get(key, {}).get("ok")) for key in ("vision", "image_generation", "audio"))
+            write_audit(
+                request,
+                "test_ai_provider_specialized",
+                success=ok,
+                provider_id=provider_id,
+                provider_name=item["name"],
+                result=result,
+            )
+            set_flash(
+                request,
+                f"{item['name']} 专项能力测试：" + "，".join(parts),
+                "success" if ok else "error",
+            )
+            return _redirect()
+
+        normalized_mode = "deep" if mode == "deep" else "ordinary"
+        result = await probe_provider(provider_id, mode=normalized_mode)
     except (KeyError, RuntimeError) as exc:
         write_audit(request, "test_ai_provider", success=False, provider_id=provider_id, mode=mode, error=str(exc))
         set_flash(request, f"测试失败：{exc}", "error")
         return _redirect()
+
     write_audit(
         request,
         "test_ai_provider",
         success=bool(result.get("ok")),
         provider_id=provider_id,
         provider_name=item["name"],
-        mode=mode,
+        mode=normalized_mode,
         latency_ms=result.get("latency_ms", 0),
         usable_models=len(result.get("models", [])),
     )
-    label = "深度测试" if mode == "deep" else "普通测试"
+    label = "深度测试" if normalized_mode == "deep" else "普通测试"
     set_flash(
         request,
         f"{item['name']} {label}：{result.get('message', '完成')}（耗时 {result.get('latency_ms', 0)} ms）",
