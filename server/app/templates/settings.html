@@ -1,12 +1,17 @@
 {% extends "base.html" %}
 {% block title %}服务配置 · FDEX{% endblock %}
 {% block heading %}服务配置{% endblock %}
-{% block subheading %}统一管理服务地址、运行参数和第三方 AI 接口{% endblock %}
+{% block subheading %}管理服务地址、运行参数和后台安全；AI 接口已迁移到独立供应商管理{% endblock %}
 {% block actions %}<a class="button secondary" href="/admin">返回仪表盘</a>{% endblock %}
 
 {% block content %}
 <form method="post" action="/admin/settings" class="settings-form" data-confirm="保存配置后，部分设置需要重启服务才能生效。确定保存吗？">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<!-- Legacy AI values are preserved only as one-time migration source. New AI changes belong to /admin/providers. -->
+<input type="hidden" name="ai_provider" value="{{ settings.ai_provider }}">
+<input type="hidden" name="ai_base_url" value="{{ settings.ai_base_url }}">
+<input type="hidden" name="ai_model" value="{{ settings.ai_model }}">
+<input type="hidden" name="ai_timeout_seconds" value="{{ settings.ai_timeout_seconds }}">
 
 <section class="panel form-section">
     <div class="panel-header"><div><h2>基础信息</h2><p>服务名称、版本和公开访问地址</p></div></div>
@@ -38,16 +43,14 @@
 </section>
 
 <section class="panel form-section" id="ai">
-    <div class="panel-header"><div><h2>AI 接口配置</h2><p>兼容 OpenAI Chat Completions 的中转站或官方接口</p></div><span class="badge {{ 'success' if settings.ai_enabled else 'warning' }}">{{ '已配置' if settings.ai_enabled else '未完整配置' }}</span></div>
-    <div class="form-grid">
-        <label class="field"><span>Provider</span><input name="ai_provider" value="{{ settings.ai_provider }}" required><small>当前建议使用 openai_compatible</small></label>
-        <label class="field"><span>模型名称</span><input name="ai_model" value="{{ settings.ai_model }}" placeholder="例如 gpt-4.1-mini"></label>
-        <label class="field full-row"><span>AI Base URL</span><input type="url" name="ai_base_url" value="{{ settings.ai_base_url }}" placeholder="https://api.example.com/v1"></label>
-        <label class="field"><span>API Key</span><input type="password" name="ai_api_key" autocomplete="new-password" placeholder="留空则保持当前密钥"><small>当前：<code>{{ masked_api_key }}</code></small></label>
-        <label class="field"><span>请求超时（秒）</span><input type="number" name="ai_timeout_seconds" value="{{ settings.ai_timeout_seconds }}" min="5" max="600" step="1"></label>
-        <label class="checkbox-field full-row"><input type="checkbox" name="clear_ai_api_key" value="yes"><span>清除当前 API Key</span></label>
+    <div class="panel-header"><div><h2>AI 供应商配置</h2><p>单一 BaseUrl / API Key / Model 表单已升级为多供应商模型池</p></div><span class="badge success">多供应商模式</span></div>
+    <div class="content-grid equal" style="margin-bottom:0">
+        <div>
+            <p class="muted" style="line-height:1.8;margin-top:0">新的供应商控制台支持优先级、主/备用文本模型、视觉模型、协议顺序、普通测试、深度测试和定时健康检查。Android 只调用 FDEX 服务端，不会获得任何上游 ApiKey。</p>
+            <a class="button primary" href="/admin/providers">打开 AI 供应商管理</a>
+        </div>
+        <div class="inline-note warning-note" style="margin-top:0">兼容迁移：如果供应商数据库为空，FDEX 会读取当前旧版 <code>AI_BASE_URL / AI_API_KEY / AI_MODEL</code>，自动建立名为“原 FDEX AI 接口”的第一个供应商。之后请只在供应商管理页面修改 AI 接口。</div>
     </div>
-    <div class="inline-note warning-note">“测试 AI 接口”会优先请求 <code>/models</code>；不支持该接口时，会发送一次最多 2 token 的最小对话请求。</div>
 </section>
 
 <section class="panel form-section" id="security">
@@ -61,18 +64,16 @@
 </section>
 
 <div class="sticky-actions">
-    <button class="button primary" type="submit">保存全部配置</button>
-    <span>配置保存后不会自动暴露密钥；涉及端口或路由的修改需重启。</span>
+    <button class="button primary" type="submit">保存服务配置</button>
+    <span>AI 供应商不再随此表单保存；涉及端口或会话配置的修改仍需重启服务。</span>
 </div>
 </form>
 
 <div class="content-grid equal lower-grid">
     <section class="panel">
-        <div class="panel-header"><div><h2>接口连通性</h2><p>使用当前已保存的服务端配置</p></div></div>
-        <form method="post" action="/admin/test-ai">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button secondary full" type="submit" {% if not settings.ai_enabled %}disabled{% endif %}>测试 AI 接口</button>
-        </form>
+        <div class="panel-header"><div><h2>AI 连通性与模型发现</h2><p>在供应商页按线路单独测试</p></div></div>
+        <p class="muted">普通测试验证主文本模型；深度测试会尝试模型发现和主备模型能力更新。</p>
+        <a class="button secondary full" href="/admin/providers">进入供应商测试中心</a>
     </section>
 
     <section class="panel">
