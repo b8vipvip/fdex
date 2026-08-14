@@ -1,11 +1,13 @@
 package com.b8vipvip.fdex.network
 
+import android.content.Context
 import com.b8vipvip.fdex.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -24,11 +26,16 @@ sealed interface AiStreamEvent {
 }
 
 object ClientAiApi {
-    suspend fun ask(system: String?, prompt: String, maxTokens: Int = 1200): AiGatewayResult = withContext(Dispatchers.IO) {
+    suspend fun ask(
+        system: String?,
+        prompt: String,
+        maxTokens: Int = 1200,
+        context: Context? = null,
+    ): AiGatewayResult = withContext(Dispatchers.IO) {
         val connection = open("/api/client/ai") ?: return@withContext AiGatewayResult.Failure("服务地址无效")
         try {
             configure(connection, accept = "application/json")
-            writePayload(connection, system, prompt, maxTokens)
+            writePayload(connection, system, prompt, maxTokens, context)
 
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
@@ -49,7 +56,12 @@ object ClientAiApi {
         }
     }
 
-    fun streamAsk(system: String?, prompt: String, maxTokens: Int = 1200): Flow<AiStreamEvent> = flow {
+    fun streamAsk(
+        system: String?,
+        prompt: String,
+        maxTokens: Int = 1200,
+        context: Context? = null,
+    ): Flow<AiStreamEvent> = flow {
         val connection = open("/api/client/ai/stream")
         if (connection == null) {
             emit(AiStreamEvent.Failure("服务地址无效"))
@@ -61,7 +73,7 @@ object ClientAiApi {
             connection.useCaches = false
             connection.setRequestProperty("Cache-Control", "no-cache")
             connection.setRequestProperty("Accept-Encoding", "identity")
-            writePayload(connection, system, prompt, maxTokens)
+            writePayload(connection, system, prompt, maxTokens, context)
 
             val code = connection.responseCode
             if (code !in 200..299) {
@@ -111,11 +123,32 @@ object ClientAiApi {
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
     }
 
-    private fun writePayload(connection: HttpURLConnection, system: String?, prompt: String, maxTokens: Int) {
+    private fun writePayload(
+        connection: HttpURLConnection,
+        system: String?,
+        prompt: String,
+        maxTokens: Int,
+        context: Context?,
+    ) {
+        val prepared = prepareAiContent(context, prompt)
         val payload = JSONObject()
-            .put("prompt", prompt)
+            .put("prompt", prepared.prompt)
             .put("max_tokens", maxTokens.coerceIn(32, 4000))
+
         if (!system.isNullOrBlank()) payload.put("system", system)
+        if (prepared.images.isNotEmpty()) {
+            payload.put(
+                "images",
+                JSONArray().apply {
+                    prepared.images.forEach { image ->
+                        put(JSONObject().put("url", image.url).put("detail", image.detail))
+                    }
+                },
+            )
+        }
+        prepared.audio?.let { audio ->
+            payload.put("audio", JSONObject().put("data", audio.data).put("format", audio.format))
+        }
         connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
     }
 
