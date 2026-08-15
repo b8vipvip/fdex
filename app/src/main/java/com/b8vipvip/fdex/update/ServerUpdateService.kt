@@ -36,8 +36,9 @@ object ServerUpdateService {
                 if (status != "ready") {
                     return@runCatching UpdateCheckResult.Failed(
                         when (status) {
-                            "waiting_for_server_cache" -> "服务端正在等待 GitHub 编译结果并同步 APK"
-                            "cache_incomplete" -> "服务端 APK 缓存尚未就绪"
+                            "waiting_for_server_cache" -> "服务端发现了更新，正在同步真正的最新版本 APK，请稍后重试"
+                            "latest_version_unverified" -> "服务端正在确认 GitHub 当前最新版本，请稍后重试"
+                            "cache_incomplete" -> "最新版本 APK 缓存尚未就绪，请稍后重试"
                             else -> "服务端更新服务暂未就绪"
                         },
                     )
@@ -49,7 +50,7 @@ object ServerUpdateService {
 
                 val apkUrl = json.optString("apk_url").takeIf(String::isNotBlank)
                 if (apkUrl == null) {
-                    return@runCatching UpdateCheckResult.Failed("服务端已发现新版本，但 APK 下载地址尚未就绪")
+                    return@runCatching UpdateCheckResult.Failed("服务端已发现新版本，但最新 APK 下载地址尚未就绪")
                 }
 
                 val tagName = json.optString("tag_name")
