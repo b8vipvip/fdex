@@ -62,6 +62,19 @@ internal sealed interface Route {
     data object About : Route
 }
 
+internal fun fallbackBackTarget(route: Route): Route = when (route) {
+    Route.Login -> Route.Login
+    Route.Register -> Route.Login
+    Route.Messages -> Route.Messages
+    else -> Route.Messages
+}
+
+internal fun shouldHandleSystemBack(
+    route: Route,
+    hasHistory: Boolean,
+    overlayOpen: Boolean,
+): Boolean = overlayOpen || (route != Route.Login && (hasHistory || route != Route.Messages))
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FdexApp() {
@@ -88,12 +101,7 @@ fun FdexApp() {
         route = if (history.isNotEmpty()) {
             history.removeAt(history.lastIndex)
         } else {
-            when (route) {
-                Route.Login -> Route.Login
-                Route.Register -> Route.Login
-                Route.Messages -> Route.Messages
-                else -> Route.Messages
-            }
+            fallbackBackTarget(route)
         }
     }
     suspend fun checkUpdate(manual: Boolean) {
@@ -117,9 +125,14 @@ fun FdexApp() {
     }
 
     val mainTab = route == Route.Messages || route == Route.Work || route == Route.Discover || route == Route.Me
-    val shouldHandleSystemBack = employeeMenu || (route != Route.Login && (history.isNotEmpty() || route != Route.Messages))
 
-    BackHandler(enabled = shouldHandleSystemBack) {
+    BackHandler(
+        enabled = shouldHandleSystemBack(
+            route = route,
+            hasHistory = history.isNotEmpty(),
+            overlayOpen = employeeMenu,
+        ),
+    ) {
         if (employeeMenu) {
             employeeMenu = false
         } else {
