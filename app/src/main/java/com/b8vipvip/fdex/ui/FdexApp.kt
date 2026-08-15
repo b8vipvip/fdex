@@ -1,5 +1,6 @@
 package com.b8vipvip.fdex.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -61,6 +62,19 @@ internal sealed interface Route {
     data object About : Route
 }
 
+internal fun fallbackBackTarget(route: Route): Route = when (route) {
+    Route.Login -> Route.Login
+    Route.Register -> Route.Login
+    Route.Messages -> Route.Messages
+    else -> Route.Messages
+}
+
+internal fun shouldHandleSystemBack(
+    route: Route,
+    hasHistory: Boolean,
+    overlayOpen: Boolean,
+): Boolean = overlayOpen || (route != Route.Login && (hasHistory || route != Route.Messages))
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FdexApp() {
@@ -84,7 +98,11 @@ fun FdexApp() {
     }
     fun back() {
         employeeMenu = false
-        route = if (history.isNotEmpty()) history.removeAt(history.lastIndex) else Route.Messages
+        route = if (history.isNotEmpty()) {
+            history.removeAt(history.lastIndex)
+        } else {
+            fallbackBackTarget(route)
+        }
     }
     suspend fun checkUpdate(manual: Boolean) {
         if (updateChecking) return
@@ -107,6 +125,21 @@ fun FdexApp() {
     }
 
     val mainTab = route == Route.Messages || route == Route.Work || route == Route.Discover || route == Route.Me
+
+    BackHandler(
+        enabled = shouldHandleSystemBack(
+            route = route,
+            hasHistory = history.isNotEmpty(),
+            overlayOpen = employeeMenu,
+        ),
+    ) {
+        if (employeeMenu) {
+            employeeMenu = false
+        } else {
+            back()
+        }
+    }
+
     val title = when (val current = route) {
         Route.Login -> "登录"
         Route.Register -> "注册"
