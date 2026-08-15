@@ -4,8 +4,8 @@
 
 ## 当前正式基线
 
-- Android 正式版：v1.1.11
-- v1.1.11 状态：已发布；实时语音通话中的纯文字锁定同一供应商/模型/Realtime 会话，并补全 Barge-in 打断链路
+- Android 正式版：v1.1.13
+- v1.1.13 状态：已发布；修复实时语音客户端播放路由，并增加端到端语音诊断日志
 - 服务端：FastAPI + systemd + 宝塔/Nginx
 - Android：Kotlin + Jetpack Compose
 - AI 接入：服务端多供应商管理，客户端不保存第三方 API Key
@@ -25,6 +25,8 @@
 - 员工私聊实时语音双入口：输入框右侧麦克风 + `＋ → 实时语音通话`
 - 实时语音使用聊天页顶部悬浮声波条，支持麦克风、扬声器与结束控制
 - 实时语音期间可发送纯文字到同一 Realtime 会话，不重新选择供应商或模型
+- Android 系统返回键/边缘返回手势已接入 FDEX 自己的 route/history 页面栈
+- Android 12+ 实时语音使用正式 CommunicationDevice 路由，并申请语音通信音频焦点
 - App 内服务端检查更新、APK 校验与覆盖安装
 
 ### AI 服务端
@@ -37,6 +39,7 @@
 - OpenAI-compatible Realtime 语音供应商 WebSocket 桥
 - chat2api `chat2api-live-v1` GPT-Live WebSocket 桥
 - Realtime 同会话文字注入与 Barge-in 打断
+- Realtime 端到端诊断日志：上游/下游 PCM 帧字节、Android 接收/播放、AudioTrack 状态、打断时序和会话汇总
 - chat2api/OpenAI-compatible SSE 文本流式透传
 - reasoning/status/media 事件兼容
 - 普通测试、文本深测、专项测试、自动文本深测 timer
@@ -91,7 +94,7 @@
 
 ### 2. chat2api GPT-Live 实际协议适配
 
-核对 chat2api `agent/live-voice-external-app-v20-2` 后确认：它的实时协议不是 OpenAI Realtime wire protocol，而是自定义 `chat2api-live-v1`。
+核对 chat2api 对应 Live 分支后确认：它的实时协议不是 OpenAI Realtime wire protocol，而是自定义 `chat2api-live-v1`。
 
 实际协议：
 
@@ -163,12 +166,10 @@ v1.1.10 中，虽然语音 WebSocket 会保持连接，但用户在通话期间�
 - 实时语音 active 且消息为纯文字时，不再调用普通 AI HTTP/SSE 接口。
 - Android 通过当前 `RealtimeVoiceSession.sendText()` 向已经建立的同一个 FDEX Realtime WebSocket 发送 `{type:"text"}`。
 - FDEX 服务端不重新访问供应商池；直接使用该 WebSocket 建立时已经选定的 `chosen_provider / chosen_model / chosen_protocol`。
-- chat2api GPT-Live 固定转发控制帧：`{"type":"input.text","text":"..."}`。
+- chat2api GPT-Live 固定转发同会话文字控制帧。
 - OpenAI-compatible Realtime 固定映射成 `conversation.item.create(input_text)` + `response.create`。
 - 如果实时会话尚未 ready，Android 明确提示“文字未发送；不会切换供应商或模型”，不做普通线路 fallback。
 - 带图片/文件等附件的消息仍属于多模态任务，不伪装成实时纯文字；本次锁定规则针对“通话中发送纯文字”。
-
-当前 chat2api `agent/live-voice-external-app-v20-2` 在 FDEX 本轮核对时尚未实现 `input.text` 控制帧；FDEX 已固定协议契约。chat2api 后续增加该控制帧后，同一 GPT-Live 会话即可直接接收文字，不需要再修改 FDEX 的供应商路由架构。
 
 ### 2. Barge-in 打断现状与修复
 
@@ -183,8 +184,8 @@ v1.1.10 中，虽然语音 WebSocket 会保持连接，但用户在通话期间�
 v1.1.11 补全为：
 
 1. 用户重新开口，chat2api 报 `input_audio_buffer.speech_started`。
-2. FDEX 立即向同一 chat2api Live WebSocket 发送 `response.cancel`。
-3. chat2api 浏览器桥执行 `voice.live.cancel`，并返回 `response.interrupted`。
+2. FDEX 向同一 chat2api Live WebSocket 发送 `response.cancel`。
+3. chat2api 浏览器桥停止当前回答，并返回 `response.interrupted`。
 4. FDEX 将 `speech_started` 与 `response.interrupted` 都归一化成内部 `interrupt` 事件。
 5. Android 一收到 `interrupt`，立即对当前 `AudioTrack` 执行 `pause → flush → play`，清除尚未播放的 AI 音频。
 6. 已经实际说出的 AI 文本转写单独保存，然后清空当前 response buffer，下一轮回答从空缓冲开始。
@@ -192,11 +193,55 @@ v1.1.11 补全为：
 
 ### 3. 回归测试
 
-- FastAPI 测试覆盖 `input.text` chat2api 契约。
+- FastAPI 测试覆盖 Realtime 同会话文字契约。
 - FastAPI 测试覆盖 OpenAI Realtime `conversation.item.create + response.create` 文本映射。
 - 测试 `speech_started` 会归一化为 `interrupt`。
 - 测试 chat2api `response.interrupted` 会归一化为 `interrupt`。
 - Android 构建验证新增 `Interrupted` 事件、`sendText()` 和 AudioTrack flush 逻辑可以正常编译。
+
+## v1.1.12：系统返回手势接入应用页面栈
+
+状态：**PR #28 已合并，FastAPI / Android 全量 CI 通过，正式签名 Release 已发布。**
+
+- 修复手机左侧向右滑/系统 Back 在二级页面直接结束 `MainActivity`、回到桌面的问题。
+- Android `BackHandler` 统一接入 FDEX 的 `route + history`。
+- 员工聊天、群聊、工作详情、设置、账号、关于等页面优先回应用内上一页。
+- 工作 / 发现 / 我的根 Tab 无内部历史时先回消息页；消息根页才允许退出 App。
+- 注册页返回登录；员工聊天右上角菜单展开时先关闭菜单。
+- 增加返回策略单元测试，避免后续导航改动重新引入同类问题。
+
+## v1.1.13：实时语音无声修复 + 端到端诊断
+
+状态：**PR #29 已合并，FastAPI / Android 全量 CI 通过，正式签名 Release 已发布。**
+
+### 1. Android 播放链路修复
+
+- 代码排查发现旧实现主要依赖已弃用的 `AudioManager.isSpeakerphoneOn`；Android 12+ 改用 `setCommunicationDevice()` 选择内置扬声器/听筒，旧接口仅保留兼容回退。
+- 实时通话申请 `USAGE_VOICE_COMMUNICATION` 音频焦点，结束通话后恢复此前通信设备和 AudioMode。
+- AudioTrack 增加初始化状态校验、显式音量、播放启动校验和更大的流式缓冲。
+- 每个下行 PCM chunk 检查 AudioTrack `write()` 返回值；异常或负返回会形成诊断事件。
+- 客户端累计麦克风上行、WebSocket 下行音频、AudioTrack 实际写入的帧数和字节数。
+
+### 2. 服务端实时语音诊断日志
+
+日志文件：`/opt/fdex/server/data/realtime-voice.log`。
+
+- JSONL 格式，每次实时语音使用独立 `fdexrt_*` session_id。
+- 文件权限固定为 0600。
+- 记录供应商/模型/协议、上游连接、客户端麦克风上行、上游返回 PCM、FDEX 下发 PCM、Android 收到音频、AudioTrack 播放进度、音频路由、音频焦点、打断和最终会话 summary。
+- 不记录 API Key、Authorization、原始 PCM/Base64、用户转写、聊天正文。
+- `response.audio.started → speech_started → response.cancel` 会记录时间差，用来判断是否存在扬声器回声造成的误 Barge-in。
+- chat2api `speech_started` 仅在当前确实有活动回答时发送 `response.cancel`，避免空闲状态无意义取消。
+
+### 3. 诊断判读
+
+一次真机通话结束后重点看同一个 session_id：
+
+- `upstream_audio_bytes=0`：chat2api/浏览器桥没有把 AI PCM 返回 FDEX。
+- upstream 有音频、FDEX `client_downlink_bytes>0`，但没有 `android_downlink_audio_received`：FDEX → Android WebSocket 下行/客户端版本问题。
+- 有 `android_downlink_audio_received`，但没有 `android_playback_progress` 或出现 write 错误：AudioTrack/设备播放问题。
+- `android_playback_progress` 正常但仍听不到：优先检查 `android_audio_route`、系统通话音量和设备路由。
+- AI 刚开始出声便出现 `speech_started` + `barge_in_cancel_sent` + `android_playback_flushed_for_interrupt`：高度怀疑扬声器回声被 VAD 当成用户打断。
 
 ## 部署要求
 
@@ -205,16 +250,15 @@ v1.1.11 补全为：
 - 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade。
 - 普通 `location /` 需要关闭 SSE buffering，并建议使用 600 秒 read/send timeout 以兼容长耗时媒体任务。
 - chat2api GPT-Live 需要部署包含对应实时语音实现的版本，并使用具有 chat/audio scope 的 managed API Key。
-- chat2api 若要支持通话中纯文字，需要在 Live WebSocket 中实现 `{"type":"input.text","text":"..."}` 并在同一 Voice 会话中生成回答。
+- Realtime 诊断日志默认位于 `/opt/fdex/server/data/realtime-voice.log`，只供服务器管理员读取。
 
 ## 待继续验证 / 后续
 
-- 真机验证 chat2api 图片生成完整 media 回显（含 `GPT Image` → `gpt-image` 别名修复）。
-- 真机验证 chat2api GPT-Live 16k 上行 / 24k 下行双向音频和文本转写。
-- 真机重点验证 Barge-in：AI 说话过程中用户开口后，手机本地音频应立即停止且下一轮响应正常。
-- chat2api 实现 `input.text` 后，真机验证通话中文字始终留在同一供应商 / 同一模型 / 同一 GPT-Live 会话。
+- 真机复测 v1.1.13 实时语音扬声器播放，并根据 `realtime-voice.log` 精确确认剩余故障层级。
+- 真机重点验证 Barge-in：AI 说话过程中用户开口后，手机本地音频应立即停止且下一轮响应正常；同时确认扬声器回声不会误触发。
+- 真机验证通话中纯文字始终留在同一供应商 / 同一模型 / 同一 GPT-Live 会话。
 - 验证蓝牙耳机、扬声器回声控制和网络切换。
-- chat2api Live 分支未来合入 main 后，更新文档中的分支依赖说明。
+- 真机验证 chat2api 图片生成完整 media 回显。
 - 视频/普通文档当前可以作为聊天附件保存与打开；是否直接交给模型理解仍按具体上游协议逐项接入。
 
 ## 发布流程
