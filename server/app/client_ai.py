@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from time import perf_counter
 from typing import Any, AsyncIterator, Literal
@@ -30,6 +31,9 @@ from app.provider_manager import (
 )
 
 router = APIRouter(prefix="/api/client", tags=["android-client"])
+
+IMAGE_GENERATION_MIN_TIMEOUT_SECONDS = 360
+IMAGE_GENERATION_HEARTBEAT_SECONDS = 12
 
 
 class ImageInput(BaseModel):
@@ -184,6 +188,21 @@ def _failure_detail(result: RouteResult, fallback: str) -> str:
     return "；".join(result.errors[-8:]) or fallback
 
 
+def _image_providers(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Image generation through browser bridges often needs more than the text timeout.
+
+    Keep the configured value when it is already larger, otherwise give media generation
+    a six-minute window. The copied dictionaries avoid mutating the provider store snapshot.
+    """
+    adjusted: list[dict[str, Any]] = []
+    for provider in providers:
+        item = dict(provider)
+        configured = float(item.get("timeout_seconds") or 60)
+        item["timeout_seconds"] = max(configured, IMAGE_GENERATION_MIN_TIMEOUT_SECONDS)
+        adjusted.append(item)
+    return adjusted
+
+
 async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]]) -> RouteResult:
     images = _images(payload)
     audio = _audio(payload)
@@ -196,7 +215,11 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
 
     if task == TASK_IMAGE:
         if _has_specialized(providers, TASK_IMAGE):
-            result = await route_image_generation(prompt=payload.prompt, size=payload.image_size, providers=providers)
+            result = await route_image_generation(
+                prompt=payload.prompt,
+                size=payload.image_size,
+                providers=_image_providers(providers),
+            )
             if result.ok or explicit:
                 return result
         elif explicit:
@@ -277,8 +300,34 @@ async def _emit_specialized(
                 yield "data: [DONE]\n\n"
                 return
             return
-        yield _sse("status", status="已识别为图片生成请求，正在切换图片模型…")
-        result = await route_image_generation(prompt=payload.prompt, size=payload.image_size, providers=providers)
+        yield _sse("status", status="已识别为图片生成请求，正在调用图片模型…")
+        image_task = asyncio.create_task(
+            route_image_generation(
+                prompt=payload.prompt,
+                size=payload.image_size,
+                providers=_image_providers(providers),
+            )
+        )
+        waited = 0
+        try:
+            while True:
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.shield(image_task),
+                        timeout=IMAGE_GENERATION_HEARTBEAT_SECONDS,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    waited += IMAGE_GENERATION_HEARTBEAT_SECONDS
+                    yield _sse("status", status=f"图片仍在生成，请稍候… 已等待 {waited} 秒")
+        except asyncio.CancelledError:
+            image_task.cancel()
+            raise
+        except Exception as exc:
+            result = RouteResult(False, TASK_IMAGE, errors=[f"图片生成处理异常：{_safe_error(str(exc))}"])
+        finally:
+            if not image_task.done():
+                image_task.cancel()
     else:
         if not _has_specialized(providers, TASK_AUDIO):
             if explicit or payload.audio is not None:
@@ -298,9 +347,12 @@ async def _emit_specialized(
         )
 
     if not result.ok:
+        detail = _failure_detail(result, "没有可用模型")
         if explicit or payload.audio is not None:
-            yield _sse("error", message=f"{task} 调用失败：{_failure_detail(result, '没有可用模型')}")
+            yield _sse("error", message=f"{task} 调用失败：{detail}")
             yield "data: [DONE]\n\n"
+        elif task == TASK_IMAGE:
+            yield _sse("status", status=f"图片生成线路本次未成功：{detail[:180]}；正在回退文本模型。")
         return
 
     for media in result.media:
@@ -336,10 +388,8 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
         errors: list[str] = []
 
         if task in {TASK_IMAGE, TASK_AUDIO}:
-            specialized_events: list[str] = []
             completed = False
             async for event in _emit_specialized(payload, providers, task, explicit):
-                specialized_events.append(event)
                 if '"type":"done"' in event or event == "data: [DONE]\n\n":
                     completed = True
                 yield event
@@ -347,7 +397,8 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
                 return
             if explicit or payload.audio is not None:
                 return
-            yield _sse("status", status="专项模型不可用，已回退文本模型回答。")
+            if task == TASK_AUDIO:
+                yield _sse("status", status="语音专项模型不可用，已回退文本模型回答。")
 
         vision = task == TASK_VISION
         for provider in providers:
