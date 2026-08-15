@@ -118,7 +118,6 @@ class AppRepository(context: Context) {
             .putString("profile", profile.toJson().toString())
             .putBoolean("session", true)
             .apply()
-        seedEmployees()
         return Result.success(profile)
     }
 
@@ -127,7 +126,6 @@ class AppRepository(context: Context) {
             prefs.getString("account_password", "") == hash(password)
         if (!ok) return Result.failure(IllegalArgumentException("邮箱或密码错误"))
         prefs.edit().putBoolean("session", true).apply()
-        seedEmployees()
         return Result.success(profile())
     }
 
@@ -143,7 +141,6 @@ class AppRepository(context: Context) {
     }
 
     fun employees(activeOnly: Boolean = true): List<Employee> {
-        seedEmployees()
         val out = mutableListOf<Employee>()
         val a = readArray("employees")
         for (i in 0 until a.length()) {
@@ -159,6 +156,11 @@ class AppRepository(context: Context) {
         return item
     }
 
+    fun updateEmployee(employee: Employee) {
+        val all = employees(activeOnly = false).map { if (it.id == employee.id) employee else it }
+        writeArray("employees", JSONArray().apply { all.forEach { put(it.toJson()) } })
+    }
+
     fun bulkAddEmployees(industry: String) {
         val existing = employees().map { it.position }.toSet()
         listOf(
@@ -167,7 +169,7 @@ class AppRepository(context: Context) {
             Triple("小创", "市场中心", "内容策划"),
             Triple("小数", "数据中心", "数据分析师"),
         ).filter { it.third !in existing }.forEach { (name, dep, pos) ->
-            addEmployee(name, dep, pos, "你是${industry.ifBlank { "通用" }}行业的$pos，从岗位视角给出专业、可执行的建议。", industry)
+            addEmployee(name, dep, pos, "", industry)
         }
     }
 
@@ -326,18 +328,6 @@ class AppRepository(context: Context) {
     }
 
     fun resetAll() = prefs.edit().clear().apply()
-
-    private fun seedEmployees() {
-        if (readArray("employees").length() > 0) return
-        val industry = profile().industry
-        val items = listOf(
-            Employee(nextId(), "小知", "资料中心", "资料管理员", "负责资料整理、知识检索、风险提醒和项目上下文管理。", industry, true),
-            Employee(nextId(), "小策", "经营中心", "业务策划", "把目标拆成可以执行的商业方案、步骤和检查清单。", industry),
-            Employee(nextId(), "小研", "研究中心", "行业研究员", "负责行业分析、竞品研究、信息验证与机会判断。", industry),
-            Employee(nextId(), "小执", "项目中心", "执行经理", "负责把任务拆解、排期、跟进和形成阶段汇报。", industry),
-        )
-        writeArray("employees", JSONArray().apply { items.forEach { put(it.toJson()) } })
-    }
 }
 
 private fun Profile.toJson() = JSONObject().put("name", name).put("email", email).put("company", companyName).put("industry", industry).put("level", professionalLevel).put("auto", autoCompanyMode)
@@ -350,7 +340,7 @@ private fun Project.toJson() = JSONObject().put("id", id).put("title", title).pu
 private fun projectFromJson(o: JSONObject) = Project(o.getLong("id"), o.optString("title"), o.optString("desc"), o.optString("level", "business"), o.optString("storage", "hybrid"), o.optString("retention", "keep_forever"), o.optBoolean("allowAi", true), o.optBoolean("desensitize", true), o.optString("status", "created"), o.optInt("score", 25), o.optBoolean("auto"), o.optString("created"), o.optString("updated"))
 private fun ProjectNote.toJson() = JSONObject().put("id", id).put("project", projectId).put("content", content).put("at", createdAt)
 private fun noteFromJson(o: JSONObject) = ProjectNote(o.getLong("id"), o.getLong("project"), o.optString("content"), o.optString("at"))
-private fun ProjectAsset.toJson() = JSONObject().put("id", id).put("project", projectId).put("name", name).put("uri", uri).put("size", size).put("mime", mimeType).put("status", status).put("privacy", privacyDecision).put("analysis", analysis).put("at", createdAt)
+private fun ProjectAsset.toJson() = JSONObject().put("id", id).put("project", projectId).put("name", name).put("uri", uri.toString()).put("size", size).put("mime", mimeType).put("status", status).put("privacy", privacyDecision).put("analysis", analysis).put("at", createdAt)
 private fun assetFromJson(o: JSONObject) = ProjectAsset(o.getLong("id"), o.getLong("project"), o.optString("name"), o.optString("uri"), o.optLong("size"), o.optString("mime"), o.optString("status", "uploaded"), o.optString("privacy"), o.optString("analysis"), o.optString("at"))
 private fun Report.toJson() = JSONObject().put("id", id).put("project", projectId).put("title", title).put("content", content).put("at", createdAt)
 private fun reportFromJson(o: JSONObject) = Report(o.getLong("id"), o.getLong("project"), o.optString("title"), o.optString("content"), o.optString("at"))

@@ -1,9 +1,7 @@
 package com.b8vipvip.fdex.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,8 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -34,16 +30,32 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
-import com.b8vipvip.fdex.data.ChatMessage
 import com.b8vipvip.fdex.data.Employee
 import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.ClientAiApi
 import kotlinx.coroutines.launch
+
+private val RANDOM_EMPLOYEE_NAMES = listOf(
+    "小安", "小岚", "小禾", "小程", "小林", "小夏", "小景", "小舟", "小宁", "小橙", "小北", "小满",
+)
+
+private val RANDOM_DEPARTMENTS = listOf(
+    "运营中心", "市场中心", "销售中心", "产品中心", "客户成功中心", "财务中心",
+    "人力资源中心", "数据中心", "研究中心", "项目中心", "内容中心", "技术中心",
+)
+
+private val RANDOM_POSITIONS = listOf(
+    "运营专员", "项目经理", "市场策划", "销售顾问", "产品经理", "数据分析师",
+    "行业研究员", "内容策划", "客户成功经理", "财务分析师", "招聘专员", "自动化工程师",
+)
+
+private fun randomEmployeeName(): String = RANDOM_EMPLOYEE_NAMES.random()
+private fun randomDepartment(): String = RANDOM_DEPARTMENTS.random()
+private fun randomPosition(): String = RANDOM_POSITIONS.random()
 
 @Composable
 internal fun MessagesScreen(
@@ -98,107 +110,11 @@ internal fun MessagesScreen(
 }
 
 @Composable
-internal fun EmployeeChatScreen(
-    repo: AppRepository,
-    employeeId: Long,
-    revision: Int,
-    onChanged: () -> Unit,
-    onOpenManage: () -> Unit,
-    snackbar: SnackbarHostState,
-) {
-    revision.hashCode()
-    val employee = repo.employee(employeeId) ?: return
-    val scope = rememberCoroutineScope()
-    var text by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(employeeEmoji(employee))
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                Text("${employee.name} · ${employee.position}", fontWeight = FontWeight.SemiBold)
-                Text(employee.department, color = Muted)
-            }
-            Box {
-                TextButton(onClick = { menu = true }) { Text("•••") }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("员工管理") }, onClick = { menu = false; onOpenManage() })
-                    DropdownMenuItem(
-                        text = { Text("清空聊天记录") },
-                        onClick = { repo.clearMessages(employeeId); menu = false; onChanged() },
-                    )
-                }
-            }
-        }
-        LazyColumn(Modifier.weight(1f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(repo.messages(employeeId), key = { it.id }) { message -> MessageBubble(message, employee) }
-            if (busy) item { Text("${employee.name} 正在思考…", color = Muted, modifier = Modifier.padding(8.dp)) }
-        }
-        Row(Modifier.fillMaxWidth().background(Color.White).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                text,
-                { text = it },
-                placeholder = { Text("给员工安排任务…") },
-                modifier = Modifier.weight(1f),
-                maxLines = 4,
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(
-                enabled = text.isNotBlank() && !busy,
-                onClick = {
-                    val prompt = text.trim()
-                    text = ""
-                    repo.addMessage(employeeId, "user", prompt)
-                    onChanged()
-                    busy = true
-                    scope.launch {
-                        val system = if (employee.isPrivateAssistant()) null else
-                            "你是 FDEX AI 虚拟公司的员工：${employee.name}，职位：${employee.position}，部门：${employee.department}。${employee.rolePrompt}。像真实同事一样简洁、主动、可执行地回答。"
-                        when (val result = ClientAiApi.ask(system, prompt)) {
-                            is AiGatewayResult.Success -> repo.addMessage(employeeId, "employee", result.content)
-                            is AiGatewayResult.Failure -> {
-                                repo.addMessage(employeeId, "employee", "暂时无法完成请求：${result.message}")
-                                snackbar.showSnackbar(result.message)
-                            }
-                        }
-                        busy = false
-                        onChanged()
-                    }
-                },
-            ) { Text("发送") }
-        }
-    }
-}
-
-@Composable
-private fun MessageBubble(message: ChatMessage, employee: Employee) {
-    val isUser = message.role == "user"
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        if (!isUser) {
-            Avatar(employeeEmoji(employee), 36)
-            Spacer(Modifier.width(8.dp))
-        }
-        Column(
-            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-            modifier = Modifier.fillMaxWidth(.78f),
-        ) {
-            Text(if (isUser) "我" else employee.name, color = Muted)
-            Card {
-                Text(
-                    message.content,
-                    modifier = Modifier.padding(12.dp),
-                    color = if (isUser) Emerald else MaterialTheme.colorScheme.onSurface,
-                )
-            }
-        }
-    }
-}
-
-@Composable
 internal fun EmployeeManageScreen(
     repo: AppRepository,
     revision: Int,
     onAdd: () -> Unit,
+    onEdit: (Long) -> Unit,
     onChat: (Long) -> Unit,
     onChanged: () -> Unit,
 ) {
@@ -212,27 +128,38 @@ internal fun EmployeeManageScreen(
                 OutlinedButton(
                     onClick = { repo.bulkAddEmployees(industry); onChanged() },
                     modifier = Modifier.weight(1f),
-                ) { Text("按行业批量添加") }
+                ) { Text("批量添加基础员工") }
             }
         }
         item {
             OutlinedTextField(industry, { industry = it }, label = { Text("批量添加行业") }, modifier = Modifier.fillMaxWidth())
+            Text(
+                "批量添加只创建基础员工资料，不再内置 Prompt；创建后可逐个编辑或用 AI 生成提示词。",
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
         items(repo.employees(), key = { it.id }) { employee ->
             Card(Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(employeeEmoji(employee))
-                    Column(Modifier.weight(1f).padding(start = 10.dp).clickable { onChat(employee.id) }) {
-                        Text("${employee.name} · ${employee.position}", fontWeight = FontWeight.SemiBold)
-                        val systemLabel = when {
-                            employee.isPrivateAssistant() -> " · 内置私人助理"
-                            employee.materialManager -> " · 系统资料员"
-                            else -> ""
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(employeeEmoji(employee))
+                        Column(Modifier.weight(1f).padding(start = 10.dp).clickable { onChat(employee.id) }) {
+                            Text("${employee.name} · ${employee.position}", fontWeight = FontWeight.SemiBold)
+                            Text(employee.department, color = Muted)
+                            Text(
+                                if (employee.rolePrompt.isBlank()) "Prompt 未设置" else "Prompt 已由客户端保存",
+                                color = if (employee.rolePrompt.isBlank()) MaterialTheme.colorScheme.error else Emerald,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
-                        Text("${employee.department}$systemLabel", color = Muted)
                     }
-                    if (!employee.materialManager && !employee.isPrivateAssistant()) {
-                        TextButton(onClick = { repo.resignEmployee(employee.id); onChanged() }) { Text("离职") }
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { onEdit(employee.id) }) { Text("编辑") }
+                        if (!employee.materialManager && !employee.isPrivateAssistant()) {
+                            TextButton(onClick = { repo.resignEmployee(employee.id); onChanged() }) { Text("离职") }
+                        }
                     }
                 }
             }
@@ -241,36 +168,203 @@ internal fun EmployeeManageScreen(
 }
 
 @Composable
-internal fun AddEmployeeScreen(repo: AppRepository, onDone: () -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var department by remember { mutableStateOf("") }
-    var position by remember { mutableStateOf("") }
-    var prompt by remember { mutableStateOf("") }
+internal fun AddEmployeeScreen(
+    repo: AppRepository,
+    snackbar: SnackbarHostState,
+    onDone: () -> Unit,
+) {
+    EmployeeEditor(
+        repo = repo,
+        initial = null,
+        snackbar = snackbar,
+        onDone = onDone,
+    )
+}
+
+@Composable
+internal fun EditEmployeeScreen(
+    repo: AppRepository,
+    employeeId: Long,
+    snackbar: SnackbarHostState,
+    onDone: () -> Unit,
+) {
+    val employee = repo.employee(employeeId)
+    if (employee == null) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) { Text("员工不存在或已被删除") }
+        return
+    }
+    EmployeeEditor(
+        repo = repo,
+        initial = employee,
+        snackbar = snackbar,
+        onDone = onDone,
+    )
+}
+
+@Composable
+private fun EmployeeEditor(
+    repo: AppRepository,
+    initial: Employee?,
+    snackbar: SnackbarHostState,
+    onDone: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var name by remember(initial?.id) { mutableStateOf(initial?.name.orEmpty()) }
+    var department by remember(initial?.id) { mutableStateOf(initial?.department ?: randomDepartment()) }
+    var position by remember(initial?.id) { mutableStateOf(initial?.position ?: randomPosition()) }
+    var idea by remember(initial?.id) { mutableStateOf("") }
+    var prompt by remember(initial?.id) { mutableStateOf(initial?.rolePrompt.orEmpty()) }
+    var generating by remember { mutableStateOf(false) }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("创建 AI 员工", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        OutlinedTextField(name, { name = it }, label = { Text("员工名称") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(department, { department = it }, label = { Text("部门") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(position, { position = it }, label = { Text("职位") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(prompt, { prompt = it }, label = { Text("角色职责 / Prompt") }, minLines = 4, modifier = Modifier.fillMaxWidth())
+        Text(
+            if (initial == null) "创建 AI 员工" else "编辑 AI 员工",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音只发送下面这份 Prompt，不再自动追加隐藏员工提示词。",
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        RandomTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = "员工名称",
+            onRandom = { name = randomEmployeeName() },
+        )
+        RandomTextField(
+            value = department,
+            onValueChange = { department = it },
+            label = "部门",
+            onRandom = { department = randomDepartment() },
+        )
+        RandomTextField(
+            value = position,
+            onValueChange = { position = it },
+            label = "职位",
+            onRandom = { position = randomPosition() },
+        )
+
+        OutlinedTextField(
+            value = idea,
+            onValueChange = { idea = it },
+            label = { Text("一句话描述你想要的员工") },
+            placeholder = { Text("例如：负责淘宝店运营，擅长活动策划和数据复盘，说话简洁直接") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+            maxLines = 4,
+        )
         Button(
-            enabled = name.isNotBlank() && position.isNotBlank(),
+            enabled = idea.isNotBlank() && !generating,
             onClick = {
-                repo.addEmployee(
-                    name,
-                    department,
-                    position,
-                    prompt.ifBlank { "你是公司的$position，请从岗位角度给出专业、可执行的协助。" },
-                    repo.profile().industry,
-                )
+                generating = true
+                scope.launch {
+                    val request = buildPromptGenerationRequest(
+                        description = idea.trim(),
+                        name = name.trim(),
+                        department = department.trim(),
+                        position = position.trim(),
+                    )
+                    when (val result = ClientAiApi.ask(system = null, prompt = request, maxTokens = 1600)) {
+                        is AiGatewayResult.Success -> {
+                            val generated = result.content.trim()
+                            if (generated.isNotBlank()) {
+                                prompt = generated
+                            } else {
+                                snackbar.showSnackbar("AI 没有返回有效提示词")
+                            }
+                        }
+                        is AiGatewayResult.Failure -> snackbar.showSnackbar("提示词生成失败：${result.message}")
+                    }
+                    generating = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (generating) "正在生成提示词…" else "根据一句话 AI 生成提示词") }
+
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            label = { Text("员工提示词（客户端保存）") },
+            placeholder = { Text("可手动输入，也可以先用上方的一句话让 AI 生成，再自行修改") },
+            minLines = 8,
+            maxLines = 18,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Button(
+            enabled = name.isNotBlank() && department.isNotBlank() && position.isNotBlank() && prompt.isNotBlank() && !generating,
+            onClick = {
+                if (initial == null) {
+                    repo.addEmployee(
+                        name = name,
+                        department = department,
+                        position = position,
+                        prompt = prompt,
+                        industry = repo.profile().industry,
+                    )
+                } else {
+                    repo.updateEmployee(
+                        initial.copy(
+                            name = name.trim(),
+                            department = department.trim(),
+                            position = position.trim(),
+                            rolePrompt = prompt.trim(),
+                        ),
+                    )
+                }
                 onDone()
             },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("保存员工") }
+        ) { Text(if (initial == null) "保存员工" else "保存修改") }
     }
 }
+
+@Composable
+private fun RandomTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    onRandom: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+        )
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = onRandom) { Text("随机") }
+    }
+}
+
+private fun buildPromptGenerationRequest(
+    description: String,
+    name: String,
+    department: String,
+    position: String,
+): String = """
+请根据下面用户对 AI 员工的一句话描述，生成一份可直接作为该员工 system prompt 使用的完整提示词。
+
+员工名称：${name.ifBlank { "未命名" }}
+部门：${department.ifBlank { "未指定" }}
+职位：${position.ifBlank { "未指定" }}
+用户描述：$description
+
+要求：
+- 只输出最终提示词正文，不要解释生成过程，不要使用 Markdown 代码块。
+- 明确员工身份、核心职责、工作目标、工作边界、输出方式、沟通风格和需要主动追问的信息。
+- 不要虚构订单、价格、库存、权限、公司内部事实或用户没有提供的数据。
+- 提示词应适合长期保存到员工资料中，后续所有聊天直接使用。
+- 中文自然、明确、可执行，避免空泛口号。
+""".trimIndent()
 
 @Composable
 internal fun NewGroupScreen(repo: AppRepository, onDone: (Long) -> Unit) {
@@ -311,74 +405,5 @@ internal fun NewGroupScreen(repo: AppRepository, onDone: (Long) -> Unit) {
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("创建工作群") }
-    }
-}
-
-@Composable
-internal fun GroupChatScreen(
-    repo: AppRepository,
-    groupId: Long,
-    revision: Int,
-    onChanged: () -> Unit,
-    snackbar: SnackbarHostState,
-) {
-    revision.hashCode()
-    val group = repo.group(groupId) ?: return
-    val members = group.memberIds.mapNotNull { repo.employee(it) }
-    val scope = rememberCoroutineScope()
-    var text by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
-        Card(Modifier.fillMaxWidth().padding(10.dp)) {
-            Column(Modifier.padding(12.dp)) {
-                Text("👥 ${group.name}", fontWeight = FontWeight.Bold)
-                Text("${members.size} 名成员 · ${if (group.autoMode) "自动运营" else "人工指挥"}", color = Emerald)
-                Text(group.description, color = Muted)
-            }
-        }
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(repo.groupMessages(groupId), key = { it.id }) { GroupBubble(it) }
-            if (busy) item { Text("团队正在处理…", color = Muted) }
-        }
-        Row(Modifier.fillMaxWidth().background(Color.White).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                text,
-                { text = it },
-                placeholder = { Text("@员工 或安排团队任务…") },
-                modifier = Modifier.weight(1f),
-                maxLines = 4,
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(
-                enabled = text.isNotBlank() && !busy,
-                onClick = {
-                    val prompt = text.trim()
-                    text = ""
-                    repo.addGroupMessage(groupId, "user", "我", prompt)
-                    onChanged()
-                    busy = true
-                    scope.launch {
-                        val target = members.firstOrNull { prompt.contains("@${it.name}") || prompt.contains(it.position) }
-                            ?: members.firstOrNull()
-                        val reply = if (target == null) {
-                            "当前群里还没有 AI 员工。"
-                        } else {
-                            val system = if (target.isPrivateAssistant()) null else
-                                "你是工作群里的${target.position} ${target.name}。${target.rolePrompt}。从团队协作角度简洁、可执行地回复。"
-                            when (val result = ClientAiApi.ask(system, prompt)) {
-                                is AiGatewayResult.Success -> result.content
-                                is AiGatewayResult.Failure -> {
-                                    snackbar.showSnackbar(result.message)
-                                    "暂时无法完成：${result.message}"
-                                }
-                            }
-                        }
-                        repo.addGroupMessage(groupId, "employee", target?.name.orEmpty(), reply)
-                        busy = false
-                        onChanged()
-                    }
-                },
-            ) { Text("发送") }
-        }
     }
 }
