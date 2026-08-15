@@ -5,7 +5,7 @@
 ## 当前正式基线
 
 - Android 正式版：v1.1.8
-- v1.1.8 状态：已发布；包含图片生成回传修复、Realtime 实时语音对话和供应商 realtime 配置
+- v1.1.8 状态：已发布；包含图片 media 回传解析、基础 Realtime 语音入口和供应商 realtime 配置
 - 服务端：FastAPI + systemd + 宝塔/Nginx
 - Android：Kotlin + Jetpack Compose
 - AI 接入：服务端多供应商管理，客户端不保存第三方 API Key
@@ -31,71 +31,108 @@
 - 文本与视觉默认共用模型池，可选独立视觉覆盖模型
 - 图片生成模型池与 `/images/generations` 路由
 - 普通语音模型：Chat Audio / Speech(TTS) 路由
-- Realtime/Live 语音供应商 WebSocket 桥
+- OpenAI-compatible Realtime/Live 语音供应商 WebSocket 桥
 - chat2api/OpenAI-compatible SSE 文本流式透传
 - reasoning/status/media 事件兼容
 - 普通测试、文本深测、专项测试、自动文本深测 timer
 
-## v1.1.8：图片回传修复 + Realtime 语音
+## v1.1.8：图片回传修复 + 基础 Realtime 语音
 
 状态：**已合并、CI 通过、正式签名 Release 已发布。**
 
-### 1. 图片生成回传修复
+### 图片生成回传
 
-问题：服务端 `/api/client/ai/stream` 已经会发送 `type=media`，但 Android 原客户端只解析 status/reasoning/content/done/error，导致图片媒体事件被静默丢弃。上游即使已经成功出图，聊天页仍看不到图片。
+- Android `ClientAiApi` 已解析 `media` SSE 事件。
+- 非流式兼容请求已解析响应中的 `media[]`。
+- AI 图片/音频媒体写入可持久化消息标记，重进会话后仍能恢复。
+- 富媒体 AI 消息可直接显示图片、查看原图和展示音频入口。
 
-改动：
+### 基础 Realtime
 
-- Android `ClientAiApi` 增加 `media` SSE 事件解析。
-- 非流式兼容请求同时解析响应中的 `media[]`。
-- AI 图片/音频媒体使用可持久化消息标记写入聊天正文，重进会话后仍能恢复。
-- 新增富媒体 AI 消息渲染器：图片直接在消息中显示并可点击查看原图；音频显示播放入口。
-- 保留原 Markdown 正文，自动去掉与媒体卡重复的“查看生成图片/播放语音”链接。
+- 新增 `WS /api/client/voice/realtime`。
+- Android 使用 WebSocket 只连接 FDEX，第三方 API Key 不下发手机。
+- Android 基础实现为 24 kHz PCM16 输入/输出。
+- 服务端第一版按 OpenAI-compatible Realtime 协议桥接。
+
+## 2026-08-15 热修复：图片长耗时 + chat2api GPT-Live
+
+状态：**开发分支已落地，等待 CI / 合并发布。**
+
+### 1. 图片生成仍回退文本的根因与修复
+
+真机现象：chat2api 浏览器页面最终已经成功生成图片，但 FDEX 先显示“专项模型不可用，已回退文本模型回答”，随后 Android 还可能出现“流式连接不可用，正在兼容重试”。
+
+根因：
+
+- 图片生成此前直接复用供应商普通文本 `timeout_seconds`，实际配置常为 60 秒；浏览器图片生成可能明显超过 60 秒，导致 FDEX 在 chat2api 尚未完成前先判失败。
+- Android 普通 AI HTTP 读取窗口此前为 120 秒，长耗时媒体请求仍可能被客户端提前中断。
+- 图片专项调用等待期间没有持续 SSE 数据，容易同时触发 Android / Nginx 的空闲读取超时。
+
+修复：
+
+- 图片生成独立使用至少 360 秒上游等待窗口，不修改供应商数据库里的文本超时值。
+- 图片生成期间每 12 秒发送 SSE 状态心跳，例如“图片仍在生成，请稍候…”。
+- Android AI HTTP read timeout 延长到 420 秒，作为非流式兼容请求兜底。
+- 宝塔/Nginx 普通 SSE 代理模板 send/read timeout 提升到 600 秒。
+- 图片专项失败时返回经过脱敏的实际失败摘要，不再只显示无信息量的“专项模型不可用”。
+- 原有 `media` SSE → Android 富媒体显示逻辑继续保留。
 
 验收目标：
 
-1. 发送“生成一张……”后上游成功出图。
-2. FDEX SSE 收到 `media`。
-3. Android 当前流式消息立即显示图片。
+1. chat2api 图片生成超过 60 秒时 FDEX 不提前回退。
+2. 等待期间 Android 持续看到“图片仍在生成”状态。
+3. chat2api 返回图片后 FDEX 收到 `media` 并立即显示。
 4. 退出并重新进入聊天后图片仍显示。
 
-### 2. Realtime 实时语音对话
+### 2. chat2api GPT-Live 实际协议适配
 
-改动：
+核对 chat2api `agent/live-voice-external-app-v20-2` 后确认：它的实时协议不是 OpenAI Realtime wire protocol，而是自定义 `chat2api-live-v1`。
 
-- 新增 `WS /api/client/voice/realtime`。
-- 服务端按供应商优先级选择配置了 Realtime/Live 语音模型的供应商，API Key 只保留在服务端。
-- 供应商后台“语音调用方式”新增 `realtime`，也可以继续使用 `auto` 自动识别 realtime/live 模型。
-- Android 通过 WebSocket 只连接 FDEX，不直接连接第三方供应商。
-- Android 使用 `AudioRecord` 采集 24 kHz mono PCM16，并连续发送音频 chunk。
-- 服务端转换为 OpenAI-compatible Realtime `input_audio_buffer.append` 事件。
-- Realtime 会话按当前音频 schema 使用 `audio.input / audio.output`、24 kHz PCM、server VAD 和打断响应。
-- 支持实时状态、用户转写事件、AI 转写、PCM16 音频 delta 和 response done。
-- Android 使用 `AudioTrack` 边收边播放模型语音，启用 VOICE_COMMUNICATION 音频模式并在设备支持时启用 AcousticEchoCanceler。
-- 员工聊天输入栏增加独立麦克风按钮；“＋ → 语音”继续用于发送已有音频文件，两种入口职责分开。
-- 实时语音对话中的 AI 文本转写会写入员工聊天记录。
+实际协议：
 
-供应商要求：
+- 上游入口：`WS /v1/audio/realtime`
+- 模型：`gpt-live` / `gpt-live-mini`
+- 鉴权：managed API Key 通过 `Authorization: Bearer ...`
+- 首帧：`session.start`
+- 上行音频：16 kHz mono PCM16 little-endian **binary WebSocket frame**
+- 下行音频：24 kHz mono PCM16 little-endian **binary WebSocket frame**
+- 文本事件包括 `session.ready`、`transcript.final`、`response.text.delta`、`response.done`、`response.interrupted`、`error` 等。
 
-- 当前 Realtime 桥按 OpenAI-compatible Realtime WebSocket 协议工作。
-- 如果供应商是明确的实时语音线路，推荐把 `audio_protocol` 直接设成 `realtime`。
-- `audio_protocol=auto` 时，模型名包含 `realtime`、`gpt-live` 或以 `-live` 结尾也会作为实时候选。
-- 普通 `chat_audio` / `speech` 仍走已有单次请求链路，不伪装成实时双向通话。
-- chat2api 当前仓库自身仍明确标注“语音生成、语音对话尚未实现”，因此 FDEX Realtime 会使用其它真正支持 Realtime 的供应商；不会修改 chat2api 代码或伪造其能力。
+FDEX 热修复：
 
-### 3. 部署要求
+- `GPT Live`、`gpt-live`、`gpt_live`、`gpt live mini` 等写法统一规范化识别。
+- `gpt-live` / `gpt-live-mini` 自动选择 `chat2api-live-v1`；名称含 `realtime` 的模型继续走 OpenAI-compatible Realtime。
+- FDEX → chat2api 改走 `/v1/audio/realtime`，不再错误请求 `/v1/realtime?model=...`。
+- FDEX 服务端把 Android 内部 JSON/base64 音频解码后，以 binary frame 转发给 chat2api。
+- chat2api binary 24 kHz 音频由 FDEX 转成内部音频事件回传 Android。
+- `session.start`、`session.finish`、`response.cancel`、用户转写、AI 文本增量和打断事件完成协议映射。
+- Android Realtime 会根据服务端 `ready` 动态使用输入/输出采样率：chat2api 为 16k 输入 / 24k 输出，OpenAI-compatible 为 24k / 24k。
 
-- 服务端新增显式 `websockets` 依赖。
-- Android 新增 RECORD_AUDIO / MODIFY_AUDIO_SETTINGS 权限。
-- Android 新增 OkHttp WebSocket 与 Coil 图片显示依赖。
-- 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade；如果站点根反向代理没有传递 Upgrade/Connection，需要补充 WebSocket 代理头。
+### 3. 实时语音入口可见性
+
+v1.1.8 源码已经存在员工私聊输入框右侧独立麦克风按钮，但用户真机截图没有该按钮，说明截图中的 App 并未运行包含该 UI 的正式构建，需核对实际安装版本。
+
+热修复进一步增加双入口：
+
+- 员工私聊输入框右侧：独立麦克风按钮。
+- `＋` 菜单顶部：新增“实时语音通话”。
+- `＋ → 语音` 仍仅用于选择已有音频文件，与实时通话职责分开。
+
+## 部署要求
+
+- 服务端需要 `websockets` 依赖（v1.1.8 已加入）。
+- Android 需要 RECORD_AUDIO / MODIFY_AUDIO_SETTINGS 权限（v1.1.8 已加入）。
+- 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade。
+- 普通 `location /` 需要关闭 SSE buffering，并建议使用 600 秒 read/send timeout 以兼容长耗时媒体任务。
+- chat2api GPT-Live 需要部署包含 `agent/live-voice-external-app-v20-2` 实时语音实现的版本，并使用具有 chat/audio scope 的 managed API Key。
 
 ## 待继续验证 / 后续
 
-- 在真实配置的 Realtime 供应商上做 Android 真机双向语音长连接测试，包括打断、网络切换、蓝牙耳机与回声控制。
-- 根据实际供应商事件格式继续增加 Realtime 协议适配器；当前基线是 OpenAI-compatible Realtime。
-- chat2api 如果未来实现自身语音桥，可直接作为新的 Realtime/Audio 供应商接入 FDEX，无需改 Android 业务层。
-- 视频/普通文档当前可以作为聊天附件保存与打开；是否直接交给模型理解仍按具体上游协议逐项接入，不假装已读取。
+- 真机验证 chat2api 图片生成超过 60 秒后的完整 media 回显。
+- 真机验证 chat2api GPT-Live 16k 上行 / 24k 下行双向音频、打断和文本转写。
+- 验证蓝牙耳机、扬声器回声控制和网络切换。
+- chat2api Live 分支未来合入 main 后，更新文档中的分支依赖说明。
+- 视频/普通文档当前可以作为聊天附件保存与打开；是否直接交给模型理解仍按具体上游协议逐项接入。
 
 ## 发布流程
 
