@@ -121,23 +121,26 @@ class ProviderStore:
                     timeout_seconds INTEGER NOT NULL DEFAULT 60,
                     auto_test_enabled INTEGER NOT NULL DEFAULT 0,
                     auto_test_interval_hours INTEGER NOT NULL DEFAULT 12,
-                    last_test_at TEXT NOT NULL DEFAULT '',
+                    last_test_at TEXT,
                     last_status TEXT NOT NULL DEFAULT '未测试',
                     last_latency_ms INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_fdex_provider_priority
+                    ON providers(enabled, priority, id);
                 """
             )
-            self._migrate_columns(conn)
-            conn.commit()
-        self._migrate_legacy_env()
+            self._ensure_multimodal_columns(conn)
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass
 
-    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+    @staticmethod
+    def _ensure_multimodal_columns(conn: sqlite3.Connection) -> None:
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
         additions = {
-            "main_vision_model": "TEXT NOT NULL DEFAULT ''",
-            "backup_vision_models_json": "TEXT NOT NULL DEFAULT '[]'",
             "main_image_model": "TEXT NOT NULL DEFAULT ''",
             "backup_image_models_json": "TEXT NOT NULL DEFAULT '[]'",
             "main_audio_model": "TEXT NOT NULL DEFAULT ''",
@@ -146,468 +149,500 @@ class ProviderStore:
             "audio_voice": "TEXT NOT NULL DEFAULT 'alloy'",
             "audio_format": "TEXT NOT NULL DEFAULT 'wav'",
         }
-        for name, ddl in additions.items():
-            if name not in columns:
-                conn.execute(f"ALTER TABLE providers ADD COLUMN {name} {ddl}")
-
-    def _migrate_legacy_env(self) -> None:
-        with self.db() as conn:
-            if conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0] > 0:
-                return
-        settings = fresh_settings()
-        if not settings.ai_base_url or not settings.ai_api_key or not settings.ai_model:
-            return
-        self.create(
-            name="原 FDEX AI 接口",
-            base_url=settings.ai_base_url,
-            api_key=settings.ai_api_key,
-            enabled=True,
-            priority=1,
-            main_text_model=settings.ai_model,
-            backup_text_models=[],
-            main_vision_model="",
-            backup_vision_models=[],
-            main_image_model="",
-            backup_image_models=[],
-            main_audio_model="",
-            backup_audio_models=[],
-            audio_protocol="auto",
-            audio_voice="alloy",
-            audio_format="wav",
-            protocol_order=DEFAULT_PROTOCOLS,
-            timeout_seconds=int(settings.ai_timeout_seconds),
-            auto_test_enabled=False,
-            auto_test_interval_hours=12,
-        )
-
-    @contextmanager
-    def db(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path, timeout=15)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+        for column, ddl in additions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE providers ADD COLUMN {column} {ddl}")
 
     def _cipher(self) -> Fernet:
         if self._fernet is not None:
             return self._fernet
-        self.key_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.key_path.exists():
-            self.key_path.write_bytes(Fernet.generate_key())
+        if self.key_path.exists():
+            key = self.key_path.read_bytes().strip()
+        else:
+            self.key_path.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            tmp = self.key_path.with_suffix(".tmp")
+            tmp.write_bytes(key + b"\n")
             try:
-                os.chmod(self.key_path, 0o600)
+                os.chmod(tmp, 0o600)
             except OSError:
                 pass
-        key = self.key_path.read_bytes().strip()
+            os.replace(tmp, self.key_path)
         try:
-            self._fernet = Fernet(key)
-        except (ValueError, TypeError) as exc:
-            raise RuntimeError(f"供应商密钥文件无效：{self.key_path}") from exc
+            os.chmod(self.key_path, 0o600)
+        except OSError:
+            pass
+        self._fernet = Fernet(key)
         return self._fernet
 
-    def _encrypt(self, value: str) -> str:
+    def encrypt(self, value: str) -> str:
         return self._cipher().encrypt(value.encode("utf-8")).decode("ascii") if value else ""
 
-    def _decrypt(self, value: str) -> str:
+    def decrypt(self, value: str) -> str:
         if not value:
             return ""
         try:
             return self._cipher().decrypt(value.encode("ascii")).decode("utf-8")
-        except (InvalidToken, ValueError, UnicodeDecodeError) as exc:
-            raise RuntimeError("供应商 API Key 无法解密，请确认 ai-providers.key 与数据库匹配。") from exc
+        except InvalidToken as exc:
+            raise RuntimeError("AI 供应商密钥无法解密，请确认 server/data/ai-providers.key 未变化") from exc
+
+    @contextmanager
+    def db(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _models(values: Iterable[str] | None) -> list[str]:
+        return list(dict.fromkeys(str(x).strip() for x in (values or []) if str(x).strip()))
+
+    @staticmethod
+    def _protocols(values: Iterable[str] | None) -> list[str]:
+        allowed = {"chat", "responses", "legacy"}
+        result = [str(x).strip() for x in (values or []) if str(x).strip() in allowed]
+        return list(dict.fromkeys(result)) or DEFAULT_PROTOCOLS.copy()
 
     def _row(self, row: sqlite3.Row, include_secret: bool = False) -> dict[str, Any]:
-        cipher = row["api_key_cipher"]
-        api_key = self._decrypt(cipher) if include_secret else ""
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "base_url": row["base_url"],
-            "api_key": api_key,
-            "api_key_masked": mask_key(self._decrypt(cipher)) if cipher else "",
-            "api_key_configured": bool(cipher),
-            "enabled": bool(row["enabled"]),
-            "priority": row["priority"],
-            "main_text_model": row["main_text_model"],
-            "backup_text_models": _parse(row["backup_text_models_json"], []),
-            "main_vision_model": row["main_vision_model"],
-            "backup_vision_models": _parse(row["backup_vision_models_json"], []),
-            "main_image_model": row["main_image_model"],
-            "backup_image_models": _parse(row["backup_image_models_json"], []),
-            "main_audio_model": row["main_audio_model"],
-            "backup_audio_models": _parse(row["backup_audio_models_json"], []),
-            "audio_protocol": _normalize_audio_protocol(row["audio_protocol"]),
-            "audio_voice": row["audio_voice"] or "alloy",
-            "audio_format": _normalize_audio_format(row["audio_format"]),
-            "protocol_order": _parse(row["protocol_order_json"], DEFAULT_PROTOCOLS),
-            "model_capabilities": _parse(row["model_capabilities_json"], {}),
-            "timeout_seconds": row["timeout_seconds"],
-            "auto_test_enabled": bool(row["auto_test_enabled"]),
-            "auto_test_interval_hours": row["auto_test_interval_hours"],
-            "last_test_at": row["last_test_at"],
-            "last_status": row["last_status"],
-            "last_latency_ms": row["last_latency_ms"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        data = dict(row)
+        data["enabled"] = bool(data["enabled"])
+        data["auto_test_enabled"] = bool(data["auto_test_enabled"])
+        data["backup_text_models"] = _parse(data.pop("backup_text_models_json"), [])
+        data["backup_vision_models"] = _parse(data.pop("backup_vision_models_json"), [])
+        data["backup_image_models"] = _parse(data.pop("backup_image_models_json"), [])
+        data["backup_audio_models"] = _parse(data.pop("backup_audio_models_json"), [])
+        data["protocol_order"] = _parse(data.pop("protocol_order_json"), DEFAULT_PROTOCOLS.copy())
+        data["model_capabilities"] = _parse(data.pop("model_capabilities_json"), {})
+        data["audio_protocol"] = _normalize_audio_protocol(data.get("audio_protocol"))
+        data["audio_format"] = _normalize_audio_format(data.get("audio_format"))
+        cipher = data.pop("api_key_cipher")
+        plain = self.decrypt(cipher) if cipher else ""
+        data["api_key_masked"] = mask_key(plain)
+        data["api_key_configured"] = bool(plain)
+        if include_secret:
+            data["api_key"] = plain
+        return data
 
-    def list(self, enabled_only: bool = False, include_secret: bool = False) -> list[dict[str, Any]]:
-        query = "SELECT * FROM providers"
-        values: list[Any] = []
-        if enabled_only:
-            query += " WHERE enabled=1"
-        query += " ORDER BY priority ASC, id ASC"
+    def list(self, *, enabled_only: bool = False, include_secret: bool = False) -> list[dict[str, Any]]:
+        self.init()
+        sql = "SELECT * FROM providers" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY priority,id"
         with self.db() as conn:
-            rows = conn.execute(query, values).fetchall()
+            rows = conn.execute(sql).fetchall()
         return [self._row(row, include_secret=include_secret) for row in rows]
 
-    def get(self, provider_id: int, include_secret: bool = False) -> dict[str, Any]:
+    def get(self, provider_id: int, *, include_secret: bool = False) -> dict[str, Any]:
+        self.init()
         with self.db() as conn:
             row = conn.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
         if row is None:
-            raise KeyError(f"供应商 {provider_id} 不存在")
+            raise KeyError("供应商不存在")
         return self._row(row, include_secret=include_secret)
 
     def create(self, **values: Any) -> dict[str, Any]:
+        self.init()
+        name = str(values.get("name") or "").strip()
+        base_url = normalize_base_url(str(values.get("base_url") or ""))
+        if not name or not base_url.startswith(("http://", "https://")):
+            raise ValueError("供应商名称或 BaseUrl 无效")
         now = _now()
+        columns = [
+            "name", "base_url", "api_key_cipher", "enabled", "priority",
+            "main_text_model", "backup_text_models_json",
+            "main_vision_model", "backup_vision_models_json",
+            "main_image_model", "backup_image_models_json",
+            "main_audio_model", "backup_audio_models_json", "audio_protocol", "audio_voice", "audio_format",
+            "protocol_order_json", "model_capabilities_json", "timeout_seconds",
+            "auto_test_enabled", "auto_test_interval_hours", "created_at", "updated_at",
+        ]
+        params = (
+            name,
+            base_url,
+            self.encrypt(str(values.get("api_key") or "").strip()),
+            1 if values.get("enabled", True) else 0,
+            max(1, int(values.get("priority") or 100)),
+            str(values.get("main_text_model") or "").strip(),
+            _json(self._models(values.get("backup_text_models"))),
+            str(values.get("main_vision_model") or "").strip(),
+            _json(self._models(values.get("backup_vision_models"))),
+            str(values.get("main_image_model") or "").strip(),
+            _json(self._models(values.get("backup_image_models"))),
+            str(values.get("main_audio_model") or "").strip(),
+            _json(self._models(values.get("backup_audio_models"))),
+            _normalize_audio_protocol(values.get("audio_protocol")),
+            str(values.get("audio_voice") or "alloy").strip() or "alloy",
+            _normalize_audio_format(values.get("audio_format")),
+            _json(self._protocols(values.get("protocol_order"))),
+            "{}",
+            max(5, min(600, int(values.get("timeout_seconds") or 60))),
+            1 if values.get("auto_test_enabled", False) else 0,
+            max(1, min(720, int(values.get("auto_test_interval_hours") or 12))),
+            now,
+            now,
+        )
+        placeholders = ",".join("?" for _ in columns)
         with self.db() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO providers (
-                    name, base_url, api_key_cipher, enabled, priority,
-                    main_text_model, backup_text_models_json,
-                    main_vision_model, backup_vision_models_json,
-                    main_image_model, backup_image_models_json,
-                    main_audio_model, backup_audio_models_json,
-                    audio_protocol, audio_voice, audio_format,
-                    protocol_order_json, model_capabilities_json,
-                    timeout_seconds, auto_test_enabled, auto_test_interval_hours,
-                    last_test_at, last_status, last_latency_ms, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    str(values.get("name") or "").strip(),
-                    normalize_base_url(str(values.get("base_url") or "")),
-                    self._encrypt(str(values.get("api_key") or "")),
-                    1 if values.get("enabled", True) else 0,
-                    max(1, int(values.get("priority") or 100)),
-                    str(values.get("main_text_model") or "").strip(),
-                    _json(values.get("backup_text_models") or []),
-                    str(values.get("main_vision_model") or "").strip(),
-                    _json(values.get("backup_vision_models") or []),
-                    str(values.get("main_image_model") or "").strip(),
-                    _json(values.get("backup_image_models") or []),
-                    str(values.get("main_audio_model") or "").strip(),
-                    _json(values.get("backup_audio_models") or []),
-                    _normalize_audio_protocol(values.get("audio_protocol")),
-                    str(values.get("audio_voice") or "alloy").strip(),
-                    _normalize_audio_format(values.get("audio_format")),
-                    _json(values.get("protocol_order") or DEFAULT_PROTOCOLS),
-                    _json(values.get("model_capabilities") or {}),
-                    max(5, min(int(values.get("timeout_seconds") or 60), 600)),
-                    1 if values.get("auto_test_enabled") else 0,
-                    max(1, min(int(values.get("auto_test_interval_hours") or 12), 720)),
-                    "",
-                    "未测试",
-                    0,
-                    now,
-                    now,
-                ),
+            cur = conn.execute(
+                f"INSERT INTO providers({','.join(columns)}) VALUES({placeholders})",
+                params,
             )
-            provider_id = int(cursor.lastrowid)
-            conn.commit()
+            provider_id = int(cur.lastrowid)
         return self.get(provider_id)
 
     def update(self, provider_id: int, **values: Any) -> dict[str, Any]:
-        current = self.get(provider_id, include_secret=True)
-        api_key = str(values.get("api_key") or "")
-        api_key_cipher = self._encrypt(api_key) if api_key else self._encrypt(current["api_key"])
+        old = self.get(provider_id, include_secret=True)
+        name = str(values.get("name", old["name"])).strip()
+        base_url = normalize_base_url(str(values.get("base_url", old["base_url"])))
+        if not name or not base_url.startswith(("http://", "https://")):
+            raise ValueError("供应商名称或 BaseUrl 无效")
+        incoming_key = str(values.get("api_key") or "").strip()
+        key = incoming_key if incoming_key else old.get("api_key", "")
         with self.db() as conn:
             conn.execute(
-                """
-                UPDATE providers SET
-                    name=?, base_url=?, api_key_cipher=?, enabled=?, priority=?,
-                    main_text_model=?, backup_text_models_json=?,
-                    main_vision_model=?, backup_vision_models_json=?,
-                    main_image_model=?, backup_image_models_json=?,
-                    main_audio_model=?, backup_audio_models_json=?,
-                    audio_protocol=?, audio_voice=?, audio_format=?,
-                    protocol_order_json=?, timeout_seconds=?,
-                    auto_test_enabled=?, auto_test_interval_hours=?, updated_at=?
-                WHERE id=?
-                """,
+                """UPDATE providers SET
+                    name=?,base_url=?,api_key_cipher=?,enabled=?,priority=?,
+                    main_text_model=?,backup_text_models_json=?,main_vision_model=?,backup_vision_models_json=?,
+                    main_image_model=?,backup_image_models_json=?,main_audio_model=?,backup_audio_models_json=?,
+                    audio_protocol=?,audio_voice=?,audio_format=?,protocol_order_json=?,timeout_seconds=?,
+                    auto_test_enabled=?,auto_test_interval_hours=?,updated_at=?
+                    WHERE id=?""",
                 (
-                    str(values.get("name") or current["name"]).strip(),
-                    normalize_base_url(str(values.get("base_url") or current["base_url"])),
-                    api_key_cipher,
-                    1 if values.get("enabled", current["enabled"]) else 0,
-                    max(1, int(values.get("priority") or current["priority"])),
-                    str(values.get("main_text_model", current["main_text_model"]) or "").strip(),
-                    _json(values.get("backup_text_models", current["backup_text_models"])),
-                    str(values.get("main_vision_model", current["main_vision_model"]) or "").strip(),
-                    _json(values.get("backup_vision_models", current["backup_vision_models"])),
-                    str(values.get("main_image_model", current["main_image_model"]) or "").strip(),
-                    _json(values.get("backup_image_models", current["backup_image_models"])),
-                    str(values.get("main_audio_model", current["main_audio_model"]) or "").strip(),
-                    _json(values.get("backup_audio_models", current["backup_audio_models"])),
-                    _normalize_audio_protocol(values.get("audio_protocol", current["audio_protocol"])),
-                    str(values.get("audio_voice", current["audio_voice"]) or "alloy").strip(),
-                    _normalize_audio_format(values.get("audio_format", current["audio_format"])),
-                    _json(values.get("protocol_order", current["protocol_order"])),
-                    max(5, min(int(values.get("timeout_seconds") or current["timeout_seconds"]), 600)),
-                    1 if values.get("auto_test_enabled", current["auto_test_enabled"]) else 0,
-                    max(1, min(int(values.get("auto_test_interval_hours") or current["auto_test_interval_hours"]), 720)),
+                    name,
+                    base_url,
+                    self.encrypt(key),
+                    1 if values.get("enabled", old["enabled"]) else 0,
+                    max(1, int(values.get("priority", old["priority"]))),
+                    str(values.get("main_text_model", old["main_text_model"])).strip(),
+                    _json(self._models(values.get("backup_text_models", old["backup_text_models"]))),
+                    str(values.get("main_vision_model", old["main_vision_model"])).strip(),
+                    _json(self._models(values.get("backup_vision_models", old["backup_vision_models"]))),
+                    str(values.get("main_image_model", old["main_image_model"])).strip(),
+                    _json(self._models(values.get("backup_image_models", old["backup_image_models"]))),
+                    str(values.get("main_audio_model", old["main_audio_model"])).strip(),
+                    _json(self._models(values.get("backup_audio_models", old["backup_audio_models"]))),
+                    _normalize_audio_protocol(values.get("audio_protocol", old["audio_protocol"])),
+                    str(values.get("audio_voice", old["audio_voice"]) or "alloy").strip() or "alloy",
+                    _normalize_audio_format(values.get("audio_format", old["audio_format"])),
+                    _json(self._protocols(values.get("protocol_order", old["protocol_order"]))),
+                    max(5, min(600, int(values.get("timeout_seconds", old["timeout_seconds"])))),
+                    1 if values.get("auto_test_enabled", old["auto_test_enabled"]) else 0,
+                    max(1, min(720, int(values.get("auto_test_interval_hours", old["auto_test_interval_hours"])))),
                     _now(),
                     provider_id,
                 ),
             )
-            conn.commit()
         return self.get(provider_id)
 
     def clear_key(self, provider_id: int) -> None:
+        self.get(provider_id)
         with self.db() as conn:
-            conn.execute(
-                "UPDATE providers SET api_key_cipher='', updated_at=? WHERE id=?",
-                (_now(), provider_id),
-            )
-            conn.commit()
+            conn.execute("UPDATE providers SET api_key_cipher='',updated_at=? WHERE id=?", (_now(), provider_id))
 
     def delete(self, provider_id: int) -> None:
+        self.get(provider_id)
         with self.db() as conn:
             conn.execute("DELETE FROM providers WHERE id=?", (provider_id,))
-            conn.commit()
 
-    def update_probe(
+    def record_probe(
         self,
         provider_id: int,
         *,
         status: str,
         latency_ms: int,
         capabilities: dict[str, Any] | None = None,
+        main_model: str | None = None,
+        backups: Iterable[str] | None = None,
+        protocols: Iterable[str] | None = None,
     ) -> None:
+        old = self.get(provider_id)
         with self.db() as conn:
             conn.execute(
-                """
-                UPDATE providers
-                SET last_test_at=?, last_status=?, last_latency_ms=?,
-                    model_capabilities_json=COALESCE(?, model_capabilities_json), updated_at=?
-                WHERE id=?
-                """,
+                """UPDATE providers SET last_status=?,last_latency_ms=?,last_test_at=?,model_capabilities_json=?,
+                    main_text_model=?,backup_text_models_json=?,protocol_order_json=?,updated_at=? WHERE id=?""",
                 (
+                    status,
+                    int(latency_ms),
                     _now(),
-                    status[:200],
-                    max(0, int(latency_ms)),
-                    _json(capabilities) if capabilities is not None else None,
+                    _json(capabilities if capabilities is not None else old["model_capabilities"]),
+                    old["main_text_model"] if main_model is None else main_model,
+                    _json(old["backup_text_models"] if backups is None else self._models(backups)),
+                    _json(old["protocol_order"] if protocols is None else self._protocols(protocols)),
                     _now(),
                     provider_id,
                 ),
             )
-            conn.commit()
 
-    def due_for_auto_test(self, now: datetime | None = None) -> list[dict[str, Any]]:
-        now = now or _now_dt()
-        due: list[dict[str, Any]] = []
-        for item in self.list(enabled_only=True):
-            if not item["auto_test_enabled"]:
-                continue
-            last = item["last_test_at"]
-            if not last:
-                due.append(item)
-                continue
-            try:
-                last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
-            except ValueError:
-                due.append(item)
-                continue
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            if now - last_dt >= timedelta(hours=item["auto_test_interval_hours"]):
-                due.append(item)
-        return due
+    def migrate_legacy(self) -> None:
+        if self.list():
+            return
+        settings = fresh_settings()
+        if settings.ai_base_url.strip() and settings.ai_api_key.strip() and settings.ai_model.strip():
+            self.create(
+                name="原 FDEX AI 接口",
+                base_url=settings.ai_base_url,
+                api_key=settings.ai_api_key,
+                main_text_model=settings.ai_model,
+                priority=1,
+                timeout_seconds=int(settings.ai_timeout_seconds),
+            )
 
 
-@lru_cache(maxsize=1)
+@lru_cache
 def provider_store() -> ProviderStore:
     store = ProviderStore()
     store.init()
+    store.migrate_legacy()
     return store
 
 
-def model_candidates(item: dict[str, Any], *, vision: bool = False) -> list[str]:
-    if vision and (item.get("main_vision_model") or item.get("backup_vision_models")):
-        values = [item.get("main_vision_model", ""), *(item.get("backup_vision_models") or [])]
-    else:
-        values = [item.get("main_text_model", ""), *(item.get("backup_text_models") or [])]
-    return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
-
-
-def text_model_candidates(item: dict[str, Any], *, vision: bool = False) -> list[str]:
-    return model_candidates(item, vision=vision)
-
-
-def image_model_candidates(item: dict[str, Any]) -> list[str]:
-    values = [item.get("main_image_model", ""), *(item.get("backup_image_models") or [])]
-    return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
-
-
-def audio_model_candidates(item: dict[str, Any]) -> list[str]:
-    values = [item.get("main_audio_model", ""), *(item.get("backup_audio_models") or [])]
-    return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
-
-
 def provider_stats() -> dict[str, int]:
-    items = provider_store().list()
+    providers = provider_store().list()
     return {
-        "total": len(items),
-        "enabled": sum(1 for x in items if x["enabled"]),
-        "healthy": sum(1 for x in items if x["last_status"].startswith("可用")),
-        "auto": sum(1 for x in items if x["auto_test_enabled"]),
-        "image": sum(1 for x in items if image_model_candidates(x)),
-        "audio": sum(1 for x in items if audio_model_candidates(x)),
+        "total": len(providers),
+        "enabled": sum(1 for p in providers if p["enabled"]),
+        "healthy": sum(1 for p in providers if str(p["last_status"]).startswith("可用")),
+        "image": sum(1 for p in providers if image_model_candidates(p)),
+        "audio": sum(1 for p in providers if audio_model_candidates(p)),
     }
+
+
+def _dedupe_models(values: Iterable[Any]) -> list[str]:
+    return list(dict.fromkeys(str(x).strip() for x in values if str(x).strip()))
+
+
+def text_model_candidates(provider: dict[str, Any], *, vision: bool = False) -> list[str]:
+    if vision:
+        overrides = _dedupe_models(
+            [provider.get("main_vision_model", ""), *(provider.get("backup_vision_models") or [])]
+        )
+        if overrides:
+            return overrides
+    return _dedupe_models(
+        [provider.get("main_text_model", ""), *(provider.get("backup_text_models") or [])]
+    )
+
+
+def model_candidates(provider: dict[str, Any]) -> list[str]:
+    """Backward-compatible alias for text routing."""
+    return text_model_candidates(provider)
+
+
+def image_model_candidates(provider: dict[str, Any]) -> list[str]:
+    return _dedupe_models(
+        [provider.get("main_image_model", ""), *(provider.get("backup_image_models") or [])]
+    )
+
+
+def audio_model_candidates(provider: dict[str, Any]) -> list[str]:
+    return _dedupe_models(
+        [provider.get("main_audio_model", ""), *(provider.get("backup_audio_models") or [])]
+    )
 
 
 def api_roots(base_url: str) -> list[str]:
     base = normalize_base_url(base_url)
-    roots = [base]
-    if not base.lower().endswith("/v1"):
-        roots.append(base + "/v1")
-    return list(dict.fromkeys(x.rstrip("/") for x in roots if x))
+    if base.endswith("/v1"):
+        roots = [base, base[:-3].rstrip("/")]
+    else:
+        roots = [base + "/v1", base]
+    return list(dict.fromkeys(x for x in roots if x))
 
 
-async def fetch_models(item: dict[str, Any]) -> tuple[list[str], int, list[str]]:
-    errors: list[str] = []
-    started = perf_counter()
-    api_key = str(item.get("api_key") or "")
-    if not api_key:
-        return [], 0, ["API Key 未配置"]
-    for root in api_roots(str(item.get("base_url") or "")):
-        url = root + "/models"
-        try:
-            timeout = httpx.Timeout(float(item.get("timeout_seconds") or 60), connect=10.0)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
-                )
-            if not response.is_success:
-                errors.append(f"{url}: HTTP {response.status_code}")
-                continue
-            data = response.json()
-            values = data.get("data") if isinstance(data, dict) else None
-            if not isinstance(values, list):
-                errors.append(f"{url}: 响应里没有 data[]")
-                continue
-            models = list(
-                dict.fromkeys(
-                    str(x.get("id") or "").strip()
-                    for x in values
-                    if isinstance(x, dict) and str(x.get("id") or "").strip()
-                )
-            )
-            return models, int((perf_counter() - started) * 1000), errors
-        except (httpx.HTTPError, ValueError) as exc:
-            errors.append(f"{url}: {str(exc)[:160]}")
-    return [], int((perf_counter() - started) * 1000), errors
+def _extract_models(data: Any) -> list[str]:
+    items: Any = None
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), list):
+            items = data["data"]
+        elif isinstance(data.get("models"), list):
+            items = data["models"]
+    elif isinstance(data, list):
+        items = data
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            value = item.get("id") or item.get("name") or item.get("model")
+            if value:
+                out.append(str(value))
+    return _dedupe_models(out)
 
 
-async def _probe_chat(item: dict[str, Any], model: str) -> tuple[bool, int, str]:
-    started = perf_counter()
-    errors: list[str] = []
-    api_key = str(item.get("api_key") or "")
-    for root in api_roots(str(item.get("base_url") or "")):
-        try:
-            timeout = httpx.Timeout(float(item.get("timeout_seconds") or 60), connect=10.0)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(
-                    root + "/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": "请只回复 OK"}],
-                        "stream": False,
-                        "max_tokens": 16,
-                    },
-                )
-            latency = int((perf_counter() - started) * 1000)
-            if response.is_success:
-                try:
-                    data = response.json()
-                    choices = data.get("choices") if isinstance(data, dict) else None
-                    if isinstance(choices, list) and choices:
-                        return True, latency, "Chat Completions 可用"
-                except ValueError:
-                    pass
-            errors.append(f"HTTP {response.status_code}")
-        except httpx.HTTPError as exc:
-            errors.append(str(exc)[:120])
-    return False, int((perf_counter() - started) * 1000), "; ".join(errors[-3:]) or "Chat 请求失败"
+def _extract_chat(data: dict[str, Any]) -> str:
+    try:
+        value = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "".join(
+            str(item.get("text") or item.get("content") or "")
+            for item in value
+            if isinstance(item, dict)
+        ).strip()
+    return ""
+
+
+def _version_key(model: str) -> tuple[int, ...]:
+    numbers = [int(x) for x in re.findall(r"\d+", model)]
+    return tuple(numbers[:6]) if numbers else (0,)
 
 
 async def probe_provider(provider_id: int, mode: str = "ordinary") -> dict[str, Any]:
+    """Probe text routing only.
+
+    Periodic deep tests deliberately avoid image/audio generation so scheduled
+    health checks cannot create recurring media-generation costs.
+    """
     store = provider_store()
-    item = store.get(provider_id, include_secret=True)
-    if not item["enabled"]:
-        result = {"ok": False, "message": "供应商已停用", "latency_ms": 0, "models": []}
-        store.update_probe(provider_id, status="失败：供应商已停用", latency_ms=0)
-        return result
-    candidates = model_candidates(item)
-    if not candidates:
-        result = {"ok": False, "message": "未配置文本模型", "latency_ms": 0, "models": []}
-        store.update_probe(provider_id, status="失败：未配置文本模型", latency_ms=0)
-        return result
+    provider = store.get(provider_id, include_secret=True)
+    if not provider.get("api_key"):
+        store.record_probe(provider_id, status="失败：API Key 未配置", latency_ms=0)
+        return {"ok": False, "message": "API Key 未配置", "models": [], "latency_ms": 0}
 
-    if mode == "ordinary":
-        ok, latency, message = await _probe_chat(item, candidates[0])
-        store.update_probe(
-            provider_id,
-            status=("可用" if ok else "失败") + f"：{message}",
-            latency_ms=latency,
-        )
-        return {"ok": ok, "message": message, "latency_ms": latency, "models": [candidates[0]] if ok else []}
+    started = perf_counter()
+    discovered: list[str] = []
+    if mode == "deep":
+        for root in api_roots(provider["base_url"]):
+            try:
+                async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
+                    response = await client.get(
+                        root.rstrip("/") + "/models",
+                        headers={"Authorization": f"Bearer {provider['api_key']}", "Accept": "application/json"},
+                    )
+                if response.is_success:
+                    discovered = _extract_models(response.json())
+                    if discovered:
+                        break
+            except (httpx.HTTPError, ValueError):
+                continue
 
-    discovered, discovery_ms, discovery_errors = await fetch_models(item)
-    to_test = discovered[:20] if discovered else candidates[:20]
-    capabilities: dict[str, Any] = {}
-    usable: list[str] = []
-    total_latency = discovery_ms
-    for model in to_test:
-        ok, latency, message = await _probe_chat(item, model)
-        total_latency += latency
-        capabilities[model] = {"chat": ok, "message": message, "latency_ms": latency}
-        if ok:
-            usable.append(model)
-    if usable:
-        store.update_probe(
-            provider_id,
-            status=f"可用：{len(usable)} 个文本模型",
-            latency_ms=total_latency,
-            capabilities=capabilities,
-        )
-        return {
-            "ok": True,
-            "message": f"发现并验证 {len(usable)} 个可用文本模型",
-            "latency_ms": total_latency,
-            "models": usable,
-            "discovery_errors": discovery_errors,
-            "capabilities": capabilities,
+    configured = text_model_candidates(provider)
+    models = discovered if discovered else configured
+    if mode != "deep":
+        models = configured[:1]
+    models = _dedupe_models(models)[:20]
+    if not models:
+        store.record_probe(provider_id, status="失败：没有可测试文本模型", latency_ms=0)
+        return {"ok": False, "message": "没有可测试文本模型", "models": [], "latency_ms": 0}
+
+    results: list[dict[str, Any]] = []
+    capabilities = dict(provider.get("model_capabilities") or {})
+    for model in models:
+        caps = dict(capabilities.get(model) or {})
+        marker = "FDEX_XAPI_OK"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": f"Reply with {marker}."}],
+            "max_tokens": 24,
+            "temperature": 0,
+            "stream": False,
         }
-    store.update_probe(
+        one_started = perf_counter()
+        success = False
+        error = ""
+        status_code: int | None = None
+        for root in api_roots(provider["base_url"]):
+            url = root.rstrip("/") + "/chat/completions"
+            try:
+                async with httpx.AsyncClient(timeout=provider["timeout_seconds"], follow_redirects=True) as client:
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {provider['api_key']}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                status_code = response.status_code
+                text = _extract_chat(response.json()) if response.is_success else ""
+                success = bool(text)
+                error = "" if success else response.text[:180]
+                if success:
+                    break
+            except (httpx.HTTPError, ValueError) as exc:
+                error = str(exc)[:180]
+        latency = int((perf_counter() - one_started) * 1000)
+        caps["chat"] = success
+        caps.setdefault("responses", False)
+        caps.setdefault("legacy", False)
+        results.append(
+            {
+                "model": model,
+                "protocol": "chat",
+                "ok": success,
+                "status": status_code,
+                "latency_ms": latency,
+                "error": error,
+            }
+        )
+        capabilities[model] = caps
+
+    usable = [model for model in models if capabilities.get(model, {}).get("chat")]
+    main = provider["main_text_model"]
+    backups = provider["backup_text_models"]
+    if mode == "deep" and usable:
+        if main not in usable:
+            main = sorted(usable, key=_version_key, reverse=True)[0]
+        backups = [x for x in sorted(usable, key=_version_key, reverse=True) if x != main]
+
+    elapsed = int((perf_counter() - started) * 1000)
+    ok = bool(usable)
+    store.record_probe(
         provider_id,
-        status="失败：没有通过深测的文本模型",
-        latency_ms=total_latency,
+        status=(f"可用：{len(usable)} 个文本模型" if ok else "失败：主/备用文本模型不可用"),
+        latency_ms=elapsed,
         capabilities=capabilities,
+        main_model=main,
+        backups=backups,
     )
     return {
-        "ok": False,
-        "message": "没有通过深测的文本模型",
-        "latency_ms": total_latency,
-        "models": [],
-        "discovery_errors": discovery_errors,
-        "capabilities": capabilities,
+        "ok": ok,
+        "message": (f"发现 {len(usable)} 个可用文本模型" if ok else "未发现可用文本模型"),
+        "models": usable,
+        "results": results,
+        "latency_ms": elapsed,
     }
+
+
+def auto_test_due(provider: dict[str, Any], now: datetime | None = None) -> bool:
+    if not provider.get("enabled") or not provider.get("auto_test_enabled"):
+        return False
+    now = now or _now_dt()
+    last = provider.get("last_test_at")
+    if not last:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    hours = max(1, int(provider.get("auto_test_interval_hours") or 12))
+    return now >= parsed + timedelta(hours=hours)
+
+
+async def run_due_provider_tests() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for provider in provider_store().list():
+        if not auto_test_due(provider):
+            continue
+        try:
+            result = await probe_provider(int(provider["id"]), mode="deep")
+            results.append({"provider_id": provider["id"], "provider": provider["name"], **result})
+        except Exception as exc:
+            results.append(
+                {
+                    "provider_id": provider["id"],
+                    "provider": provider["name"],
+                    "ok": False,
+                    "message": str(exc)[:300],
+                }
+            )
+    return results
