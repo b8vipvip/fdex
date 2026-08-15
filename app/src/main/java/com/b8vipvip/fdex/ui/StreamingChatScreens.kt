@@ -35,8 +35,10 @@ import com.b8vipvip.fdex.data.Employee
 import com.b8vipvip.fdex.data.GroupMessage
 import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
+import com.b8vipvip.fdex.network.AiMediaResult
 import com.b8vipvip.fdex.network.AiStreamEvent
 import com.b8vipvip.fdex.network.ClientAiApi
+import com.b8vipvip.fdex.network.encodeAiMediaMarker
 import com.b8vipvip.fdex.network.parseChatContent
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -63,6 +65,7 @@ internal fun StreamingEmployeeChatScreen(
     val listState = rememberLazyListState()
     var text by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var showRealtimeVoice by remember { mutableStateOf(false) }
     var streamMarkdown by remember { mutableStateOf("") }
     var streamStatus by remember { mutableStateOf("") }
     var streamReasoning by remember { mutableStateOf("") }
@@ -98,6 +101,7 @@ internal fun StreamingEmployeeChatScreen(
             placeholder = "给员工安排任务…",
             busy = busy,
             onValueChange = { text = it },
+            onRealtimeVoice = { showRealtimeVoice = true },
             onSend = { messageContent ->
                 text = ""
                 repo.addMessage(employeeId, "user", messageContent)
@@ -118,7 +122,7 @@ internal fun StreamingEmployeeChatScreen(
                     if (result.content.isNotBlank()) {
                         repo.addMessage(employeeId, "employee", result.content)
                     } else {
-                        val message = result.failure ?: "AI 没有返回正文内容"
+                        val message = result.failure ?: "AI 没有返回正文或媒体内容"
                         repo.addMessage(employeeId, "employee", "暂时无法完成请求：$message")
                         snackbar.showSnackbar(message)
                     }
@@ -126,6 +130,20 @@ internal fun StreamingEmployeeChatScreen(
                     streamMarkdown = ""
                     streamStatus = ""
                     streamReasoning = ""
+                    onChanged()
+                }
+            },
+        )
+    }
+
+    if (showRealtimeVoice) {
+        RealtimeVoiceDialog(
+            employeeName = employee.name,
+            system = employeeSystemPrompt(employee),
+            onDismiss = { showRealtimeVoice = false },
+            onAssistantReply = { reply ->
+                if (reply.isNotBlank()) {
+                    repo.addMessage(employeeId, "employee", reply)
                     onChanged()
                 }
             },
@@ -229,10 +247,10 @@ internal fun StreamingGroupChatScreen(
                     val reply = if (result.content.isNotBlank()) {
                         result.content
                     } else {
-                        "暂时无法完成：${result.failure ?: "AI 没有返回正文内容"}"
+                        "暂时无法完成：${result.failure ?: "AI 没有返回正文或媒体内容"}"
                     }
                     repo.addGroupMessage(groupId, "employee", target.name, reply)
-                    if (result.content.isBlank()) snackbar.showSnackbar(result.failure ?: "AI 没有返回正文内容")
+                    if (result.content.isBlank()) snackbar.showSnackbar(result.failure ?: "AI 没有返回正文或媒体内容")
                     busy = false
                     liveEmployee = null
                     streamMarkdown = ""
@@ -291,12 +309,7 @@ private fun GroupChatMessage(message: GroupMessage) {
 
 @Composable
 private fun AssistantMessage(markdown: String) {
-    Column(Modifier.fillMaxWidth()) {
-        MarkdownText(
-            markdown = markdown,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+    RichAssistantMessage(markdown, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
@@ -328,10 +341,18 @@ private fun LiveAssistantMessage(markdown: String, status: String, reasoning: St
             }
         }
         if (markdown.isNotBlank()) {
-            MarkdownText(markdown, modifier = Modifier.fillMaxWidth())
+            RichAssistantMessage(markdown, modifier = Modifier.fillMaxWidth())
         } else if (status.isBlank()) {
-            Text("正在等待正文…", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text("正在等待正文或媒体结果…", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+private fun appendMedia(raw: StringBuilder, media: AiMediaResult) {
+    val marker = encodeAiMediaMarker(media)
+    if (!raw.contains(marker)) {
+        if (raw.isNotEmpty() && !raw.endsWith("\n")) raw.append("\n\n")
+        raw.append(marker)
     }
 }
 
@@ -368,6 +389,10 @@ private suspend fun collectStreamedReply(
                     lastContentFlush = now
                 }
             }
+            is AiStreamEvent.Media -> {
+                appendMedia(raw, event.media)
+                onMarkdown(raw.toString())
+            }
             is AiStreamEvent.Done -> {
                 onMarkdown(raw.toString())
                 onReasoning(reasoning.toString())
@@ -382,6 +407,7 @@ private suspend fun collectStreamedReply(
         when (val fallback = ClientAiApi.ask(system, prompt, context = context)) {
             is AiGatewayResult.Success -> {
                 raw.append(fallback.content)
+                fallback.media.forEach { appendMedia(raw, it) }
                 onMarkdown(raw.toString())
             }
             is AiGatewayResult.Failure -> failure = fallback.message
