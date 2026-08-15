@@ -40,6 +40,7 @@ import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.AiMediaResult
 import com.b8vipvip.fdex.network.AiStreamEvent
 import com.b8vipvip.fdex.network.ClientAiApi
+import com.b8vipvip.fdex.network.RealtimeVoiceSession
 import com.b8vipvip.fdex.network.encodeAiMediaMarker
 import com.b8vipvip.fdex.network.parseChatContent
 import kotlinx.coroutines.flow.collect
@@ -68,6 +69,7 @@ internal fun StreamingEmployeeChatScreen(
     var text by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var realtimeVoiceActive by remember { mutableStateOf(false) }
+    var realtimeSession by remember { mutableStateOf<RealtimeVoiceSession?>(null) }
     var streamMarkdown by remember { mutableStateOf("") }
     var streamStatus by remember { mutableStateOf("") }
     var streamReasoning by remember { mutableStateOf("") }
@@ -111,7 +113,11 @@ internal fun StreamingEmployeeChatScreen(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                    onEnd = { realtimeVoiceActive = false },
+                    onEnd = {
+                        realtimeSession = null
+                        realtimeVoiceActive = false
+                    },
+                    onSessionChanged = { realtimeSession = it },
                     onUserTranscript = { transcript ->
                         if (transcript.isNotBlank()) {
                             repo.addMessage(employeeId, "user", transcript)
@@ -136,6 +142,23 @@ internal fun StreamingEmployeeChatScreen(
             onRealtimeVoice = { realtimeVoiceActive = true },
             realtimeVoiceActive = realtimeVoiceActive,
             onSend = { messageContent ->
+                val parsed = parseChatContent(messageContent)
+                if (realtimeVoiceActive && parsed.attachments.isEmpty()) {
+                    val realtimeText = parsed.text.trim()
+                    if (realtimeText.isBlank()) return@AttachmentChatComposer
+                    val sent = realtimeSession?.sendText(realtimeText) == true
+                    if (sent) {
+                        text = ""
+                        repo.addMessage(employeeId, "user", realtimeText)
+                        onChanged()
+                    } else {
+                        scope.launch {
+                            snackbar.showSnackbar("实时语音正在连接，文字未发送；不会切换供应商或模型，请稍后重试")
+                        }
+                    }
+                    return@AttachmentChatComposer
+                }
+
                 text = ""
                 repo.addMessage(employeeId, "user", messageContent)
                 onChanged()
