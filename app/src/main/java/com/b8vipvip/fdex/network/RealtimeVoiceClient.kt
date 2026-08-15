@@ -103,8 +103,10 @@ class RealtimeVoiceSession(
     @Suppress("DEPRECATION")
     fun setSpeakerEnabled(enabled: Boolean) {
         speakerEnabled.set(enabled)
-        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        runCatching { audioManager.isSpeakerphoneOn = enabled }
+        if (audioRecord != null || audioTrack != null) {
+            val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            runCatching { audioManager.isSpeakerphoneOn = enabled }
+        }
     }
 
     private fun handleServerEvent(raw: String) {
