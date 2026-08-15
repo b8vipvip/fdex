@@ -4,8 +4,8 @@
 
 ## 当前正式基线
 
-- Android 正式版：v1.1.8
-- v1.1.8 状态：已发布；包含图片 media 回传解析、基础 Realtime 语音入口和供应商 realtime 配置
+- Android 正式版：v1.1.9
+- v1.1.9 状态：已发布；修复图片长耗时提前回退，并正式适配 chat2api GPT-Live 实时语音协议
 - 服务端：FastAPI + systemd + 宝塔/Nginx
 - Android：Kotlin + Jetpack Compose
 - AI 接入：服务端多供应商管理，客户端不保存第三方 API Key
@@ -22,7 +22,7 @@
 - ChatGPT 风格正文消息与 Markdown 渲染
 - 聊天“＋”附件入口：图片、视频、语音/音频、普通文件
 - 图片附件接视觉理解；WAV/MP3 接语音能力路由
-- 员工聊天独立 Realtime 麦克风入口
+- 员工私聊实时语音双入口：输入框右侧麦克风 + `＋ → 实时语音通话`
 - App 内服务端检查更新、APK 校验与覆盖安装
 
 ### AI 服务端
@@ -31,12 +31,13 @@
 - 文本与视觉默认共用模型池，可选独立视觉覆盖模型
 - 图片生成模型池与 `/images/generations` 路由
 - 普通语音模型：Chat Audio / Speech(TTS) 路由
-- OpenAI-compatible Realtime/Live 语音供应商 WebSocket 桥
+- OpenAI-compatible Realtime 语音供应商 WebSocket 桥
+- chat2api `chat2api-live-v1` GPT-Live WebSocket 桥
 - chat2api/OpenAI-compatible SSE 文本流式透传
 - reasoning/status/media 事件兼容
 - 普通测试、文本深测、专项测试、自动文本深测 timer
 
-## v1.1.8：图片回传修复 + 基础 Realtime 语音
+## v1.1.8：图片 media 回传 + 基础 Realtime 语音
 
 状态：**已合并、CI 通过、正式签名 Release 已发布。**
 
@@ -54,9 +55,9 @@
 - Android 基础实现为 24 kHz PCM16 输入/输出。
 - 服务端第一版按 OpenAI-compatible Realtime 协议桥接。
 
-## 2026-08-15 热修复：图片长耗时 + chat2api GPT-Live
+## v1.1.9：图片长耗时修复 + chat2api GPT-Live
 
-状态：**开发分支已落地，等待 CI / 合并发布。**
+状态：**PR #24 已合并，FastAPI / Android 全量 CI 通过，正式签名 Release 已发布。**
 
 ### 1. 图片生成仍回退文本的根因与修复
 
@@ -98,7 +99,7 @@
 - 下行音频：24 kHz mono PCM16 little-endian **binary WebSocket frame**
 - 文本事件包括 `session.ready`、`transcript.final`、`response.text.delta`、`response.done`、`response.interrupted`、`error` 等。
 
-FDEX 热修复：
+FDEX v1.1.9：
 
 - `GPT Live`、`gpt-live`、`gpt_live`、`gpt live mini` 等写法统一规范化识别。
 - `gpt-live` / `gpt-live-mini` 自动选择 `chat2api-live-v1`；名称含 `realtime` 的模型继续走 OpenAI-compatible Realtime。
@@ -106,22 +107,20 @@ FDEX 热修复：
 - FDEX 服务端把 Android 内部 JSON/base64 音频解码后，以 binary frame 转发给 chat2api。
 - chat2api binary 24 kHz 音频由 FDEX 转成内部音频事件回传 Android。
 - `session.start`、`session.finish`、`response.cancel`、用户转写、AI 文本增量和打断事件完成协议映射。
-- Android Realtime 会根据服务端 `ready` 动态使用输入/输出采样率：chat2api 为 16k 输入 / 24k 输出，OpenAI-compatible 为 24k / 24k。
+- Android Realtime 根据服务端 `ready` 动态使用输入/输出采样率：chat2api 为 16k 输入 / 24k 输出，OpenAI-compatible 为 24k / 24k。
 
 ### 3. 实时语音入口可见性
 
-v1.1.8 源码已经存在员工私聊输入框右侧独立麦克风按钮，但用户真机截图没有该按钮，说明截图中的 App 并未运行包含该 UI 的正式构建，需核对实际安装版本。
+v1.1.9 提供两个员工私聊实时语音入口：
 
-热修复进一步增加双入口：
-
-- 员工私聊输入框右侧：独立麦克风按钮。
-- `＋` 菜单顶部：新增“实时语音通话”。
+- 输入框右侧：独立麦克风按钮。
+- `＋` 菜单顶部：`实时语音通话`。
 - `＋ → 语音` 仍仅用于选择已有音频文件，与实时通话职责分开。
 
 ## 部署要求
 
-- 服务端需要 `websockets` 依赖（v1.1.8 已加入）。
-- Android 需要 RECORD_AUDIO / MODIFY_AUDIO_SETTINGS 权限（v1.1.8 已加入）。
+- 服务端需要 `websockets` 依赖。
+- Android 需要 RECORD_AUDIO / MODIFY_AUDIO_SETTINGS 权限。
 - 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade。
 - 普通 `location /` 需要关闭 SSE buffering，并建议使用 600 秒 read/send timeout 以兼容长耗时媒体任务。
 - chat2api GPT-Live 需要部署包含 `agent/live-voice-external-app-v20-2` 实时语音实现的版本，并使用具有 chat/audio scope 的 managed API Key。
