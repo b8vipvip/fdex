@@ -22,7 +22,8 @@ def realtime_ws_url(base_url: str, model: str) -> str:
     parsed = urlsplit(raw)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     path = parsed.path.rstrip("/") or "/v1"
-    return urlunsplit((scheme, parsed.netloc, f"{path}/realtime", f"model={quote(model, safe='')}", ""))
+    realtime_path = path if path.endswith("/realtime") else f"{path}/realtime"
+    return urlunsplit((scheme, parsed.netloc, realtime_path, f"model={quote(model, safe='')}", ""))
 
 
 def build_realtime_session(*, voice: str, instructions: str = "") -> dict[str, Any]:
@@ -106,8 +107,9 @@ def _realtime_candidates() -> list[tuple[dict[str, Any], str]]:
     for provider in provider_store().list(enabled_only=True, include_secret=True):
         if not provider.get("api_key"):
             continue
+        explicit_realtime = str(provider.get("audio_protocol") or "auto").lower() == "realtime"
         for model in audio_model_candidates(provider):
-            if infer_audio_protocol(provider, model) == "realtime" or model_looks_realtime(model):
+            if explicit_realtime or infer_audio_protocol(provider, model) == "realtime" or model_looks_realtime(model):
                 candidates.append((provider, model))
     return candidates
 
@@ -138,7 +140,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
             websocket,
             {
                 "type": "error",
-                "message": "没有可用的 Realtime 语音供应商；请在供应商管理中配置名称含 realtime/live 的语音模型。",
+                "message": "没有可用的 Realtime 语音供应商；请在供应商管理中选择 realtime 或配置名称含 realtime/live 的语音模型。",
             },
         )
         await websocket.close(code=1013)
