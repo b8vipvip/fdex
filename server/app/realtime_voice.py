@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import re
+import time
+import uuid
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -12,6 +14,7 @@ from websockets.asyncio.client import connect
 
 from app.multimodal_service import infer_audio_protocol
 from app.provider_manager import audio_model_candidates, provider_store
+from app.realtime_diagnostics import write_realtime_diagnostic
 
 router = APIRouter(prefix="/api/client/voice", tags=["android-client"])
 
@@ -119,10 +122,7 @@ def normalize_realtime_event(data: dict[str, Any]) -> dict[str, Any] | None:
         delta = data.get("delta")
         if isinstance(delta, str) and delta:
             return {"type": "audio", "delta": delta}
-    if event_type in {
-        "response.audio_transcript.delta",
-        "response.output_audio_transcript.delta",
-    }:
+    if event_type in {"response.audio_transcript.delta", "response.output_audio_transcript.delta"}:
         delta = data.get("delta")
         if isinstance(delta, str) and delta:
             return {"type": "assistant_transcript", "delta": delta}
@@ -220,6 +220,26 @@ def _realtime_candidates() -> list[tuple[dict[str, Any], str, str]]:
     return candidates
 
 
+def _safe_client_diagnostic_details(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {
+        "frames", "bytes", "chunk_bytes", "sample_rate", "buffer_bytes", "state", "track_state",
+        "play_state", "play_ok", "speaker_enabled", "modern_route_applied", "route", "result", "change",
+        "http_code", "aec_available", "aec_enabled", "last_written", "mic_frames", "mic_bytes",
+        "received_frames", "received_bytes", "played_frames", "played_bytes", "encoded_chars", "message",
+    }
+    safe: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in allowed:
+            continue
+        if isinstance(item, (bool, int, float)) or item is None:
+            safe[key] = item
+        elif isinstance(item, str):
+            safe[key] = item[:180]
+    return safe
+
+
 async def _send_json(websocket: WebSocket, payload: dict[str, Any]) -> None:
     await websocket.send_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
@@ -248,22 +268,45 @@ async def _await_chat2api_ready(upstream: Any, timeout_seconds: float) -> dict[s
 
 @router.websocket("/realtime")
 async def realtime_voice(websocket: WebSocket) -> None:
+    session_id = "fdexrt_" + uuid.uuid4().hex[:12]
+    started_at = time.monotonic()
+    client_ip = websocket.client.host if websocket.client else ""
+    stats: dict[str, int] = {
+        "client_audio_frames": 0,
+        "client_audio_bytes": 0,
+        "upstream_audio_frames": 0,
+        "upstream_audio_bytes": 0,
+        "client_downlink_frames": 0,
+        "client_downlink_bytes": 0,
+        "interrupts": 0,
+    }
+    last_response_audio_started_at = 0.0
+    response_active = False
+
+    def diag(event: str, **details: Any) -> None:
+        write_realtime_diagnostic(session_id, event, **details)
+
+    diag("client_connected", client_ip=client_ip)
     await websocket.accept()
     try:
         first = await asyncio.wait_for(websocket.receive_text(), timeout=15)
         start = json.loads(first)
-    except (asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+    except (asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect) as exc:
+        diag("start_failed", error=exc.__class__.__name__)
         await _send_json(websocket, {"type": "error", "message": "实时语音会话初始化失败"})
         await websocket.close(code=1008)
         return
 
     if start.get("type") != "start":
+        diag("start_rejected", first_type=str(start.get("type") or ""))
         await _send_json(websocket, {"type": "error", "message": "首条消息必须是 start"})
         await websocket.close(code=1008)
         return
 
     candidates = _realtime_candidates()
+    diag("start_received", candidate_count=len(candidates), has_system=bool(str(start.get("system") or "").strip()))
     if not candidates:
+        diag("no_realtime_provider")
         await _send_json(
             websocket,
             {
@@ -287,15 +330,22 @@ async def realtime_voice(websocket: WebSocket) -> None:
             url = chat2api_live_ws_url(str(provider.get("base_url") or ""))
             headers = {
                 "Authorization": f"Bearer {provider['api_key']}",
-                "User-Agent": "FDEX-Realtime/1.2",
+                "User-Agent": "FDEX-Realtime/1.3",
             }
         else:
             url = realtime_ws_url(str(provider.get("base_url") or ""), model)
             headers = {
                 "Authorization": f"Bearer {provider['api_key']}",
                 "OpenAI-Beta": "realtime=v1",
-                "User-Agent": "FDEX-Realtime/1.2",
+                "User-Agent": "FDEX-Realtime/1.3",
             }
+        diag(
+            "upstream_connect_try",
+            provider=str(provider.get("name") or ""),
+            model=model,
+            protocol=protocol,
+            upstream_host=urlsplit(url).netloc,
+        )
         try:
             upstream = await connect(
                 url,
@@ -325,9 +375,24 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     upstream,
                     timeout_seconds=max(20.0, min(90.0, float(provider.get("timeout_seconds") or 60))),
                 )
+            diag(
+                "upstream_connected",
+                provider=str(provider.get("name") or ""),
+                model=model,
+                protocol=protocol,
+                upstream_host=urlsplit(url).netloc,
+            )
             break
         except Exception as exc:
             errors.append(f"{provider.get('name', '供应商')} / {model}: {str(exc)[:180]}")
+            diag(
+                "upstream_connect_failed",
+                provider=str(provider.get("name") or ""),
+                model=model,
+                protocol=protocol,
+                error_type=exc.__class__.__name__,
+                error=str(exc)[:180],
+            )
             if upstream is not None:
                 try:
                     await upstream.close()
@@ -339,6 +404,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
             chosen_protocol = ""
 
     if upstream is None or chosen_provider is None:
+        diag("all_upstreams_failed", attempts=len(errors))
         await _send_json(
             websocket,
             {"type": "error", "message": "实时语音供应商连接失败：" + "；".join(errors[-4:])},
@@ -378,6 +444,14 @@ async def realtime_voice(websocket: WebSocket) -> None:
             "barge_in": True,
         },
     )
+    diag(
+        "client_ready_sent",
+        provider=str(chosen_provider.get("name") or ""),
+        model=chosen_model,
+        protocol=chosen_protocol,
+        input_sample_rate=input_sample_rate,
+        output_sample_rate=output_sample_rate,
+    )
 
     async def client_to_upstream() -> None:
         while True:
@@ -388,13 +462,24 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 chunk = str(data.get("data") or "")
                 if not chunk:
                     continue
+                try:
+                    audio_for_stats = base64.b64decode(chunk, validate=True)
+                except Exception:
+                    diag("client_audio_decode_failed", encoded_chars=len(chunk))
+                    continue
+                if not audio_for_stats:
+                    continue
+                stats["client_audio_frames"] += 1
+                stats["client_audio_bytes"] += len(audio_for_stats)
+                if stats["client_audio_frames"] == 1 or stats["client_audio_frames"] % 100 == 0:
+                    diag(
+                        "client_audio_progress",
+                        frames=stats["client_audio_frames"],
+                        bytes=stats["client_audio_bytes"],
+                        chunk_bytes=len(audio_for_stats),
+                    )
                 if chosen_protocol == CHAT2API_LIVE:
-                    try:
-                        audio = base64.b64decode(chunk, validate=True)
-                    except Exception:
-                        continue
-                    if audio:
-                        await upstream.send(audio)
+                    await upstream.send(audio_for_stats)
                 else:
                     await upstream.send(
                         json.dumps(
@@ -402,10 +487,16 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             separators=(",", ":"),
                         )
                     )
+            elif event_type == "diagnostic":
+                diag(
+                    "android_" + re.sub(r"[^a-zA-Z0-9_.-]", "_", str(data.get("event") or "unknown"))[:64],
+                    **_safe_client_diagnostic_details(data.get("details")),
+                )
             elif event_type == "text":
                 text = str(data.get("text") or "").strip()
                 if not text:
                     continue
+                diag("client_text_in_session", chars=len(text))
                 if chosen_protocol == CHAT2API_LIVE:
                     await upstream.send(
                         json.dumps(
@@ -422,42 +513,96 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 await upstream.send('{"type":"input_audio_buffer.commit"}')
                 await upstream.send('{"type":"response.create"}')
             elif event_type == "cancel":
+                diag("client_cancel")
                 await upstream.send('{"type":"response.cancel"}')
             elif event_type == "clear" and chosen_protocol == OPENAI_REALTIME:
                 await upstream.send('{"type":"input_audio_buffer.clear"}')
             elif event_type == "stop":
+                diag("client_stop")
                 if chosen_protocol == CHAT2API_LIVE:
                     await upstream.send('{"type":"session.finish"}')
                 return
 
     async def upstream_to_client() -> None:
+        nonlocal last_response_audio_started_at, response_active
         async for raw in upstream:
             if isinstance(raw, bytes):
                 if chosen_protocol == CHAT2API_LIVE and raw:
+                    stats["upstream_audio_frames"] += 1
+                    stats["upstream_audio_bytes"] += len(raw)
+                    if stats["upstream_audio_frames"] == 1 or stats["upstream_audio_frames"] % 50 == 0:
+                        diag(
+                            "upstream_audio_progress",
+                            frames=stats["upstream_audio_frames"],
+                            bytes=stats["upstream_audio_bytes"],
+                            chunk_bytes=len(raw),
+                        )
                     await _send_json(
                         websocket,
                         {"type": "audio", "delta": base64.b64encode(raw).decode("ascii")},
                     )
+                    stats["client_downlink_frames"] += 1
+                    stats["client_downlink_bytes"] += len(raw)
                 continue
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
+                diag("upstream_non_json_text", chars=len(raw))
                 continue
             if not isinstance(data, dict):
                 continue
             event_type = str(data.get("type") or "")
-            if chosen_protocol == CHAT2API_LIVE and event_type == "input_audio_buffer.speech_started":
-                # chat2api exposes an explicit cancel control but does not auto-cancel on speech_started.
-                # Send it immediately so barge-in stops the browser-side response as soon as the user talks.
-                try:
-                    await upstream.send('{"type":"response.cancel"}')
-                except Exception:
-                    pass
+            if event_type in {"response.created", "response.audio.started", "response.output_item.added"}:
+                response_active = True
+                if event_type == "response.audio.started":
+                    last_response_audio_started_at = time.monotonic()
+                diag("upstream_event", upstream_event=event_type)
+            elif event_type in {"response.done", "response.completed", "response.interrupted"}:
+                diag("upstream_event", upstream_event=event_type)
+                response_active = False
+            elif event_type == "input_audio_buffer.speech_started":
+                stats["interrupts"] += 1
+                since_audio_started_ms = (
+                    int((time.monotonic() - last_response_audio_started_at) * 1000)
+                    if last_response_audio_started_at > 0
+                    else -1
+                )
+                diag(
+                    "speech_started",
+                    response_active=response_active,
+                    since_audio_started_ms=since_audio_started_ms,
+                    upstream_audio_frames=stats["upstream_audio_frames"],
+                    client_downlink_frames=stats["client_downlink_frames"],
+                )
+                if chosen_protocol == CHAT2API_LIVE and response_active:
+                    try:
+                        await upstream.send('{"type":"response.cancel"}')
+                        diag("barge_in_cancel_sent", since_audio_started_ms=since_audio_started_ms)
+                    except Exception as exc:
+                        diag("barge_in_cancel_failed", error_type=exc.__class__.__name__)
             if chosen_protocol == CHAT2API_LIVE:
                 event = normalize_chat2api_live_event(data)
             else:
                 event = normalize_realtime_event(data)
             if event:
+                if event.get("type") == "audio" and chosen_protocol == OPENAI_REALTIME:
+                    encoded = str(event.get("delta") or "")
+                    try:
+                        audio_len = len(base64.b64decode(encoded, validate=True))
+                    except Exception:
+                        audio_len = 0
+                    if audio_len:
+                        stats["upstream_audio_frames"] += 1
+                        stats["upstream_audio_bytes"] += audio_len
+                        stats["client_downlink_frames"] += 1
+                        stats["client_downlink_bytes"] += audio_len
+                        if stats["upstream_audio_frames"] == 1 or stats["upstream_audio_frames"] % 50 == 0:
+                            diag(
+                                "upstream_audio_progress",
+                                frames=stats["upstream_audio_frames"],
+                                bytes=stats["upstream_audio_bytes"],
+                                chunk_bytes=audio_len,
+                            )
                 await _send_json(websocket, event)
 
     try:
@@ -473,13 +618,22 @@ async def realtime_voice(websocket: WebSocket) -> None:
             if exc and not isinstance(exc, WebSocketDisconnect):
                 raise exc
     except WebSocketDisconnect:
-        pass
+        diag("client_disconnected")
     except Exception as exc:
+        diag("session_exception", error_type=exc.__class__.__name__, error=str(exc)[:220])
         try:
             await _send_json(websocket, {"type": "error", "message": f"实时语音连接中断：{str(exc)[:240]}"})
         except Exception:
             pass
     finally:
+        diag(
+            "session_summary",
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+            provider=str((chosen_provider or {}).get("name") or ""),
+            model=chosen_model,
+            protocol=chosen_protocol,
+            **stats,
+        )
         try:
             await upstream.close()
         except Exception:
