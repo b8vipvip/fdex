@@ -31,6 +31,7 @@ sealed interface RealtimeVoiceEvent {
     ) : RealtimeVoiceEvent
     data class UserTranscript(val text: String) : RealtimeVoiceEvent
     data class AssistantTranscript(val delta: String) : RealtimeVoiceEvent
+    data class Interrupted(val status: String) : RealtimeVoiceEvent
     data object Done : RealtimeVoiceEvent
     data class Error(val message: String) : RealtimeVoiceEvent
 }
@@ -43,8 +44,10 @@ class RealtimeVoiceSession(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
+    private val ready = AtomicBoolean(false)
     private val microphoneEnabled = AtomicBoolean(true)
     private val speakerEnabled = AtomicBoolean(true)
+    private val playbackLock = Any()
     private val httpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
@@ -60,6 +63,7 @@ class RealtimeVoiceSession(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        ready.set(false)
         microphoneEnabled.set(true)
         speakerEnabled.set(true)
         emit(RealtimeVoiceEvent.Status("正在连接实时语音…"))
@@ -78,11 +82,13 @@ class RealtimeVoiceSession(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                ready.set(false)
                 emit(RealtimeVoiceEvent.Error(t.message ?: "实时语音连接失败"))
                 stopInternal(closeSocket = false)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                ready.set(false)
                 if (running.get()) {
                     emit(RealtimeVoiceEvent.Status("实时语音已结束"))
                 }
@@ -94,6 +100,17 @@ class RealtimeVoiceSession(
     fun stop() {
         socket?.send("{\"type\":\"stop\"}")
         stopInternal(closeSocket = true)
+    }
+
+    fun sendText(text: String): Boolean {
+        val value = text.trim()
+        if (value.isBlank() || !running.get() || !ready.get()) return false
+        return socket?.send(
+            JSONObject()
+                .put("type", "text")
+                .put("text", value)
+                .toString()
+        ) ?: false
     }
 
     fun setMicrophoneEnabled(enabled: Boolean) {
@@ -121,6 +138,7 @@ class RealtimeVoiceSession(
                     json.optInt("output_sample_rate", json.optInt("sample_rate", DEFAULT_OUTPUT_SAMPLE_RATE)),
                     DEFAULT_OUTPUT_SAMPLE_RATE,
                 )
+                ready.set(true)
                 emit(
                     RealtimeVoiceEvent.Ready(
                         json.optString("provider"),
@@ -132,6 +150,14 @@ class RealtimeVoiceSession(
                 startAudio(inputRate, outputRate)
             }
             "status" -> emit(RealtimeVoiceEvent.Status(json.optString("status")))
+            "interrupt" -> {
+                clearPlayback()
+                emit(
+                    RealtimeVoiceEvent.Interrupted(
+                        json.optString("status").ifBlank { "回答已打断，正在听…" }
+                    )
+                )
+            }
             "audio" -> {
                 val encoded = json.optString("delta")
                 if (encoded.isNotBlank()) {
@@ -223,12 +249,26 @@ class RealtimeVoiceSession(
     }
 
     private fun playAudio(bytes: ByteArray) {
-        val track = audioTrack ?: return
-        runCatching { track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING) }
+        synchronized(playbackLock) {
+            val track = audioTrack ?: return
+            runCatching { track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING) }
+        }
+    }
+
+    private fun clearPlayback() {
+        synchronized(playbackLock) {
+            val track = audioTrack ?: return
+            runCatching {
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+                track.flush()
+                track.play()
+            }
+        }
     }
 
     @Suppress("DEPRECATION")
     private fun stopInternal(closeSocket: Boolean) {
+        ready.set(false)
         if (!running.getAndSet(false) && audioRecord == null && audioTrack == null) return
         runCatching { audioRecord?.stop() }
         runCatching { recordThread?.join(400) }
@@ -236,9 +276,11 @@ class RealtimeVoiceSession(
         echoCanceler = null
         audioRecord?.release()
         audioRecord = null
-        runCatching { audioTrack?.stop() }
-        audioTrack?.release()
-        audioTrack = null
+        synchronized(playbackLock) {
+            runCatching { audioTrack?.stop() }
+            audioTrack?.release()
+            audioTrack = null
+        }
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         previousSpeakerphoneOn?.let { previous -> runCatching { audioManager.isSpeakerphoneOn = previous } }
         previousSpeakerphoneOn = null

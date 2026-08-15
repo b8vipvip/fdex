@@ -1,6 +1,8 @@
 from app.realtime_voice import (
     CHAT2API_LIVE,
     OPENAI_REALTIME,
+    build_chat2api_text_event,
+    build_openai_text_events,
     build_realtime_session,
     canonical_chat2api_live_model,
     chat2api_live_ws_url,
@@ -92,15 +94,46 @@ def test_normalize_chat2api_live_events() -> None:
     }
     assert normalize_chat2api_live_event({"type": "response.done"}) == {"type": "done"}
     assert normalize_chat2api_live_event(
+        {"type": "response.interrupted", "response_id": "r1"}
+    ) == {"type": "interrupt", "status": "回答已打断，正在听…"}
+    assert normalize_chat2api_live_event(
         {"type": "error", "code": "GPT_LIVE_UNAVAILABLE", "message": "bridge busy"}
     ) == {"type": "error", "message": "bridge busy"}
 
 
-def test_normalize_status_done_and_error() -> None:
+def test_speech_started_is_an_interrupt_signal_for_local_audio_flush() -> None:
     assert normalize_realtime_event({"type": "input_audio_buffer.speech_started"}) == {
-        "type": "status",
-        "status": "正在听…",
+        "type": "interrupt",
+        "status": "已打断回答，正在听…",
     }
+    assert normalize_chat2api_live_event({"type": "input_audio_buffer.speech_started"}) == {
+        "type": "interrupt",
+        "status": "已打断回答，正在听…",
+    }
+    assert normalize_realtime_event({"type": "input_audio_buffer.speech_stopped"}) == {
+        "type": "status",
+        "status": "正在处理语音…",
+    }
+
+
+def test_realtime_text_is_sent_inside_the_existing_session() -> None:
+    assert build_chat2api_text_event("继续说") == {
+        "type": "input.text",
+        "text": "继续说",
+    }
+    item, response = build_openai_text_events("继续说")
+    assert item == {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "继续说"}],
+        },
+    }
+    assert response == {"type": "response.create"}
+
+
+def test_normalize_done_and_error() -> None:
     assert normalize_realtime_event({"type": "response.done"}) == {"type": "done"}
     assert normalize_realtime_event(
         {"type": "error", "error": {"message": "bad request"}}

@@ -53,6 +53,7 @@ internal fun RealtimeVoiceBar(
     system: String?,
     modifier: Modifier = Modifier,
     onEnd: () -> Unit,
+    onSessionChanged: (RealtimeVoiceSession?) -> Unit = {},
     onUserTranscript: (String) -> Unit,
     onAssistantReply: (String) -> Unit,
 ) {
@@ -93,6 +94,12 @@ internal fun RealtimeVoiceBar(
                         if (transcript.isNotBlank()) onUserTranscript(transcript)
                     }
                     is RealtimeVoiceEvent.AssistantTranscript -> currentReply += event.delta
+                    is RealtimeVoiceEvent.Interrupted -> {
+                        val partial = currentReply.trim()
+                        if (partial.isNotBlank()) onAssistantReply(partial)
+                        currentReply = ""
+                        status = event.status
+                    }
                     RealtimeVoiceEvent.Done -> {
                         val reply = currentReply.trim()
                         if (reply.isNotBlank()) onAssistantReply(reply)
@@ -103,11 +110,13 @@ internal fun RealtimeVoiceBar(
                 }
             }
             session = created
+            onSessionChanged(created)
             created.start()
         }
         onDispose {
             created?.stop()
             if (session === created) session = null
+            onSessionChanged(null)
         }
     }
 
