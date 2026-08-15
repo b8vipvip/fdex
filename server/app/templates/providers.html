@@ -80,7 +80,7 @@
         <div class="form-grid">
             <label class="field"><span>供应商名称</span><input name="name" required maxlength="100" value="{{ edit_provider.name if edit_provider else '' }}" placeholder="例如 chat2api 主线路"></label>
             <label class="field"><span>优先级</span><input type="number" name="priority" min="1" max="10000" value="{{ edit_provider.priority if edit_provider else 100 }}" required><small>数字越小越先调用</small></label>
-            <label class="field full-row"><span>BaseUrl</span><input type="url" name="base_url" required value="{{ edit_provider.base_url if edit_provider else '' }}" placeholder="https://example.com/v1"><small>不要填写具体的 <code>/chat/completions</code>、<code>/images/generations</code> 或 <code>/audio/speech</code></small></label>
+            <label class="field full-row"><span>BaseUrl</span><input type="url" name="base_url" required value="{{ edit_provider.base_url if edit_provider else '' }}" placeholder="https://example.com/v1"><small>不要填写具体的 <code>/chat/completions</code>、<code>/images/generations</code>、<code>/audio/speech</code> 或 <code>/realtime</code></small></label>
             <label class="field"><span>API Key</span><input type="password" name="api_key" autocomplete="new-password" placeholder="{{ '留空保持当前密钥' if edit_provider else 'sk-...' }}">{% if edit_provider %}<small>当前：<code>{{ edit_provider.api_key_masked or '未配置' }}</code></small>{% endif %}</label>
             <label class="field"><span>请求超时（秒）</span><input type="number" name="timeout_seconds" min="5" max="600" value="{{ edit_provider.timeout_seconds if edit_provider else 60 }}"></label>
         </div>
@@ -106,11 +106,11 @@
 
             <fieldset class="provider-fieldset capability-box">
                 <legend>语音对话 / 语音输出</legend>
-                <p class="fieldset-note"><code>chat_audio</code> 用于可直接音频输入/输出的 Chat Completions 模型；<code>speech</code> 用于 TTS，系统先生成文本回答再转语音。</p>
-                <label class="field"><span>主语音模型</span><input name="main_audio_model" value="{{ edit_provider.main_audio_model if edit_provider else '' }}" placeholder="例如 gpt-audio / gpt-4o-mini-tts"></label>
+                <p class="fieldset-note"><code>chat_audio</code> 用于单次音频输入/输出；<code>speech</code> 用于 TTS；<code>realtime</code> 用于 App 麦克风双向实时语音。<code>auto</code> 会根据模型名自动识别 realtime/live。</p>
+                <label class="field"><span>主语音模型</span><input name="main_audio_model" value="{{ edit_provider.main_audio_model if edit_provider else '' }}" placeholder="例如 gpt-realtime / gpt-audio / TTS 模型"></label>
                 <label class="field"><span>语音备用模型</span><input name="backup_audio_models" value="{{ edit_provider.backup_audio_models|join(', ') if edit_provider else '' }}" placeholder="多个模型用逗号分隔"></label>
                 <div class="form-grid three">
-                    <label class="field"><span>调用方式</span><select name="audio_protocol">{% for item in ['auto','chat_audio','speech'] %}<option value="{{ item }}" {% if (edit_provider.audio_protocol if edit_provider else 'auto') == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+                    <label class="field"><span>调用方式</span><select name="audio_protocol">{% for item in ['auto','realtime','chat_audio','speech'] %}<option value="{{ item }}" {% if (edit_provider.audio_protocol if edit_provider else 'auto') == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
                     <label class="field"><span>Voice</span><input name="audio_voice" value="{{ edit_provider.audio_voice if edit_provider else 'alloy' }}" placeholder="alloy"></label>
                     <label class="field"><span>输出格式</span><select name="audio_format">{% for item in ['wav','mp3','opus','aac','flac','pcm'] %}<option value="{{ item }}" {% if (edit_provider.audio_format if edit_provider else 'wav') == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
                 </div>
@@ -134,7 +134,7 @@
             </fieldset>
         </div>
 
-        <div class="inline-note warning-note">自动深测只测试文本模型，不会周期性生成图片或音频。需要验证视觉、图片和语音时，保存后手动点击“专项测试”；专项测试会产生真实的上游媒体调用。</div>
+        <div class="inline-note warning-note">自动深测只测试文本模型，不会周期性生成图片或音频。需要验证视觉、图片和普通语音时，保存后手动点击“专项测试”；Realtime 双向语音请在 App 麦克风入口做实际连接测试。</div>
         <div><button class="button primary" type="submit">{{ '保存修改' if edit_provider else '添加供应商' }}</button></div>
     </form>
 </section>
@@ -146,7 +146,7 @@
             <li>普通文字：供应商优先级 → 主文本模型 → 文本备用模型。</li>
             <li>带图片输入：优先使用视觉覆盖模型；未设置时直接共用文本模型池。</li>
             <li>明确生成图片：自动切换到配置了图片生成模型的供应商。</li>
-            <li>明确语音回复/语音对话：自动切换语音模型；TTS 模型会在文本回答后自动合成语音。</li>
+            <li>普通语音回复：按 chat_audio / speech 能力路由；实时语音按钮只连接 realtime/live 供应商。</li>
             <li>自动识别误判或专项模型不可用时，非显式请求会安全回退文本回答。</li>
         </ol>
     </section>

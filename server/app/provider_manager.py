@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from app.config import fresh_settings
 
 DEFAULT_PROTOCOLS = ["chat", "responses", "legacy"]
-AUDIO_PROTOCOLS = {"auto", "chat_audio", "speech"}
+AUDIO_PROTOCOLS = {"auto", "chat_audio", "speech", "realtime"}
 AUDIO_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
 _RUNTIME = fresh_settings()
 _DATA_DIR = Path(_RUNTIME.app_dir) / "server" / "data"

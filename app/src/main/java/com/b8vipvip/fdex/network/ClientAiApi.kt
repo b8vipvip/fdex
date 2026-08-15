@@ -13,7 +13,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 sealed interface AiGatewayResult {
-    data class Success(val content: String, val model: String, val latencyMs: Int) : AiGatewayResult
+    data class Success(
+        val content: String,
+        val model: String,
+        val latencyMs: Int,
+        val media: List<AiMediaResult> = emptyList(),
+    ) : AiGatewayResult
     data class Failure(val message: String) : AiGatewayResult
 }
 
@@ -21,6 +26,7 @@ sealed interface AiStreamEvent {
     data class Status(val status: String) : AiStreamEvent
     data class Reasoning(val delta: String) : AiStreamEvent
     data class Content(val delta: String) : AiStreamEvent
+    data class Media(val media: AiMediaResult) : AiStreamEvent
     data class Done(val model: String, val latencyMs: Int) : AiStreamEvent
     data class Failure(val message: String) : AiStreamEvent
 }
@@ -48,6 +54,7 @@ object ClientAiApi {
                 content = json.optString("content"),
                 model = json.optString("model"),
                 latencyMs = json.optInt("latency_ms"),
+                media = parseMediaArray(json.optJSONArray("media")),
             )
         } catch (error: Exception) {
             AiGatewayResult.Failure(error.message ?: "无法连接 FDEX 服务端")
@@ -104,9 +111,31 @@ object ClientAiApi {
             "status" -> json.optString("status").takeIf { it.isNotBlank() }?.let(AiStreamEvent::Status)
             "reasoning" -> json.optString("delta").takeIf { it.isNotEmpty() }?.let(AiStreamEvent::Reasoning)
             "content" -> json.optString("delta").takeIf { it.isNotEmpty() }?.let(AiStreamEvent::Content)
+            "media" -> parseMedia(json)?.let(AiStreamEvent::Media)
             "done" -> AiStreamEvent.Done(json.optString("model"), json.optInt("latency_ms"))
             "error" -> AiStreamEvent.Failure(json.optString("message").ifBlank { "AI 流式请求失败" })
             else -> null
+        }
+    }
+
+    private fun parseMedia(json: JSONObject): AiMediaResult? {
+        val url = json.optString("url")
+        if (url.isBlank()) return null
+        return AiMediaResult(
+            kind = json.optString("kind"),
+            url = url,
+            mimeType = json.optString("mime_type"),
+            transcript = json.optString("transcript"),
+            revisedPrompt = json.optString("revised_prompt"),
+        )
+    }
+
+    private fun parseMediaArray(array: JSONArray?): List<AiMediaResult> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optJSONObject(index)?.let(::parseMedia)?.let(::add)
+            }
         }
     }
 

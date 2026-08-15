@@ -118,7 +118,7 @@ async def save_provider(request: Request) -> Response:
     if not 1 <= int(values["auto_test_interval_hours"]) <= 720:
         set_flash(request, "自动深测周期必须在 1 到 720 小时之间。", "error")
         return _redirect(provider_id or None)
-    if values["audio_protocol"] not in {"auto", "chat_audio", "speech"}:
+    if values["audio_protocol"] not in {"auto", "chat_audio", "speech", "realtime"}:
         set_flash(request, "语音调用方式无效。", "error")
         return _redirect(provider_id or None)
     if values["audio_format"] not in {"mp3", "opus", "aac", "flac", "wav", "pcm"}:
