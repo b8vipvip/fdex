@@ -4,7 +4,8 @@
 
 ## 当前正式基线
 
-- Android 正式版：v1.1.7
+- Android 正式版：v1.1.8
+- v1.1.8 状态：已发布；包含图片生成回传修复、Realtime 实时语音对话和供应商 realtime 配置
 - 服务端：FastAPI + systemd + 宝塔/Nginx
 - Android：Kotlin + Jetpack Compose
 - AI 接入：服务端多供应商管理，客户端不保存第三方 API Key
@@ -21,6 +22,7 @@
 - ChatGPT 风格正文消息与 Markdown 渲染
 - 聊天“＋”附件入口：图片、视频、语音/音频、普通文件
 - 图片附件接视觉理解；WAV/MP3 接语音能力路由
+- 员工聊天独立 Realtime 麦克风入口
 - App 内服务端检查更新、APK 校验与覆盖安装
 
 ### AI 服务端
@@ -29,11 +31,14 @@
 - 文本与视觉默认共用模型池，可选独立视觉覆盖模型
 - 图片生成模型池与 `/images/generations` 路由
 - 普通语音模型：Chat Audio / Speech(TTS) 路由
+- Realtime/Live 语音供应商 WebSocket 桥
 - chat2api/OpenAI-compatible SSE 文本流式透传
-- reasoning/status 公开事件兼容
+- reasoning/status/media 事件兼容
 - 普通测试、文本深测、专项测试、自动文本深测 timer
 
-## 2026-08-15 当前改造：图片回传修复 + Realtime 语音
+## v1.1.8：图片回传修复 + Realtime 语音
+
+状态：**已合并、CI 通过、正式签名 Release 已发布。**
 
 ### 1. 图片生成回传修复
 
