@@ -52,6 +52,7 @@ internal sealed interface Route {
     data class EmployeeChat(val id: Long) : Route
     data object Employees : Route
     data object AddEmployee : Route
+    data class EditEmployee(val id: Long) : Route
     data object NewProject : Route
     data class ProjectDetail(val id: Long) : Route
     data object NewGroup : Route
@@ -150,6 +151,7 @@ fun FdexApp() {
         is Route.EmployeeChat -> repo.employee(current.id)?.name ?: "聊天"
         Route.Employees -> "AI 员工管理"
         Route.AddEmployee -> "添加员工"
+        is Route.EditEmployee -> "编辑员工"
         Route.NewProject -> "新增工作"
         is Route.ProjectDetail -> repo.project(current.id)?.title ?: "工作详情"
         Route.NewGroup -> "创建工作群"
@@ -180,6 +182,13 @@ fun FdexApp() {
                                         expanded = employeeMenu,
                                         onDismissRequest = { employeeMenu = false },
                                     ) {
+                                        DropdownMenuItem(
+                                            text = { Text("编辑员工") },
+                                            onClick = {
+                                                employeeMenu = false
+                                                go(Route.EditEmployee(current.id))
+                                            },
+                                        )
                                         DropdownMenuItem(
                                             text = { Text("员工管理") },
                                             onClick = {
@@ -243,8 +252,16 @@ fun FdexApp() {
                     onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
                 )
                 is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
-                Route.Employees -> EmployeeManageScreen(repo, revision, onAdd = { go(Route.AddEmployee) }, onChat = { go(Route.EmployeeChat(it)) }, onChanged = { touch() })
-                Route.AddEmployee -> AddEmployeeScreen(repo) { touch(); back() }
+                Route.Employees -> EmployeeManageScreen(
+                    repo,
+                    revision,
+                    onAdd = { go(Route.AddEmployee) },
+                    onEdit = { go(Route.EditEmployee(it)) },
+                    onChat = { go(Route.EmployeeChat(it)) },
+                    onChanged = { touch() },
+                )
+                Route.AddEmployee -> AddEmployeeScreen(repo, snackbar) { touch(); back() }
+                is Route.EditEmployee -> EditEmployeeScreen(repo, current.id, snackbar) { touch(); back() }
                 Route.NewProject -> NewProjectScreen(repo) { id -> touch(); go(Route.ProjectDetail(id), keepCurrent = false) }
                 is Route.ProjectDetail -> ProjectDetailScreen(repo, current.id, revision, onChanged = { touch() }, onGroup = { go(Route.GroupChat(it)) }, snackbar = snackbar)
                 Route.NewGroup -> NewGroupScreen(repo) { id -> touch(); go(Route.GroupChat(id), keepCurrent = false) }
