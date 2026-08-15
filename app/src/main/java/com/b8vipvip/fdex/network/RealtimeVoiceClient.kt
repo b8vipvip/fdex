@@ -43,6 +43,8 @@ class RealtimeVoiceSession(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
+    private val microphoneEnabled = AtomicBoolean(true)
+    private val speakerEnabled = AtomicBoolean(true)
     private val httpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
@@ -54,9 +56,12 @@ class RealtimeVoiceSession(
     private var echoCanceler: AcousticEchoCanceler? = null
     private var recordThread: Thread? = null
     private var previousAudioMode: Int? = null
+    private var previousSpeakerphoneOn: Boolean? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        microphoneEnabled.set(true)
+        speakerEnabled.set(true)
         emit(RealtimeVoiceEvent.Status("正在连接实时语音…"))
         val request = Request.Builder().url(realtimeUrl()).build()
         socket = httpClient.newWebSocket(request, object : WebSocketListener() {
@@ -89,6 +94,17 @@ class RealtimeVoiceSession(
     fun stop() {
         socket?.send("{\"type\":\"stop\"}")
         stopInternal(closeSocket = true)
+    }
+
+    fun setMicrophoneEnabled(enabled: Boolean) {
+        microphoneEnabled.set(enabled)
+    }
+
+    @Suppress("DEPRECATION")
+    fun setSpeakerEnabled(enabled: Boolean) {
+        speakerEnabled.set(enabled)
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching { audioManager.isSpeakerphoneOn = enabled }
     }
 
     private fun handleServerEvent(raw: String) {
@@ -130,12 +146,14 @@ class RealtimeVoiceSession(
         }
     }
 
-    @Suppress("MissingPermission")
+    @Suppress("MissingPermission", "DEPRECATION")
     private fun startAudio(inputSampleRate: Int, outputSampleRate: Int) {
         if (!running.get() || audioRecord != null) return
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         previousAudioMode = audioManager.mode
+        previousSpeakerphoneOn = audioManager.isSpeakerphoneOn
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        runCatching { audioManager.isSpeakerphoneOn = speakerEnabled.get() }
 
         val minRecord = AudioRecord.getMinBufferSize(
             inputSampleRate,
@@ -195,6 +213,7 @@ class RealtimeVoiceSession(
         while (running.get()) {
             val count = recorder.read(buffer, 0, buffer.size)
             if (count <= 0) continue
+            if (!microphoneEnabled.get()) continue
             val encoded = Base64.encodeToString(buffer.copyOf(count), Base64.NO_WRAP)
             val ok = socket?.send(JSONObject().put("type", "audio").put("data", encoded).toString()) ?: false
             if (!ok) break
@@ -206,6 +225,7 @@ class RealtimeVoiceSession(
         runCatching { track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING) }
     }
 
+    @Suppress("DEPRECATION")
     private fun stopInternal(closeSocket: Boolean) {
         if (!running.getAndSet(false) && audioRecord == null && audioTrack == null) return
         runCatching { audioRecord?.stop() }
@@ -218,6 +238,8 @@ class RealtimeVoiceSession(
         audioTrack?.release()
         audioTrack = null
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        previousSpeakerphoneOn?.let { previous -> runCatching { audioManager.isSpeakerphoneOn = previous } }
+        previousSpeakerphoneOn = null
         previousAudioMode?.let { audioManager.mode = it }
         previousAudioMode = null
         if (closeSocket) socket?.close(1000, "client stop")
@@ -231,8 +253,8 @@ class RealtimeVoiceSession(
     private fun realtimeUrl(): String {
         val base = BuildConfig.SERVER_BASE_URL.trimEnd('/')
         val websocketBase = when {
-            base.startsWith("https://") -> "wss://${base.removePrefix("https://")}" 
-            base.startsWith("http://") -> "ws://${base.removePrefix("http://")}" 
+            base.startsWith("https://") -> "wss://${base.removePrefix("https://")}"
+            base.startsWith("http://") -> "ws://${base.removePrefix("http://")}"
             else -> base
         }
         return "$websocketBase/api/client/voice/realtime"
