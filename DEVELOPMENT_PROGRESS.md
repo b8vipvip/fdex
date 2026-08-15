@@ -133,7 +133,7 @@ v1.1.9 提供两个员工私聊实时语音入口：
 - 麦克风开关：关闭后保留 WebSocket 会话，但停止向上游发送麦克风 PCM 数据；再次开启立即恢复。
 - 扬声器开关：通话期间可在扬声器和系统通信听筒路由之间切换；结束通话后恢复进入通话前的系统音频路由。
 - 结束通话按钮集中在悬浮声波条右侧。
-- 原有文本输入框、附件菜单和发送按钮在实时语音期间保持可用；文本消息继续走现有 FDEX 文本/多模态流式链路，实时语音 WebSocket 不断开，因此可以边语音边发送文字或附件。
+- 原有文本输入框、附件菜单和发送按钮在实时语音期间保持可用；v1.1.10 的文字仍走普通文本/多模态流式链路，实时语音 WebSocket 保持连接。
 - 语音最终转写继续写入同一员工聊天记录，AI 语音回复的文本转写也写入同一消息时间线。
 - 实时语音进行中隐藏输入框旁重复的“开始语音”按钮，`＋` 菜单显示“实时语音进行中”，避免重复建立第二条会话。
 
@@ -151,6 +151,52 @@ v1.1.9 提供两个员工私聊实时语音入口：
 - 实际请求 chat2api `/v1/images/generations` 时自动规范成精确模型 ID `gpt-image`，修复 HTTP 422。
 - 不改写其它供应商自己的图片模型 ID。
 
+## 下一版：实时会话文字锁定 + 完整 Barge-in 打断
+
+状态：**PR #27 已开发完成，等待 CI / 合并发布。**
+
+### 1. 通话中文字不再重新选择供应商或模型
+
+v1.1.10 中，虽然语音 WebSocket 会保持连接，但用户在通话期间输入纯文字时仍会调用普通 `/api/client/ai/stream`，因此会重新经过供应商和模型路由。下一版改为：
+
+- 实时语音 active 且消息为纯文字时，不再调用普通 AI HTTP/SSE 接口。
+- Android 通过当前 `RealtimeVoiceSession.sendText()` 向已经建立的同一个 FDEX Realtime WebSocket 发送 `{type:"text"}`。
+- FDEX 服务端不重新访问供应商池；直接使用该 WebSocket 建立时已经选定的 `chosen_provider / chosen_model / chosen_protocol`。
+- chat2api GPT-Live 固定转发控制帧：`{"type":"input.text","text":"..."}`。
+- OpenAI-compatible Realtime 固定映射成 `conversation.item.create(input_text)` + `response.create`。
+- 如果实时会话尚未 ready，Android 明确提示“文字未发送；不会切换供应商或模型”，不做普通线路 fallback。
+- 带图片/文件等附件的消息仍属于多模态任务，不伪装成实时纯文字；本次锁定规则针对“通话中发送纯文字”。
+
+当前 chat2api `agent/live-voice-external-app-v20-2` 尚未实现 `input.text` 控制帧；FDEX 先固定协议契约。chat2api 后续增加该控制帧后，同一 GPT-Live 会话即可直接接收文字，不需要再修改 FDEX 的供应商路由架构。
+
+### 2. Barge-in 打断现状与修复
+
+检查确认 v1.1.10 之前只具备部分打断能力：
+
+- OpenAI Realtime session 已配置 `server_vad` + `interrupt_response=true`。
+- chat2api Live 协议已经存在 `response.cancel` 与 `response.interrupted`。
+- 但 FDEX 没有在 chat2api 返回 `input_audio_buffer.speech_started` 时主动发送 `response.cancel`。
+- Android 收到打断状态后也没有主动清理 `AudioTrack` 中已经排队的 AI PCM，因此即使上游停止，手机仍可能继续播放一小段缓存音频。
+- 被打断的 `currentReply` 也存在与下一轮回答继续拼接的风险。
+
+下一版补全为：
+
+1. 用户重新开口，chat2api 报 `input_audio_buffer.speech_started`。
+2. FDEX 立即向同一 chat2api Live WebSocket 发送 `response.cancel`。
+3. chat2api 浏览器桥执行 `voice.live.cancel`，并返回 `response.interrupted`。
+4. FDEX 将 `speech_started` 与 `response.interrupted` 都归一化成内部 `interrupt` 事件。
+5. Android 一收到 `interrupt`，立即对当前 `AudioTrack` 执行 `pause → flush → play`，清除尚未播放的 AI 音频。
+6. 已经实际说出的 AI 文本转写单独保存，然后清空当前 response buffer，下一轮回答从空缓冲开始。
+7. OpenAI-compatible Realtime 继续依赖服务端 VAD 的 `interrupt_response=true`，同时同样把 `speech_started` 作为本地音频 flush 信号。
+
+### 3. 回归测试
+
+- FastAPI 测试覆盖 `input.text` chat2api 契约。
+- FastAPI 测试覆盖 OpenAI Realtime `conversation.item.create + response.create` 文本映射。
+- 测试 `speech_started` 会归一化为 `interrupt`。
+- 测试 chat2api `response.interrupted` 会归一化为 `interrupt`。
+- Android 构建用于验证新增 `Interrupted` 事件、`sendText()` 和 AudioTrack flush 逻辑可编译。
+
 ## 部署要求
 
 - 服务端需要 `websockets` 依赖。
@@ -158,12 +204,14 @@ v1.1.9 提供两个员工私聊实时语音入口：
 - 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade。
 - 普通 `location /` 需要关闭 SSE buffering，并建议使用 600 秒 read/send timeout 以兼容长耗时媒体任务。
 - chat2api GPT-Live 需要部署包含 `agent/live-voice-external-app-v20-2` 实时语音实现的版本，并使用具有 chat/audio scope 的 managed API Key。
+- chat2api 若要支持通话中纯文字，需要在 Live WebSocket 中实现 `{"type":"input.text","text":"..."}` 并在同一 Voice 会话中生成回答。
 
 ## 待继续验证 / 后续
 
 - 真机验证 chat2api 图片生成完整 media 回显（含 `GPT Image` → `gpt-image` 别名修复）。
-- 真机验证 chat2api GPT-Live 16k 上行 / 24k 下行双向音频、打断和文本转写。
-- 真机验证聊天页悬浮声波条、麦克风/扬声器开关以及通话中并行文本消息。
+- 真机验证 chat2api GPT-Live 16k 上行 / 24k 下行双向音频和文本转写。
+- 真机重点验证 Barge-in：AI 说话过程中用户开口后，手机本地音频应立即停止且下一轮响应正常。
+- chat2api 实现 `input.text` 后，真机验证通话中文字始终留在同一供应商 / 同一模型 / 同一 GPT-Live 会话。
 - 验证蓝牙耳机、扬声器回声控制和网络切换。
 - chat2api Live 分支未来合入 main 后，更新文档中的分支依赖说明。
 - 视频/普通文档当前可以作为聊天附件保存与打开；是否直接交给模型理解仍按具体上游协议逐项接入。
