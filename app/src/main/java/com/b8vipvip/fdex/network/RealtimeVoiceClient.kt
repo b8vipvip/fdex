@@ -23,7 +23,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface RealtimeVoiceEvent {
     data class Status(val value: String) : RealtimeVoiceEvent
-    data class Ready(val provider: String, val model: String) : RealtimeVoiceEvent
+    data class Ready(
+        val provider: String,
+        val model: String,
+        val inputSampleRate: Int,
+        val outputSampleRate: Int,
+    ) : RealtimeVoiceEvent
     data class UserTranscript(val text: String) : RealtimeVoiceEvent
     data class AssistantTranscript(val delta: String) : RealtimeVoiceEvent
     data object Done : RealtimeVoiceEvent
@@ -58,7 +63,7 @@ class RealtimeVoiceSession(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val payload = JSONObject()
                     .put("type", "start")
-                    .put("sample_rate", SAMPLE_RATE)
+                    .put("sample_rate", DEFAULT_OUTPUT_SAMPLE_RATE)
                 if (!system.isNullOrBlank()) payload.put("system", system)
                 webSocket.send(payload.toString())
             }
@@ -90,8 +95,23 @@ class RealtimeVoiceSession(
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
         when (json.optString("type")) {
             "ready" -> {
-                emit(RealtimeVoiceEvent.Ready(json.optString("provider"), json.optString("model")))
-                startAudio()
+                val inputRate = sanitizeSampleRate(
+                    json.optInt("input_sample_rate", DEFAULT_INPUT_SAMPLE_RATE),
+                    DEFAULT_INPUT_SAMPLE_RATE,
+                )
+                val outputRate = sanitizeSampleRate(
+                    json.optInt("output_sample_rate", json.optInt("sample_rate", DEFAULT_OUTPUT_SAMPLE_RATE)),
+                    DEFAULT_OUTPUT_SAMPLE_RATE,
+                )
+                emit(
+                    RealtimeVoiceEvent.Ready(
+                        json.optString("provider"),
+                        json.optString("model"),
+                        inputRate,
+                        outputRate,
+                    )
+                )
+                startAudio(inputRate, outputRate)
             }
             "status" -> emit(RealtimeVoiceEvent.Status(json.optString("status")))
             "audio" -> {
@@ -111,27 +131,27 @@ class RealtimeVoiceSession(
     }
 
     @Suppress("MissingPermission")
-    private fun startAudio() {
+    private fun startAudio(inputSampleRate: Int, outputSampleRate: Int) {
         if (!running.get() || audioRecord != null) return
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         previousAudioMode = audioManager.mode
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         val minRecord = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
+            inputSampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         ).coerceAtLeast(4096)
         val recorder = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SAMPLE_RATE,
+            inputSampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             minRecord * 2,
         )
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
-            emit(RealtimeVoiceEvent.Error("麦克风初始化失败"))
+            emit(RealtimeVoiceEvent.Error("麦克风初始化失败（${inputSampleRate}Hz）"))
             return
         }
         audioRecord = recorder
@@ -142,7 +162,7 @@ class RealtimeVoiceSession(
         }
 
         val minPlay = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE,
+            outputSampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         ).coerceAtLeast(4096)
@@ -156,7 +176,7 @@ class RealtimeVoiceSession(
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(SAMPLE_RATE)
+                    .setSampleRate(outputSampleRate)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
@@ -218,7 +238,11 @@ class RealtimeVoiceSession(
         return "$websocketBase/api/client/voice/realtime"
     }
 
+    private fun sanitizeSampleRate(value: Int, fallback: Int): Int =
+        value.takeIf { it in 8_000..48_000 } ?: fallback
+
     companion object {
-        private const val SAMPLE_RATE = 24_000
+        private const val DEFAULT_INPUT_SAMPLE_RATE = 24_000
+        private const val DEFAULT_OUTPUT_SAMPLE_RATE = 24_000
     }
 }
