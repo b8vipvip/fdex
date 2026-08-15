@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -58,6 +59,7 @@ internal fun AttachmentChatComposer(
     busy: Boolean,
     onValueChange: (String) -> Unit,
     onSend: (String) -> Unit,
+    onRealtimeVoice: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var pending by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
@@ -133,7 +135,15 @@ internal fun AttachmentChatComposer(
                 maxLines = 4,
                 shape = RoundedCornerShape(22.dp),
             )
-            Spacer(Modifier.width(8.dp))
+            if (onRealtimeVoice != null) {
+                IconButton(
+                    enabled = !busy,
+                    onClick = onRealtimeVoice,
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = "实时语音对话")
+                }
+            }
+            Spacer(Modifier.width(4.dp))
             Button(
                 enabled = !busy && (value.isNotBlank() || pending.isNotEmpty()),
                 onClick = {
