@@ -1,7 +1,14 @@
 from app.realtime_voice import (
+    CHAT2API_LIVE,
+    OPENAI_REALTIME,
     build_realtime_session,
+    canonical_chat2api_live_model,
+    chat2api_live_ws_url,
+    model_looks_chat2api_live,
     model_looks_realtime,
+    normalize_chat2api_live_event,
     normalize_realtime_event,
+    realtime_protocol,
     realtime_ws_url,
 )
 
@@ -12,6 +19,15 @@ def test_realtime_ws_url_uses_provider_v1_root() -> None:
     )
     assert realtime_ws_url("http://127.0.0.1:9000/v1", "voice model") == (
         "ws://127.0.0.1:9000/v1/realtime?model=voice%20model"
+    )
+
+
+def test_chat2api_live_ws_url_uses_audio_realtime_endpoint() -> None:
+    assert chat2api_live_ws_url("https://chat2api.example/v1") == (
+        "wss://chat2api.example/v1/audio/realtime"
+    )
+    assert chat2api_live_ws_url("http://127.0.0.1:9000") == (
+        "ws://127.0.0.1:9000/v1/audio/realtime"
     )
 
 
@@ -30,8 +46,26 @@ def test_current_realtime_session_uses_24k_pcm_and_server_vad() -> None:
 def test_live_models_are_realtime_candidates() -> None:
     assert model_looks_realtime("gpt-realtime")
     assert model_looks_realtime("gpt-live")
+    assert model_looks_realtime("GPT Live")
+    assert model_looks_realtime("gpt_live")
     assert model_looks_realtime("vendor-super-live")
     assert not model_looks_realtime("gpt-audio")
+
+
+def test_gpt_live_uses_chat2api_protocol_even_with_spaces() -> None:
+    provider = {"audio_protocol": "auto"}
+    assert model_looks_chat2api_live("GPT Live")
+    assert model_looks_chat2api_live("gpt_live_mini")
+    assert canonical_chat2api_live_model("GPT Live") == "gpt-live"
+    assert canonical_chat2api_live_model("gpt live mini") == "gpt-live-mini"
+    assert realtime_protocol(provider, "GPT Live") == CHAT2API_LIVE
+    assert realtime_protocol(provider, "gpt-live-mini") == CHAT2API_LIVE
+
+
+def test_openai_realtime_protocol_remains_supported() -> None:
+    assert realtime_protocol({"audio_protocol": "auto"}, "gpt-realtime") == OPENAI_REALTIME
+    assert realtime_protocol({"audio_protocol": "realtime"}, "vendor-voice") == OPENAI_REALTIME
+    assert realtime_protocol({"audio_protocol": "auto"}, "gpt-audio") == ""
 
 
 def test_normalize_audio_and_transcript_events() -> None:
@@ -45,6 +79,21 @@ def test_normalize_audio_and_transcript_events() -> None:
     assert normalize_realtime_event(
         {"type": "conversation.item.input_audio_transcription.completed", "transcript": "测试"}
     ) == {"type": "user_transcript", "text": "测试"}
+
+
+def test_normalize_chat2api_live_events() -> None:
+    assert normalize_chat2api_live_event({"type": "transcript.final", "text": "你好"}) == {
+        "type": "user_transcript",
+        "text": "你好",
+    }
+    assert normalize_chat2api_live_event({"type": "response.text.delta", "delta": "您好"}) == {
+        "type": "assistant_transcript",
+        "delta": "您好",
+    }
+    assert normalize_chat2api_live_event({"type": "response.done"}) == {"type": "done"}
+    assert normalize_chat2api_live_event(
+        {"type": "error", "code": "GPT_LIVE_UNAVAILABLE", "message": "bridge busy"}
+    ) == {"type": "error", "message": "bridge busy"}
 
 
 def test_normalize_status_done_and_error() -> None:
