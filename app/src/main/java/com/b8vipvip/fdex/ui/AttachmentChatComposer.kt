@@ -60,6 +60,7 @@ internal fun AttachmentChatComposer(
     onValueChange: (String) -> Unit,
     onSend: (String) -> Unit,
     onRealtimeVoice: (() -> Unit)? = null,
+    realtimeVoiceActive: Boolean = false,
 ) {
     val context = LocalContext.current
     var pending by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
@@ -105,9 +106,12 @@ internal fun AttachmentChatComposer(
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     if (onRealtimeVoice != null) {
-                        AttachmentMenuItem("实时语音通话", Icons.Default.Mic) {
+                        AttachmentMenuItem(
+                            if (realtimeVoiceActive) "实时语音进行中" else "实时语音通话",
+                            Icons.Default.Mic,
+                        ) {
                             menuOpen = false
-                            onRealtimeVoice()
+                            if (!realtimeVoiceActive) onRealtimeVoice()
                         }
                     }
                     AttachmentMenuItem("图片", Icons.Default.Image) {
@@ -141,7 +145,7 @@ internal fun AttachmentChatComposer(
                 maxLines = 4,
                 shape = RoundedCornerShape(22.dp),
             )
-            if (onRealtimeVoice != null) {
+            if (onRealtimeVoice != null && !realtimeVoiceActive) {
                 IconButton(
                     enabled = !busy,
                     onClick = onRealtimeVoice,
