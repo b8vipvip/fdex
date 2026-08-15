@@ -54,11 +54,11 @@ def test_provider_store_encrypts_masks_and_routes_capability_models(tmp_path: Pa
         priority=2,
         main_vision_model="vision-special",
         backup_vision_models=["vision-backup"],
-        audio_protocol="speech",
+        audio_protocol="realtime",
     )
     assert updated["name"] == "primary"
     assert text_model_candidates(updated, vision=True) == ["vision-special", "vision-backup"]
-    assert updated["audio_protocol"] == "speech"
+    assert updated["audio_protocol"] == "realtime"
     assert store.get(item["id"], include_secret=True)["api_key"] == "sk-super-secret-123456"
 
     store.clear_key(item["id"])
