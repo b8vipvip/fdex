@@ -35,7 +35,6 @@ import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.ChatMessage
 import com.b8vipvip.fdex.data.Employee
 import com.b8vipvip.fdex.data.GroupMessage
-import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.AiMediaResult
 import com.b8vipvip.fdex.network.AiStreamEvent
@@ -462,14 +461,8 @@ private suspend fun collectStreamedReply(
     return CollectedReply(raw.toString(), failure)
 }
 
-private fun employeeSystemPrompt(employee: Employee): String? = if (employee.isPrivateAssistant()) {
-    null
-} else {
-    "你是 FDEX AI 虚拟公司的员工：${employee.name}，职位：${employee.position}，部门：${employee.department}。${employee.rolePrompt}。像真实同事一样简洁、主动、可执行地回答。"
-}
+private fun employeeSystemPrompt(employee: Employee): String? =
+    employee.rolePrompt.trim().takeIf { it.isNotEmpty() }
 
-private fun groupSystemPrompt(employee: Employee): String? = if (employee.isPrivateAssistant()) {
-    null
-} else {
-    "你是工作群里的${employee.position} ${employee.name}。${employee.rolePrompt}。从团队协作角度简洁、可执行地回复。"
-}
+private fun groupSystemPrompt(employee: Employee): String? =
+    employee.rolePrompt.trim().takeIf { it.isNotEmpty() }
