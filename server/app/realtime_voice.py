@@ -39,11 +39,7 @@ def realtime_ws_url(base_url: str, model: str) -> str:
 
 
 def chat2api_live_ws_url(base_url: str) -> str:
-    """Build the chat2api-live-v1 websocket URL.
-
-    chat2api exposes WS /v1/audio/realtime and authenticates native clients
-    with the managed API key in the Authorization header.
-    """
+    """Build the chat2api-live-v1 websocket URL."""
     raw = (base_url or "").strip().rstrip("/")
     for suffix in ("/chat/completions", "/audio/speech", "/images/generations"):
         if raw.lower().endswith(suffix):
@@ -89,15 +85,34 @@ def build_realtime_session(*, voice: str, instructions: str = "") -> dict[str, A
     return session
 
 
+def build_chat2api_text_event(text: str) -> dict[str, Any]:
+    """FDEX contract for text injected into the already-open chat2api Live session."""
+    return {"type": "input.text", "text": text}
+
+
+def build_openai_text_events(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """OpenAI Realtime equivalent of injecting one user text turn."""
+    return (
+        {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        },
+        {"type": "response.create"},
+    )
+
+
 def normalize_realtime_event(data: dict[str, Any]) -> dict[str, Any] | None:
     event_type = str(data.get("type") or "")
     if event_type in {"session.created", "session.updated"}:
         return {"type": "status", "status": "语音会话已连接"}
-    if event_type in {"input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"}:
-        return {
-            "type": "status",
-            "status": "正在听…" if event_type.endswith("started") else "正在处理语音…",
-        }
+    if event_type == "input_audio_buffer.speech_started":
+        return {"type": "interrupt", "status": "已打断回答，正在听…"}
+    if event_type == "input_audio_buffer.speech_stopped":
+        return {"type": "status", "status": "正在处理语音…"}
     if event_type in {"response.created", "response.output_item.added"}:
         return {"type": "status", "status": "正在回答…"}
     if event_type in {"response.audio.delta", "response.output_audio.delta"}:
@@ -138,11 +153,10 @@ def normalize_chat2api_live_event(data: dict[str, Any]) -> dict[str, Any] | None
     event_type = str(data.get("type") or "")
     if event_type == "session.ready":
         return {"type": "status", "status": "GPT-Live 语音会话已连接"}
-    if event_type in {"input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"}:
-        return {
-            "type": "status",
-            "status": "正在听…" if event_type.endswith("started") else "正在处理语音…",
-        }
+    if event_type == "input_audio_buffer.speech_started":
+        return {"type": "interrupt", "status": "已打断回答，正在听…"}
+    if event_type == "input_audio_buffer.speech_stopped":
+        return {"type": "status", "status": "正在处理语音…"}
     if event_type in {"response.created", "response.audio.started"}:
         return {"type": "status", "status": "正在回答…"}
     if event_type == "transcript.final":
@@ -154,7 +168,7 @@ def normalize_chat2api_live_event(data: dict[str, Any]) -> dict[str, Any] | None
         if isinstance(delta, str) and delta:
             return {"type": "assistant_transcript", "delta": delta}
     if event_type == "response.interrupted":
-        return {"type": "status", "status": "回答已打断，正在听…"}
+        return {"type": "interrupt", "status": "回答已打断，正在听…"}
     if event_type == "response.done":
         return {"type": "done"}
     if event_type == "session.closed":
@@ -273,14 +287,14 @@ async def realtime_voice(websocket: WebSocket) -> None:
             url = chat2api_live_ws_url(str(provider.get("base_url") or ""))
             headers = {
                 "Authorization": f"Bearer {provider['api_key']}",
-                "User-Agent": "FDEX-Realtime/1.1",
+                "User-Agent": "FDEX-Realtime/1.2",
             }
         else:
             url = realtime_ws_url(str(provider.get("base_url") or ""), model)
             headers = {
                 "Authorization": f"Bearer {provider['api_key']}",
                 "OpenAI-Beta": "realtime=v1",
-                "User-Agent": "FDEX-Realtime/1.1",
+                "User-Agent": "FDEX-Realtime/1.2",
             }
         try:
             upstream = await connect(
@@ -360,6 +374,8 @@ async def realtime_voice(websocket: WebSocket) -> None:
             "input_sample_rate": input_sample_rate,
             "output_sample_rate": output_sample_rate,
             "sample_rate": output_sample_rate,
+            "text_in_session": True,
+            "barge_in": True,
         },
     )
 
@@ -386,6 +402,22 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             separators=(",", ":"),
                         )
                     )
+            elif event_type == "text":
+                text = str(data.get("text") or "").strip()
+                if not text:
+                    continue
+                if chosen_protocol == CHAT2API_LIVE:
+                    await upstream.send(
+                        json.dumps(
+                            build_chat2api_text_event(text),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
+                else:
+                    item_event, response_event = build_openai_text_events(text)
+                    await upstream.send(json.dumps(item_event, ensure_ascii=False, separators=(",", ":")))
+                    await upstream.send(json.dumps(response_event, separators=(",", ":")))
             elif event_type == "commit" and chosen_protocol == OPENAI_REALTIME:
                 await upstream.send('{"type":"input_audio_buffer.commit"}')
                 await upstream.send('{"type":"response.create"}')
@@ -413,6 +445,14 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 continue
             if not isinstance(data, dict):
                 continue
+            event_type = str(data.get("type") or "")
+            if chosen_protocol == CHAT2API_LIVE and event_type == "input_audio_buffer.speech_started":
+                # chat2api exposes an explicit cancel control but does not auto-cancel on speech_started.
+                # Send it immediately so barge-in stops the browser-side response as soon as the user talks.
+                try:
+                    await upstream.send('{"type":"response.cancel"}')
+                except Exception:
+                    pass
             if chosen_protocol == CHAT2API_LIVE:
                 event = normalize_chat2api_live_event(data)
             else:
