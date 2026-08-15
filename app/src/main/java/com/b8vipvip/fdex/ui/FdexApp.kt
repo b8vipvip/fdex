@@ -1,5 +1,6 @@
 package com.b8vipvip.fdex.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -84,7 +85,16 @@ fun FdexApp() {
     }
     fun back() {
         employeeMenu = false
-        route = if (history.isNotEmpty()) history.removeAt(history.lastIndex) else Route.Messages
+        route = if (history.isNotEmpty()) {
+            history.removeAt(history.lastIndex)
+        } else {
+            when (route) {
+                Route.Login -> Route.Login
+                Route.Register -> Route.Login
+                Route.Messages -> Route.Messages
+                else -> Route.Messages
+            }
+        }
     }
     suspend fun checkUpdate(manual: Boolean) {
         if (updateChecking) return
@@ -107,6 +117,12 @@ fun FdexApp() {
     }
 
     val mainTab = route == Route.Messages || route == Route.Work || route == Route.Discover || route == Route.Me
+    val shouldHandleSystemBack = route != Route.Login && (history.isNotEmpty() || route != Route.Messages)
+
+    BackHandler(enabled = shouldHandleSystemBack) {
+        back()
+    }
+
     val title = when (val current = route) {
         Route.Login -> "登录"
         Route.Register -> "注册"
