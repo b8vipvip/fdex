@@ -2,6 +2,7 @@ package com.b8vipvip.fdex.ui
 
 import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -65,7 +67,7 @@ internal fun StreamingEmployeeChatScreen(
     val listState = rememberLazyListState()
     var text by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var showRealtimeVoice by remember { mutableStateOf(false) }
+    var realtimeVoiceActive by remember { mutableStateOf(false) }
     var streamMarkdown by remember { mutableStateOf("") }
     var streamStatus by remember { mutableStateOf("") }
     var streamReasoning by remember { mutableStateOf("") }
@@ -76,23 +78,53 @@ internal fun StreamingEmployeeChatScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            items(repo.messages(employeeId), key = { it.id }) { message ->
-                EmployeeChatMessage(message)
-            }
-            if (busy) {
-                item(key = "streaming-$employeeId") {
-                    LiveAssistantMessage(
-                        markdown = streamMarkdown,
-                        status = streamStatus,
-                        reasoning = streamReasoning,
-                    )
+        Box(Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = if (realtimeVoiceActive) 84.dp else 12.dp,
+                    bottom = 12.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                items(repo.messages(employeeId), key = { it.id }) { message ->
+                    EmployeeChatMessage(message)
                 }
+                if (busy) {
+                    item(key = "streaming-$employeeId") {
+                        LiveAssistantMessage(
+                            markdown = streamMarkdown,
+                            status = streamStatus,
+                            reasoning = streamReasoning,
+                        )
+                    }
+                }
+            }
+
+            if (realtimeVoiceActive) {
+                RealtimeVoiceBar(
+                    employeeName = employee.name,
+                    system = employeeSystemPrompt(employee),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    onEnd = { realtimeVoiceActive = false },
+                    onUserTranscript = { transcript ->
+                        if (transcript.isNotBlank()) {
+                            repo.addMessage(employeeId, "user", transcript)
+                            onChanged()
+                        }
+                    },
+                    onAssistantReply = { reply ->
+                        if (reply.isNotBlank()) {
+                            repo.addMessage(employeeId, "employee", reply)
+                            onChanged()
+                        }
+                    },
+                )
             }
         }
 
@@ -101,7 +133,8 @@ internal fun StreamingEmployeeChatScreen(
             placeholder = "给员工安排任务…",
             busy = busy,
             onValueChange = { text = it },
-            onRealtimeVoice = { showRealtimeVoice = true },
+            onRealtimeVoice = { realtimeVoiceActive = true },
+            realtimeVoiceActive = realtimeVoiceActive,
             onSend = { messageContent ->
                 text = ""
                 repo.addMessage(employeeId, "user", messageContent)
@@ -130,20 +163,6 @@ internal fun StreamingEmployeeChatScreen(
                     streamMarkdown = ""
                     streamStatus = ""
                     streamReasoning = ""
-                    onChanged()
-                }
-            },
-        )
-    }
-
-    if (showRealtimeVoice) {
-        RealtimeVoiceDialog(
-            employeeName = employee.name,
-            system = employeeSystemPrompt(employee),
-            onDismiss = { showRealtimeVoice = false },
-            onAssistantReply = { reply ->
-                if (reply.isNotBlank()) {
-                    repo.addMessage(employeeId, "employee", reply)
                     onChanged()
                 }
             },
