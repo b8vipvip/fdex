@@ -60,10 +60,12 @@
 
 - 新增 `WS /api/client/voice/realtime`。
 - 服务端按供应商优先级选择配置了 Realtime/Live 语音模型的供应商，API Key 只保留在服务端。
+- 供应商后台“语音调用方式”新增 `realtime`，也可以继续使用 `auto` 自动识别 realtime/live 模型。
 - Android 通过 WebSocket 只连接 FDEX，不直接连接第三方供应商。
 - Android 使用 `AudioRecord` 采集 24 kHz mono PCM16，并连续发送音频 chunk。
 - 服务端转换为 OpenAI-compatible Realtime `input_audio_buffer.append` 事件。
-- 支持 server VAD、实时状态、用户转写、AI 转写、PCM16 音频 delta 和 response done。
+- Realtime 会话按当前音频 schema 使用 `audio.input / audio.output`、24 kHz PCM、server VAD 和打断响应。
+- 支持实时状态、用户转写事件、AI 转写、PCM16 音频 delta 和 response done。
 - Android 使用 `AudioTrack` 边收边播放模型语音，启用 VOICE_COMMUNICATION 音频模式并在设备支持时启用 AcousticEchoCanceler。
 - 员工聊天输入栏增加独立麦克风按钮；“＋ → 语音”继续用于发送已有音频文件，两种入口职责分开。
 - 实时语音对话中的 AI 文本转写会写入员工聊天记录。
@@ -71,14 +73,15 @@
 供应商要求：
 
 - 当前 Realtime 桥按 OpenAI-compatible Realtime WebSocket 协议工作。
-- `audio_protocol=auto` 时，模型名包含 `realtime` 或 `live` 的语音模型会作为实时候选。
+- 如果供应商是明确的实时语音线路，推荐把 `audio_protocol` 直接设成 `realtime`。
+- `audio_protocol=auto` 时，模型名包含 `realtime`、`gpt-live` 或以 `-live` 结尾也会作为实时候选。
 - 普通 `chat_audio` / `speech` 仍走已有单次请求链路，不伪装成实时双向通话。
 - chat2api 当前仓库自身仍明确标注“语音生成、语音对话尚未实现”，因此 FDEX Realtime 会使用其它真正支持 Realtime 的供应商；不会修改 chat2api 代码或伪造其能力。
 
 ### 3. 部署要求
 
 - 服务端新增显式 `websockets` 依赖。
-- Android 新增 RECORD_AUDIO 权限。
+- Android 新增 RECORD_AUDIO / MODIFY_AUDIO_SETTINGS 权限。
 - Android 新增 OkHttp WebSocket 与 Coil 图片显示依赖。
 - 宝塔/Nginx 必须允许 `/api/client/voice/realtime` WebSocket Upgrade；如果站点根反向代理没有传递 Upgrade/Connection，需要补充 WebSocket 代理头。
 
