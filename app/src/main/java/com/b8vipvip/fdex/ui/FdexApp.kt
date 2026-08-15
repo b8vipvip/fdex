@@ -117,10 +117,14 @@ fun FdexApp() {
     }
 
     val mainTab = route == Route.Messages || route == Route.Work || route == Route.Discover || route == Route.Me
-    val shouldHandleSystemBack = route != Route.Login && (history.isNotEmpty() || route != Route.Messages)
+    val shouldHandleSystemBack = employeeMenu || (route != Route.Login && (history.isNotEmpty() || route != Route.Messages))
 
     BackHandler(enabled = shouldHandleSystemBack) {
-        back()
+        if (employeeMenu) {
+            employeeMenu = false
+        } else {
+            back()
+        }
     }
 
     val title = when (val current = route) {
