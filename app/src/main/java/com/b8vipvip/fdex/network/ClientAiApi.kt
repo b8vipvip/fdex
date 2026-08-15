@@ -146,7 +146,7 @@ object ClientAiApi {
     private fun configure(connection: HttpURLConnection, accept: String) {
         connection.requestMethod = "POST"
         connection.connectTimeout = 15_000
-        connection.readTimeout = 120_000
+        connection.readTimeout = 420_000
         connection.doOutput = true
         connection.setRequestProperty("Accept", accept)
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
