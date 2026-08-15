@@ -104,6 +104,12 @@ internal fun AttachmentChatComposer(
                     Icon(Icons.Default.Add, contentDescription = "添加附件")
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (onRealtimeVoice != null) {
+                        AttachmentMenuItem("实时语音通话", Icons.Default.Mic) {
+                            menuOpen = false
+                            onRealtimeVoice()
+                        }
+                    }
                     AttachmentMenuItem("图片", Icons.Default.Image) {
                         pendingKind = ChatAttachmentKind.IMAGE
                         menuOpen = false
