@@ -25,6 +25,32 @@ def realtime_ws_url(base_url: str, model: str) -> str:
     return urlunsplit((scheme, parsed.netloc, f"{path}/realtime", f"model={quote(model, safe='')}", ""))
 
 
+def build_realtime_session(*, voice: str, instructions: str = "") -> dict[str, Any]:
+    """Current OpenAI-compatible Realtime session shape using 24 kHz PCM audio."""
+    session: dict[str, Any] = {
+        "type": "realtime",
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "noise_reduction": {"type": "near_field"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "create_response": True,
+                    "interrupt_response": True,
+                },
+            },
+            "output": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "voice": voice,
+            },
+        },
+    }
+    if instructions:
+        session["instructions"] = instructions
+    return session
+
+
 def normalize_realtime_event(data: dict[str, Any]) -> dict[str, Any] | None:
     event_type = str(data.get("type") or "")
     if event_type in {"session.created", "session.updated"}:
@@ -156,17 +182,15 @@ async def realtime_voice(websocket: WebSocket) -> None:
         return
 
     voice = requested_voice or str(chosen_provider.get("audio_voice") or "alloy")
-    session: dict[str, Any] = {
-        "modalities": ["text", "audio"],
-        "voice": voice,
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16",
-        "turn_detection": {"type": "server_vad", "create_response": True},
-    }
-    if system:
-        session["instructions"] = system
-
-    await upstream.send(json.dumps({"type": "session.update", "session": session}, separators=(",", ":")))
+    await upstream.send(
+        json.dumps(
+            {
+                "type": "session.update",
+                "session": build_realtime_session(voice=voice, instructions=system),
+            },
+            separators=(",", ":"),
+        )
+    )
     await _send_json(
         websocket,
         {
