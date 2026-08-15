@@ -9,6 +9,7 @@ from app.multimodal_service import (
     detect_task,
     infer_audio_protocol,
 )
+from app.provider_manager import image_model_candidates
 
 
 def test_detect_task_prefers_actual_media_inputs() -> None:
@@ -49,3 +50,17 @@ def test_audio_protocol_auto_inference() -> None:
     assert infer_audio_protocol({"audio_protocol": "auto"}, "gpt-audio") == "chat_audio"
     assert infer_audio_protocol({"audio_protocol": "auto"}, "gpt-realtime") == "realtime"
     assert infer_audio_protocol({"audio_protocol": "speech"}, "custom-audio") == "speech"
+
+
+def test_gpt_image_human_aliases_normalize_to_machine_model_id() -> None:
+    for alias in ("GPT Image", "gpt image", "gpt_image", "gpt-image", "GPT_IMAGE"):
+        provider = {"main_image_model": alias, "backup_image_models": []}
+        assert image_model_candidates(provider) == ["gpt-image"]
+
+
+def test_other_image_model_names_are_preserved() -> None:
+    provider = {
+        "main_image_model": "vendor-image-v2",
+        "backup_image_models": ["other/image-model"],
+    }
+    assert image_model_candidates(provider) == ["vendor-image-v2", "other/image-model"]
