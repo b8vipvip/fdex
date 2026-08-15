@@ -93,12 +93,12 @@ class RealtimeVoiceSession(
         val request = Request.Builder().url(realtimeUrl()).build()
         socket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                sendDiagnostic("client_websocket_open")
                 val payload = JSONObject()
                     .put("type", "start")
                     .put("sample_rate", DEFAULT_OUTPUT_SAMPLE_RATE)
                 if (!system.isNullOrBlank()) payload.put("system", system)
                 webSocket.send(payload.toString())
+                sendDiagnostic("client_websocket_open")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -138,9 +138,7 @@ class RealtimeVoiceSession(
     fun sendText(text: String): Boolean {
         val value = text.trim()
         if (value.isBlank() || !running.get() || !ready.get()) return false
-        return socket?.send(
-            JSONObject().put("type", "text").put("text", value).toString()
-        ) ?: false
+        return socket?.send(JSONObject().put("type", "text").put("text", value).toString()) ?: false
     }
 
     fun setMicrophoneEnabled(enabled: Boolean) {
@@ -223,9 +221,7 @@ class RealtimeVoiceSession(
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         previousAudioMode = audioManager.mode
         previousSpeakerphoneOn = audioManager.isSpeakerphoneOn
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            previousCommunicationDeviceId = audioManager.communicationDevice?.id
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) previousCommunicationDeviceId = audioManager.communicationDevice?.id
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         val communicationAttributes = AudioAttributes.Builder()
@@ -296,8 +292,9 @@ class RealtimeVoiceSession(
             return
         }
         if (track.state != AudioTrack.STATE_INITIALIZED) {
+            val badState = track.state
             track.release()
-            sendDiagnostic("audio_track_init_failed", JSONObject().put("sample_rate", outputSampleRate).put("state", track.state))
+            sendDiagnostic("audio_track_init_failed", JSONObject().put("sample_rate", outputSampleRate).put("state", badState))
             emit(RealtimeVoiceEvent.Error("语音播放设备初始化失败（${outputSampleRate}Hz）"))
             return
         }
@@ -345,10 +342,7 @@ class RealtimeVoiceSession(
             val frames = sentMicFrames.incrementAndGet()
             val bytes = sentMicBytes.addAndGet(count.toLong())
             if (frames == 1L || frames % 100L == 0L) {
-                sendDiagnostic(
-                    "uplink_audio_sent",
-                    JSONObject().put("frames", frames).put("bytes", bytes).put("chunk_bytes", count),
-                )
+                sendDiagnostic("uplink_audio_sent", JSONObject().put("frames", frames).put("bytes", bytes).put("chunk_bytes", count))
             }
         }
     }
@@ -364,15 +358,14 @@ class RealtimeVoiceSession(
                 sendDiagnostic("playback_track_not_initialized", JSONObject().put("state", track.state))
                 return
             }
-            val written = runCatching {
-                track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING)
-            }.getOrElse { error ->
-                sendDiagnostic(
-                    "playback_write_exception",
-                    JSONObject().put("message", (error.message ?: error.javaClass.simpleName).take(120)).put("chunk_bytes", bytes.size),
-                )
-                return
-            }
+            val written = runCatching { track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING) }
+                .getOrElse { error ->
+                    sendDiagnostic(
+                        "playback_write_exception",
+                        JSONObject().put("message", (error.message ?: error.javaClass.simpleName).take(120)).put("chunk_bytes", bytes.size),
+                    )
+                    return
+                }
             if (written <= 0) {
                 sendDiagnostic("playback_write_failed", JSONObject().put("result", written).put("chunk_bytes", bytes.size))
                 return
@@ -421,9 +414,7 @@ class RealtimeVoiceSession(
             routeApplied = if (target != null) runCatching { audioManager.setCommunicationDevice(target) }.getOrDefault(false) else false
             if (!routeApplied && !speaker) runCatching { audioManager.clearCommunicationDevice() }
         }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !routeApplied) {
-            runCatching { audioManager.isSpeakerphoneOn = speaker }
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !routeApplied) runCatching { audioManager.isSpeakerphoneOn = speaker }
         sendDiagnostic(
             "audio_route",
             JSONObject()
@@ -487,11 +478,7 @@ class RealtimeVoiceSession(
     }
 
     private fun sendDiagnostic(event: String, details: JSONObject = JSONObject()) {
-        val payload = JSONObject()
-            .put("type", "diagnostic")
-            .put("event", event)
-            .put("details", details)
-        socket?.send(payload.toString())
+        socket?.send(JSONObject().put("type", "diagnostic").put("event", event).put("details", details).toString())
     }
 
     private fun emit(event: RealtimeVoiceEvent) {
@@ -508,8 +495,7 @@ class RealtimeVoiceSession(
         return "$websocketBase/api/client/voice/realtime"
     }
 
-    private fun sanitizeSampleRate(value: Int, fallback: Int): Int =
-        value.takeIf { it in 8_000..48_000 } ?: fallback
+    private fun sanitizeSampleRate(value: Int, fallback: Int): Int = value.takeIf { it in 8_000..48_000 } ?: fallback
 
     companion object {
         private const val DEFAULT_INPUT_SAMPLE_RATE = 24_000
