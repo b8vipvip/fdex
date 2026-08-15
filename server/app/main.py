@@ -16,6 +16,7 @@ from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
+from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
 from app.realtime_voice import router as realtime_voice_router
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
@@ -57,6 +58,7 @@ app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(admin_router)
 app.include_router(provider_admin_router)
+app.include_router(realtime_diagnostic_admin_router)
 app.include_router(client_ai_router)
 app.include_router(realtime_voice_router)
 app.include_router(client_update_router)

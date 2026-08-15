@@ -39,6 +39,18 @@
     <span class="large-status">{{ 'UPDATE' if update_available else 'OK' }}</span>
 </section>
 
+<section class="panel" id="realtime-diagnostics">
+    <div class="panel-header">
+        <div>
+            <h2>实时语音诊断</h2>
+            <p>用于排查 GPT-Live / Realtime 通话无声、播放路由、上下行 PCM 与打断时序</p>
+        </div>
+    </div>
+    <p>诊断日志会在最新版 App 第一次建立实时语音会话后自动创建于 <code>{{ settings.app_dir }}/server/data/realtime-voice.log</code>。日志只记录会话 ID、供应商/模型、协议、音频帧/字节计数、播放状态和打断时序，不记录 API Key、Authorization、原始 PCM/Base64、用户转写或聊天正文。</p>
+    <a class="button secondary" href="/admin/diagnostics/realtime-voice/download">下载实时语音诊断日志</a>
+    <div class="inline-note">如果点击后提示“尚未生成”，请先用最新版 Android 客户端完成一次实时语音通话，再回来下载。</div>
+</section>
+
 <div class="content-grid equal">
     <section class="panel danger-panel">
         <div class="panel-header"><div><h2>重启 FDEX 服务</h2><p>用于应用刚保存的端口、路由和会话配置</p></div></div>
@@ -68,7 +80,8 @@
         <li>网页更新只能执行固定路径 <code>{{ settings.app_dir }}/scripts/update_server.sh</code>，不能提交任意 Shell 命令。</li>
         <li>目标端口被其他服务占用时，更新脚本只会报错退出，不会结束其他进程。</li>
         <li><code>server/.env</code> 在更新前自动备份并恢复，第三方 API Key 不会提交到 GitHub。</li>
-        <li>所有重启和更新操作都会记录管理员、IP、时间和执行结果。</li>
+        <li>实时语音诊断下载仅对已登录管理员开放，诊断目录不会作为公开静态目录暴露。</li>
+        <li>所有重启、更新和诊断下载操作都会记录管理员、IP、时间和执行结果。</li>
     </ul>
 </section>
 {% endblock %}
