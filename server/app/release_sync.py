@@ -38,21 +38,44 @@ def load_manifest() -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _request_json(url: str, token: str) -> dict:
+def _request_json(url: str, token: str, *, timeout_seconds: float = 30.0) -> dict:
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "FDEX-Server-Release-Sync/1.0",
+        "User-Agent": "FDEX-Server-Release-Sync/1.1",
     }
     if token.strip():
         headers["Authorization"] = f"Bearer {token.strip()}"
     request = Request(url, headers=headers)
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
+def fetch_latest_release(*, timeout_seconds: float = 30.0) -> dict:
+    """Fetch GitHub's current latest stable Release metadata.
+
+    Update checks use a short timeout so a stale server cache is never offered as
+    an intermediate client upgrade while a newer GitHub Release already exists.
+    """
+    settings = fresh_settings()
+    owner, repo = settings.github_owner_repo
+    endpoint = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    release = _request_json(endpoint, settings.github_token, timeout_seconds=timeout_seconds)
+    if not isinstance(release, dict):
+        raise RuntimeError("GitHub latest release 返回格式无效")
+    return release
+
+
+def latest_release_tag(*, timeout_seconds: float = 8.0) -> str:
+    release = fetch_latest_release(timeout_seconds=timeout_seconds)
+    tag_name = str(release.get("tag_name") or "").strip()
+    if not tag_name:
+        raise RuntimeError("GitHub latest release 缺少 tag_name")
+    return tag_name
+
+
 def _download(url: str, destination: Path) -> tuple[str, int]:
-    request = Request(url, headers={"User-Agent": "FDEX-Server-Release-Sync/1.0"})
+    request = Request(url, headers={"User-Agent": "FDEX-Server-Release-Sync/1.1"})
     digest = hashlib.sha256()
     size = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -78,12 +101,10 @@ def _download(url: str, destination: Path) -> tuple[str, int]:
 
 def sync_latest_release() -> dict:
     settings = fresh_settings()
-    owner, repo = settings.github_owner_repo
     release_dir = Path(settings.release_cache_dir)
     release_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
 
-    release = _request_json(endpoint, settings.github_token)
+    release = fetch_latest_release(timeout_seconds=30.0)
     tag_name = str(release.get("tag_name") or "").strip()
     if not tag_name:
         raise RuntimeError("GitHub latest release 缺少 tag_name")
