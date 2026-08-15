@@ -21,11 +21,7 @@ def realtime_ws_url(base_url: str, model: str) -> str:
         raw = raw[: -len("/chat/completions")].rstrip("/")
     parsed = urlsplit(raw)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    path = parsed.path.rstrip("/")
-    if not path:
-        path = "/v1"
-    elif not path.endswith("/v1") and path == "":
-        path = "/v1"
+    path = parsed.path.rstrip("/") or "/v1"
     return urlunsplit((scheme, parsed.netloc, f"{path}/realtime", f"model={quote(model, safe='')}", ""))
 
 
@@ -74,13 +70,18 @@ def normalize_realtime_event(data: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def model_looks_realtime(model: str) -> bool:
+    lowered = (model or "").strip().lower()
+    return "realtime" in lowered or "gpt-live" in lowered or lowered.endswith("-live")
+
+
 def _realtime_candidates() -> list[tuple[dict[str, Any], str]]:
     candidates: list[tuple[dict[str, Any], str]] = []
     for provider in provider_store().list(enabled_only=True, include_secret=True):
         if not provider.get("api_key"):
             continue
         for model in audio_model_candidates(provider):
-            if infer_audio_protocol(provider, model) == "realtime":
+            if infer_audio_protocol(provider, model) == "realtime" or model_looks_realtime(model):
                 candidates.append((provider, model))
     return candidates
 
@@ -111,7 +112,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
             websocket,
             {
                 "type": "error",
-                "message": "没有可用的 Realtime 语音供应商；请在供应商管理中配置 realtime 语音模型。",
+                "message": "没有可用的 Realtime 语音供应商；请在供应商管理中配置名称含 realtime/live 的语音模型。",
             },
         )
         await websocket.close(code=1013)
