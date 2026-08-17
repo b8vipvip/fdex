@@ -407,11 +407,12 @@ private suspend fun collectStreamedReply(
 ): CollectedReply {
     val raw = StringBuilder()
     val reasoning = StringBuilder()
+    val requestId = ClientAiApi.newRequestId()
     var lastContentFlush = 0L
     var lastReasoningFlush = 0L
     var failure: String? = null
 
-    ClientAiApi.streamAsk(system, prompt, context = context).collect { event ->
+    ClientAiApi.streamAsk(system, prompt, context = context, requestId = requestId).collect { event ->
         when (event) {
             is AiStreamEvent.Status -> onStatus(event.status)
             is AiStreamEvent.Reasoning -> {
@@ -444,8 +445,8 @@ private suspend fun collectStreamedReply(
     }
 
     if (raw.isEmpty() && failure != null) {
-        onStatus("流式连接不可用，正在兼容重试…")
-        when (val fallback = ClientAiApi.ask(system, prompt, context = context)) {
+        onStatus("流式连接不可用，正在兼容重试… 请求 ${requestId.take(8)}")
+        when (val fallback = ClientAiApi.ask(system, prompt, context = context, requestId = requestId)) {
             is AiGatewayResult.Success -> {
                 raw.append(fallback.content)
                 fallback.media.forEach { appendMedia(raw, it) }
