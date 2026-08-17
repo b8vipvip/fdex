@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +19,7 @@ from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
 from app.realtime_voice import router as realtime_voice_router
+from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 
 settings = get_settings()
@@ -47,6 +49,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def trace_client_ai_requests(request: Request, call_next):
+    """Emit copy-friendly lifecycle logs before FastAPI parses large attachment bodies."""
+    if request.url.path not in {"/api/client/ai", "/api/client/ai/stream"}:
+        return await call_next(request)
+
+    request_id = request_id_for(request)
+    started = perf_counter()
+    client_host = request.client.host if request.client else ""
+    log_ai_event(
+        "http_request_begin",
+        request_id,
+        method=request.method,
+        path=request.url.path,
+        content_length=request.headers.get("content-length", ""),
+        content_type=request.headers.get("content-type", ""),
+        mode=request.headers.get("x-fdex-request-mode", ""),
+        client=client_host,
+    )
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        log_ai_event(
+            "http_request_exception",
+            request_id,
+            level="error",
+            elapsed_ms=int((perf_counter() - started) * 1000),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+
+    response.headers["X-FDEX-Request-ID"] = request_id
+    log_ai_event(
+        "http_request_end",
+        request_id,
+        status_code=response.status_code,
+        elapsed_ms=int((perf_counter() - started) * 1000),
+    )
+    return response
+
 
 static_dir = Path(SERVER_DIR) / "app" / "static"
 release_dir = Path(settings.release_cache_dir)
