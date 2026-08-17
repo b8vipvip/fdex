@@ -3,10 +3,8 @@ from __future__ import annotations
 import base64
 import binascii
 import io
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from docx import Document
 from openpyxl import load_workbook
@@ -123,8 +121,10 @@ def extract_document_text(*, name: str, mime_type: str, raw: bytes) -> str:
     if suffix == ".pptx" or mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
         presentation = Presentation(io.BytesIO(raw))
         parts: list[str] = []
-        for slide_index, slide in enumerate(presentation.slides[:80], start=1):
-            parts.append(f"[幻灯片 {slide_index}]")
+        slide_count = min(len(presentation.slides), 80)
+        for index in range(slide_count):
+            slide = presentation.slides[index]
+            parts.append(f"[幻灯片 {index + 1}]")
             for shape in slide.shapes:
                 text = getattr(shape, "text", "")
                 if text:
