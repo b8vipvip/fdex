@@ -100,7 +100,7 @@ object ClientAiApi {
         try {
             val attachmentCount = parseChatContent(prompt).attachments.size
             if (attachmentCount > 0) {
-                emit(AiStreamEvent.Status("正在读取并压缩附件… 请求 ${requestId.take(8)}"))
+                emit(AiStreamEvent.Status("正在读取附件并生成请求数据… 请求 ${requestId.take(8)}"))
             }
             val payload = buildPayload(system, prompt, maxTokens, context)
             if (attachmentCount > 0) {
