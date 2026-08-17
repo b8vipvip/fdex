@@ -1,49 +1,46 @@
 package com.b8vipvip.fdex.network
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ClientAiApiStreamParserTest {
     @Test
-    fun contentEventIsParsedFromSseDataLine() {
-        val parsed = ClientAiApi.parseSseLine(
+    fun contentJsonDataIsExtractedWithoutAndroidJsonRuntime() {
+        val raw = ClientAiApi.extractSseData(
             "data: {\"type\":\"content\",\"delta\":\"图片识别完成\"}",
         )
-        assertTrue(parsed is SseLineResult.Event)
-        val event = (parsed as SseLineResult.Event).event
-        assertTrue(event is AiStreamEvent.Content)
-        val content = event as AiStreamEvent.Content
-        assertEquals("图片识别完成", content.delta)
+        assertEquals("{\"type\":\"content\",\"delta\":\"图片识别完成\"}", raw)
     }
 
     @Test
-    fun explicitDoneEventIsParsedWithoutWaitingForDoneMarker() {
-        val parsed = ClientAiApi.parseSseLine(
+    fun explicitDoneJsonDataIsExtracted() {
+        val raw = ClientAiApi.extractSseData(
             "data: {\"type\":\"done\",\"model\":\"gpt-5.5-mini\",\"latency_ms\":19455}",
         )
-        assertTrue(parsed is SseLineResult.Event)
-        val event = (parsed as SseLineResult.Event).event
-        assertTrue(event is AiStreamEvent.Done)
-        val done = event as AiStreamEvent.Done
-        assertEquals("gpt-5.5-mini", done.model)
-        assertEquals(19455, done.latencyMs)
+        assertEquals(
+            "{\"type\":\"done\",\"model\":\"gpt-5.5-mini\",\"latency_ms\":19455}",
+            raw,
+        )
     }
 
     @Test
-    fun trailingDoneMarkerIsRecognized() {
-        assertTrue(ClientAiApi.parseSseLine("data: [DONE]") === SseLineResult.DoneMarker)
+    fun trailingDoneMarkerIsExtracted() {
+        assertEquals("[DONE]", ClientAiApi.extractSseData("data: [DONE]"))
     }
 
     @Test
-    fun leadingWhitespaceDoesNotBreakSseParsing() {
-        val parsed = ClientAiApi.parseSseLine(
+    fun leadingWhitespaceDoesNotBreakSseExtraction() {
+        val raw = ClientAiApi.extractSseData(
             "   data: {\"type\":\"status\",\"status\":\"正在分析 1 幅图片\"}",
         )
-        assertTrue(parsed is SseLineResult.Event)
-        val event = (parsed as SseLineResult.Event).event
-        assertTrue(event is AiStreamEvent.Status)
-        val status = event as AiStreamEvent.Status
-        assertEquals("正在分析 1 幅图片", status.status)
+        assertEquals("{\"type\":\"status\",\"status\":\"正在分析 1 幅图片\"}", raw)
+    }
+
+    @Test
+    fun nonDataSseLineIsIgnored() {
+        assertNull(ClientAiApi.extractSseData(": heartbeat"))
+        assertNull(ClientAiApi.extractSseData("event: message"))
+        assertNull(ClientAiApi.extractSseData(""))
     }
 }
