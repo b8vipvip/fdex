@@ -178,6 +178,21 @@ object ClientAiApi {
         prepared.audio?.let { audio ->
             payload.put("audio", JSONObject().put("data", audio.data).put("format", audio.format))
         }
+        if (prepared.documents.isNotEmpty()) {
+            payload.put(
+                "documents",
+                JSONArray().apply {
+                    prepared.documents.forEach { document ->
+                        put(
+                            JSONObject()
+                                .put("name", document.name)
+                                .put("mime_type", document.mimeType)
+                                .put("data", document.data),
+                        )
+                    }
+                },
+            )
+        }
         connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
     }
 
