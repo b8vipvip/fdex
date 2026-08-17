@@ -93,7 +93,8 @@ def extract_document_text(*, name: str, mime_type: str, raw: bytes) -> str:
         return _decode_text(raw)
     if suffix == ".pdf" or mime == "application/pdf":
         reader = PdfReader(io.BytesIO(raw), strict=False)
-        return "\n".join((page.extract_text() or "") for page in reader.pages[:80])
+        page_count = min(len(reader.pages), 80)
+        return "\n".join((reader.pages[index].extract_text() or "") for index in range(page_count))
     if suffix == ".docx" or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         doc = Document(io.BytesIO(raw))
         parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text]
