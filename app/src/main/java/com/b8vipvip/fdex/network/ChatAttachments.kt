@@ -2,17 +2,25 @@ package com.b8vipvip.fdex.network
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 private const val ATTACHMENT_MARKER = "FDEX_ATTACHMENTS_V1"
 private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
 private const val MAX_AUDIO_BYTES = 16 * 1024 * 1024
+private const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+private const val MAX_DOCUMENT_TOTAL_BYTES = 12 * 1024 * 1024
+private const val MAX_DOCUMENTS = 3
 private const val MAX_IMAGES = 4
+private const val MAX_VIDEO_FRAMES = 4
+private const val MAX_VIDEO_FRAME_EDGE = 1280
 
 
 enum class ChatAttachmentKind(val wireName: String) {
@@ -54,10 +62,18 @@ data class AiAudioPayload(
 )
 
 
+data class AiDocumentPayload(
+    val name: String,
+    val mimeType: String,
+    val data: String,
+)
+
+
 data class PreparedAiContent(
     val prompt: String,
     val images: List<AiImagePayload> = emptyList(),
     val audio: AiAudioPayload? = null,
+    val documents: List<AiDocumentPayload> = emptyList(),
 )
 
 
@@ -80,6 +96,21 @@ fun chatAttachmentFromUri(context: Context, uri: Uri, kind: ChatAttachmentKind):
 }
 
 
+fun chatAttachmentKindFor(name: String, mimeType: String): ChatAttachmentKind {
+    val mime = mimeType.lowercase()
+    val lowerName = name.lowercase()
+    return when {
+        mime.startsWith("image/") -> ChatAttachmentKind.IMAGE
+        mime.startsWith("video/") -> ChatAttachmentKind.VIDEO
+        mime.startsWith("audio/") -> ChatAttachmentKind.AUDIO
+        lowerName.endsWith(".png") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".webp") -> ChatAttachmentKind.IMAGE
+        lowerName.endsWith(".mp4") || lowerName.endsWith(".webm") || lowerName.endsWith(".mov") || lowerName.endsWith(".mkv") -> ChatAttachmentKind.VIDEO
+        lowerName.endsWith(".wav") || lowerName.endsWith(".mp3") || lowerName.endsWith(".m4a") || lowerName.endsWith(".aac") -> ChatAttachmentKind.AUDIO
+        else -> ChatAttachmentKind.FILE
+    }
+}
+
+
 fun persistChatAttachmentPermission(context: Context, uri: Uri) {
     runCatching {
         context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -98,7 +129,7 @@ fun encodeChatContent(text: String, attachments: List<ChatAttachment>): String {
                     .put("uri", attachment.uri)
                     .put("mime", attachment.mimeType)
                     .put("size", attachment.size)
-                    .put("kind", attachment.kind.wireName)
+                    .put("kind", attachment.kind.wireName),
             )
         }
     }.toString()
@@ -130,7 +161,7 @@ fun parseChatContent(content: String): ParsedChatContent {
                         mimeType = item.optString("mime", "application/octet-stream"),
                         size = item.optLong("size", -1L),
                         kind = ChatAttachmentKind.fromWireName(item.optString("kind", "file")),
-                    )
+                    ),
                 )
             }
         }
@@ -144,6 +175,8 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
     if (parsed.attachments.isEmpty()) return PreparedAiContent(parsed.text)
 
     val images = mutableListOf<AiImagePayload>()
+    val documents = mutableListOf<AiDocumentPayload>()
+    var documentBytes = 0
     var audio: AiAudioPayload? = null
     val notes = mutableListOf<String>()
 
@@ -152,7 +185,7 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
         when {
             attachment.kind == ChatAttachmentKind.IMAGE || lowerMime.startsWith("image/") -> {
                 if (images.size >= MAX_IMAGES) {
-                    notes += "图片《${attachment.name}》未送入视觉模型：一次最多处理 $MAX_IMAGES 张图片。"
+                    notes += "图片《${attachment.name}》未送入视觉模型：一次最多处理 $MAX_IMAGES 张图片/视频帧。"
                 } else if (context == null) {
                     notes += "图片《${attachment.name}》已附加，但当前调用没有文件读取上下文。"
                 } else {
@@ -188,11 +221,49 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
             }
 
             attachment.kind == ChatAttachmentKind.VIDEO || lowerMime.startsWith("video/") -> {
-                notes += "视频附件《${attachment.name}》已保存在会话中（${attachment.mimeType}，${formatAttachmentSize(attachment.size)}）；当前通用模型请求未直接读取视频内容，请不要假设已经看过视频。"
+                if (context == null) {
+                    notes += "视频《${attachment.name}》已附加，但当前调用没有文件读取上下文。"
+                } else {
+                    val remaining = (MAX_IMAGES - images.size).coerceAtLeast(0)
+                    if (remaining == 0) {
+                        notes += "视频《${attachment.name}》未抽帧：图片/视频帧总数已达到 $MAX_IMAGES。"
+                    } else {
+                        val frames = extractVideoFrames(context, attachment, minOf(MAX_VIDEO_FRAMES, remaining))
+                        if (frames.isEmpty()) {
+                            notes += "视频《${attachment.name}》无法读取有效画面，未假装已经分析。"
+                        } else {
+                            images += frames
+                            notes += "视频《${attachment.name}》已在手机端抽取 ${frames.size} 个代表画面送入视觉模型；这是关键帧分析，不代表逐帧读取，也不包含视频音轨。"
+                        }
+                    }
+                }
             }
 
             else -> {
-                notes += "文件附件《${attachment.name}》已保存在会话中（${attachment.mimeType}，${formatAttachmentSize(attachment.size)}）；当前通用模型请求未直接读取文件内容，请不要假设已经读取。"
+                if (context == null) {
+                    notes += "文件《${attachment.name}》已附加，但当前调用没有文件读取上下文。"
+                } else if (documents.size >= MAX_DOCUMENTS) {
+                    notes += "文件《${attachment.name}》未发送：一次最多解析 $MAX_DOCUMENTS 份文档。"
+                } else {
+                    val remaining = MAX_DOCUMENT_TOTAL_BYTES - documentBytes
+                    val limit = minOf(MAX_DOCUMENT_BYTES, remaining)
+                    if (limit <= 0) {
+                        notes += "文件《${attachment.name}》未发送：本次文档总大小已达到 12 MB。"
+                    } else {
+                        val bytes = readAttachmentBytes(context, attachment, limit)
+                        if (bytes == null) {
+                            notes += "文件《${attachment.name}》未发送：文件不可读取、单文件超过 8 MB，或本次文档总量超过 12 MB。"
+                        } else {
+                            documentBytes += bytes.size
+                            documents += AiDocumentPayload(
+                                name = attachment.name.take(240),
+                                mimeType = attachment.mimeType.take(120),
+                                data = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                            )
+                            notes += "文件《${attachment.name}》已交给 FDEX 服务端做内存正文提取；不支持或提取失败的格式会明确标注，不会假装已经读取。"
+                        }
+                    }
+                }
             }
         }
     }
@@ -201,14 +272,16 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
     if (prompt.isBlank()) {
         prompt = when {
             audio != null -> "请理解我发送的语音并回复。"
-            images.isNotEmpty() -> "请查看我发送的图片，并根据图片内容回复。"
-            else -> "我发送了附件，请确认收到；对没有直接提供内容的附件，不要假设已经读取或看过。"
+            documents.isNotEmpty() && images.isNotEmpty() -> "请阅读我发送的文件正文，并结合图片或视频抽帧画面一起分析后回复。"
+            documents.isNotEmpty() -> "请阅读我发送的文件正文，并根据文件实际内容回复。"
+            images.isNotEmpty() -> "请查看我发送的图片或视频抽帧画面，并根据实际画面内容回复。"
+            else -> "我发送了附件；只根据实际成功读取到的内容回答，不要假设未读取的附件内容。"
         }
     }
     if (notes.isNotEmpty()) {
         prompt += "\n\n附件处理说明：\n" + notes.joinToString("\n") { "- $it" }
     }
-    return PreparedAiContent(prompt = prompt, images = images, audio = audio)
+    return PreparedAiContent(prompt = prompt, images = images, audio = audio, documents = documents)
 }
 
 
@@ -231,8 +304,64 @@ private fun audioFormat(attachment: ChatAttachment): String? {
 }
 
 
+private fun extractVideoFrames(context: Context, attachment: ChatAttachment, maxFrames: Int): List<AiImagePayload> {
+    if (maxFrames <= 0) return emptyList()
+    val uri = runCatching { Uri.parse(attachment.uri) }.getOrNull() ?: return emptyList()
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull()
+            ?.coerceAtLeast(0L)
+            ?: 0L
+        val fractions = when (maxFrames) {
+            1 -> listOf(0.5)
+            2 -> listOf(0.2, 0.8)
+            3 -> listOf(0.15, 0.5, 0.85)
+            else -> listOf(0.08, 0.35, 0.65, 0.92)
+        }
+        fractions.take(maxFrames).mapNotNull { fraction ->
+            val timeUs = if (durationMs > 0) (durationMs * fraction * 1000.0).toLong() else 0L
+            val frame = runCatching {
+                retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }.getOrNull() ?: return@mapNotNull null
+            bitmapToImagePayload(frame)
+        }
+    } catch (_: Exception) {
+        emptyList()
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
+
+private fun bitmapToImagePayload(bitmap: Bitmap): AiImagePayload? {
+    val longest = maxOf(bitmap.width, bitmap.height)
+    val scaled = if (longest > MAX_VIDEO_FRAME_EDGE) {
+        val ratio = MAX_VIDEO_FRAME_EDGE.toFloat() / longest.toFloat()
+        Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * ratio).roundToInt().coerceAtLeast(1),
+            (bitmap.height * ratio).roundToInt().coerceAtLeast(1),
+            true,
+        )
+    } else {
+        bitmap
+    }
+    return try {
+        val out = ByteArrayOutputStream()
+        if (!scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)) return null
+        val encoded = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        AiImagePayload("data:image/jpeg;base64,$encoded", detail = "low")
+    } finally {
+        if (scaled !== bitmap) scaled.recycle()
+        bitmap.recycle()
+    }
+}
+
+
 private fun readAttachmentBytes(context: Context, attachment: ChatAttachment, limit: Int): ByteArray? {
-    if (attachment.size > limit) return null
+    if (limit <= 0 || attachment.size > limit) return null
     val uri = runCatching { Uri.parse(attachment.uri) }.getOrNull() ?: return null
     return runCatching {
         context.contentResolver.openInputStream(uri)?.use { input ->
