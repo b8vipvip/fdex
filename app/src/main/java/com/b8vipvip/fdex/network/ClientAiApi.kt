@@ -43,10 +43,9 @@ internal sealed interface SseLineResult {
 object ClientAiApi {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    // Attachment requests used HttpURLConnection before v1.1.17. OkHttp gives upload,
-    // connect and stream-idle phases independent limits. The server emits document/provider
-    // heartbeats at <= 12 s, so a 45 s idle limit is safe for image/document/video requests
-    // and lets a broken mobile/proxy stream recover instead of showing the last status for minutes.
+    // The FDEX server emits attachment/provider progress at <= 12 s intervals. Keep a much
+    // shorter idle timeout for non-audio attachment streams so a broken proxy/mobile tail can
+    // switch to the existing non-stream fallback instead of leaving the last status on screen.
     private val requestClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
@@ -59,7 +58,7 @@ object ClientAiApi {
         .build()
 
     private val attachmentStreamClient = requestClient.newBuilder()
-        .readTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     fun newRequestId(): String = UUID.randomUUID().toString()
@@ -150,9 +149,8 @@ object ClientAiApi {
                     return@flow
                 }
 
-                // Read SSE with Okio directly instead of wrapping ResponseBody.charStream() in a
-                // second BufferedReader. A real server-side `done` event is definitive: return as
-                // soon as it arrives and do not wait for a trailing [DONE] marker or socket EOF.
+                // Use Okio's source directly. The explicit FDEX `done` event is definitive, so
+                // do not wait for a trailing [DONE] marker or socket EOF once it has arrived.
                 val source = responseBody.source()
                 var resultSeen = false
                 while (true) {
@@ -174,6 +172,11 @@ object ClientAiApi {
                         is SseLineResult.Event -> {
                             val event = parsed.event
                             if (event is AiStreamEvent.Content || event is AiStreamEvent.Media) {
+                                if (!resultSeen) {
+                                    // The previous provider status (for example “正在分析 1 幅图片”)
+                                    // must not remain visible once real answer data reaches Android.
+                                    emit(AiStreamEvent.Status(""))
+                                }
                                 resultSeen = true
                             }
                             emit(event)
@@ -185,8 +188,8 @@ object ClientAiApi {
                 }
 
                 if (resultSeen) {
-                    // Some reverse proxies can drop the final marker while still delivering all
-                    // content. Treat clean EOF after content as success instead of leaving the UI busy.
+                    // A reverse proxy may drop only the final marker while all content arrived.
+                    // Clean EOF after result data is success, not an endlessly-busy UI state.
                     emit(AiStreamEvent.Done(model = "", latencyMs = 0))
                 } else {
                     emit(
@@ -201,11 +204,14 @@ object ClientAiApi {
         }
     }.flowOn(Dispatchers.IO)
 
-    internal fun parseSseLine(line: String): SseLineResult? {
+    internal fun extractSseData(line: String): String? {
         val normalized = line.trimStart()
         if (!normalized.startsWith("data:")) return null
-        val raw = normalized.removePrefix("data:").trim()
-        if (raw.isBlank()) return null
+        return normalized.removePrefix("data:").trim().takeIf { it.isNotBlank() }
+    }
+
+    internal fun parseSseLine(line: String): SseLineResult? {
+        val raw = extractSseData(line) ?: return null
         if (raw == "[DONE]") return SseLineResult.DoneMarker
         return parseStreamData(raw)?.let(SseLineResult::Event)
     }
