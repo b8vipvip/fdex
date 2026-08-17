@@ -37,7 +37,10 @@ import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.Project
 import com.b8vipvip.fdex.data.ProjectAsset
 import com.b8vipvip.fdex.network.AiGatewayResult
+import com.b8vipvip.fdex.network.ChatAttachment
 import com.b8vipvip.fdex.network.ClientAiApi
+import com.b8vipvip.fdex.network.chatAttachmentKindFor
+import com.b8vipvip.fdex.network.encodeChatContent
 import kotlinx.coroutines.launch
 import java.time.Instant
 
@@ -185,7 +188,7 @@ internal fun ProjectDetailScreen(
             }
         }
         item {
-            StepCard(2, "上传并分析资料", "资料保存在当前设备，分析请求通过你的 FDEX 服务端调用 AI。") {
+            StepCard(2, "上传并分析资料", "原文件保留在当前设备；点击分析后临时读取。PDF/Word/Excel/PPT/文本由 FDEX 服务端内存提取正文，视频在手机端抽取代表画面进入视觉模型。") {
                 Button(onClick = { launcher.launch(arrayOf("*/*")) }) { Text("选择文件") }
                 repo.assets(projectId).forEach { asset ->
                     AssetRow(
@@ -195,7 +198,7 @@ internal fun ProjectDetailScreen(
                         onAnalyze = {
                             busy = true
                             scope.launch {
-                                analyzeAsset(repo, project, asset, snackbar)
+                                analyzeAsset(repo, project, asset, context, snackbar)
                                 busy = false
                                 onChanged()
                             }
@@ -248,10 +251,28 @@ internal fun ProjectDetailScreen(
     }
 }
 
-private suspend fun analyzeAsset(repo: AppRepository, project: Project, asset: ProjectAsset, snackbar: SnackbarHostState) {
-    val system = "你是企业资料分析助手。请输出关键事实、与工作相关的需求、风险、下一步建议。中文简洁回答。"
-    val prompt = "工作：${project.title}\n需求：${project.description}\n资料文件：${asset.name}\n类型：${asset.mimeType}\n大小：${asset.size} 字节。请根据工作上下文和资料元信息给出分析建议。"
-    when (val result = ClientAiApi.ask(system, prompt)) {
+private suspend fun analyzeAsset(
+    repo: AppRepository,
+    project: Project,
+    asset: ProjectAsset,
+    context: Context,
+    snackbar: SnackbarHostState,
+) {
+    val system = "你是企业资料分析助手。请基于实际读取到的资料正文或画面，输出关键事实、与工作相关的需求、风险、下一步建议。无法读取的部分必须明确说明，禁止只凭文件名猜内容。"
+    val prompt = "工作：${project.title}\n需求：${project.description}\n请读取并分析这份真实附件：${asset.name}。"
+    val content = encodeChatContent(
+        prompt,
+        listOf(
+            ChatAttachment(
+                name = asset.name,
+                uri = asset.uri,
+                mimeType = asset.mimeType,
+                size = asset.size,
+                kind = chatAttachmentKindFor(asset.name, asset.mimeType),
+            ),
+        ),
+    )
+    when (val result = ClientAiApi.ask(system, content, context = context)) {
         is AiGatewayResult.Success -> {
             repo.updateAsset(asset.copy(status = "analyzed", analysis = result.content))
             repo.updateProject(project.copy(status = "analyzed", updatedAt = Instant.now().toString()))
