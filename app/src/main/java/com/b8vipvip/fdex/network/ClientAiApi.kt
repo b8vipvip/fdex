@@ -35,12 +35,18 @@ sealed interface AiStreamEvent {
     data class Failure(val message: String) : AiStreamEvent
 }
 
+internal sealed interface SseLineResult {
+    data class Event(val event: AiStreamEvent) : SseLineResult
+    data object DoneMarker : SseLineResult
+}
+
 object ClientAiApi {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    // Attachment requests used HttpURLConnection before v1.1.16. It has no practical write timeout,
-    // so a large Base64 request could stay on "preparing attachment" for several minutes. OkHttp
-    // gives the upload, connect and SSE idle phases independent limits.
+    // Attachment requests used HttpURLConnection before v1.1.17. OkHttp gives upload,
+    // connect and stream-idle phases independent limits. The server emits document/provider
+    // heartbeats at <= 12 s, so a 45 s idle limit is safe for image/document/video requests
+    // and lets a broken mobile/proxy stream recover instead of showing the last status for minutes.
     private val requestClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
@@ -50,6 +56,10 @@ object ClientAiApi {
 
     private val streamClient = requestClient.newBuilder()
         .readTimeout(90, TimeUnit.SECONDS)
+        .build()
+
+    private val attachmentStreamClient = requestClient.newBuilder()
+        .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
     fun newRequestId(): String = UUID.randomUUID().toString()
@@ -98,12 +108,13 @@ object ClientAiApi {
         requestId: String = newRequestId(),
     ): Flow<AiStreamEvent> = flow {
         try {
-            val attachmentCount = parseChatContent(prompt).attachments.size
-            if (attachmentCount > 0) {
+            val parsedChat = parseChatContent(prompt)
+            val attachments = parsedChat.attachments
+            if (attachments.isNotEmpty()) {
                 emit(AiStreamEvent.Status("正在读取附件并生成请求数据… 请求 ${requestId.take(8)}"))
             }
             val payload = buildPayload(system, prompt, maxTokens, context)
-            if (attachmentCount > 0) {
+            if (attachments.isNotEmpty()) {
                 emit(AiStreamEvent.Status("附件已准备，正在上传到 FDEX 服务端… 请求 ${requestId.take(8)}"))
             }
             val request = buildRequest(
@@ -113,8 +124,16 @@ object ClientAiApi {
                 requestId = requestId,
                 mode = "stream",
             )
+            val hasAudioAttachment = attachments.any {
+                it.kind == ChatAttachmentKind.AUDIO || it.mimeType.startsWith("audio/", ignoreCase = true)
+            }
+            val client = if (attachments.isNotEmpty() && !hasAudioAttachment) {
+                attachmentStreamClient
+            } else {
+                streamClient
+            }
 
-            streamClient.newCall(request).execute().use { response ->
+            client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
                     emit(
@@ -130,20 +149,66 @@ object ClientAiApi {
                     emit(AiStreamEvent.Failure(withRequestId("服务端没有返回流式响应正文", requestId)))
                     return@flow
                 }
-                responseBody.charStream().buffered().use { reader ->
-                    for (line in reader.lineSequence()) {
-                        if (!line.startsWith("data:")) continue
-                        val raw = line.removePrefix("data:").trim()
-                        if (raw.isBlank()) continue
-                        if (raw == "[DONE]") break
-                        parseStreamData(raw)?.let { event -> emit(event) }
+
+                // Read SSE with Okio directly instead of wrapping ResponseBody.charStream() in a
+                // second BufferedReader. A real server-side `done` event is definitive: return as
+                // soon as it arrives and do not wait for a trailing [DONE] marker or socket EOF.
+                val source = responseBody.source()
+                var resultSeen = false
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    when (val parsed = parseSseLine(line)) {
+                        null -> Unit
+                        SseLineResult.DoneMarker -> {
+                            if (resultSeen) {
+                                emit(AiStreamEvent.Done(model = "", latencyMs = 0))
+                            } else {
+                                emit(
+                                    AiStreamEvent.Failure(
+                                        withRequestId("流式连接已结束，但没有收到正文或媒体结果", requestId),
+                                    ),
+                                )
+                            }
+                            return@flow
+                        }
+                        is SseLineResult.Event -> {
+                            val event = parsed.event
+                            if (event is AiStreamEvent.Content || event is AiStreamEvent.Media) {
+                                resultSeen = true
+                            }
+                            emit(event)
+                            if (event is AiStreamEvent.Done || event is AiStreamEvent.Failure) {
+                                return@flow
+                            }
+                        }
                     }
+                }
+
+                if (resultSeen) {
+                    // Some reverse proxies can drop the final marker while still delivering all
+                    // content. Treat clean EOF after content as success instead of leaving the UI busy.
+                    emit(AiStreamEvent.Done(model = "", latencyMs = 0))
+                } else {
+                    emit(
+                        AiStreamEvent.Failure(
+                            withRequestId("流式连接提前结束，未收到正文或媒体结果", requestId),
+                        ),
+                    )
                 }
             }
         } catch (error: Exception) {
             emit(AiStreamEvent.Failure(withRequestId(error.message ?: "AI 流式连接失败", requestId)))
         }
     }.flowOn(Dispatchers.IO)
+
+    internal fun parseSseLine(line: String): SseLineResult? {
+        val normalized = line.trimStart()
+        if (!normalized.startsWith("data:")) return null
+        val raw = normalized.removePrefix("data:").trim()
+        if (raw.isBlank()) return null
+        if (raw == "[DONE]") return SseLineResult.DoneMarker
+        return parseStreamData(raw)?.let(SseLineResult::Event)
+    }
 
     internal fun parseStreamData(raw: String): AiStreamEvent? {
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
