@@ -7,6 +7,7 @@ from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 
+from app.client_ai import AIRequest
 from app.document_service import extract_document_text, prepare_documents
 
 
@@ -19,6 +20,15 @@ def test_plain_text_document_is_injected_into_prompt() -> None:
     assert prepared.extracted_count == 1
     assert "星河科技" in prepared.prompt
     assert "20 万" in prepared.prompt
+
+
+def test_document_only_request_is_valid() -> None:
+    encoded = base64.b64encode(b"hello document").decode()
+    request = AIRequest(
+        documents=[{"name": "notes.txt", "mime_type": "text/plain", "data": encoded}],
+    )
+    assert request.prompt == ""
+    assert request.documents[0].name == "notes.txt"
 
 
 def test_docx_extraction_reads_paragraphs() -> None:
