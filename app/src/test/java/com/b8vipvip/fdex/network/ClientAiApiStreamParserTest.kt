@@ -13,7 +13,8 @@ class ClientAiApiStreamParserTest {
         assertTrue(parsed is SseLineResult.Event)
         val event = (parsed as SseLineResult.Event).event
         assertTrue(event is AiStreamEvent.Content)
-        assertEquals("图片识别完成", (event as AiStreamEvent.Content).delta)
+        val content = event as AiStreamEvent.Content
+        assertEquals("图片识别完成", content.delta)
     }
 
     @Test
@@ -24,8 +25,9 @@ class ClientAiApiStreamParserTest {
         assertTrue(parsed is SseLineResult.Event)
         val event = (parsed as SseLineResult.Event).event
         assertTrue(event is AiStreamEvent.Done)
-        assertEquals("gpt-5.5-mini", (event as AiStreamEvent.Done).model)
-        assertEquals(19455, event.latencyMs)
+        val done = event as AiStreamEvent.Done
+        assertEquals("gpt-5.5-mini", done.model)
+        assertEquals(19455, done.latencyMs)
     }
 
     @Test
@@ -41,6 +43,7 @@ class ClientAiApiStreamParserTest {
         assertTrue(parsed is SseLineResult.Event)
         val event = (parsed as SseLineResult.Event).event
         assertTrue(event is AiStreamEvent.Status)
-        assertEquals("正在分析 1 幅图片", (event as AiStreamEvent.Status).status)
+        val status = event as AiStreamEvent.Status
+        assertEquals("正在分析 1 幅图片", status.status)
     }
 }
