@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from app.document_service import prepare_documents
 from app.multimodal_service import (
     TASK_AUDIO,
     TASK_IMAGE,
@@ -46,6 +47,12 @@ class AudioInput(BaseModel):
     format: Literal["wav", "mp3"] = "wav"
 
 
+class DocumentInput(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=120)
+    data: str = Field(min_length=4, max_length=12_000_000)
+
+
 class AIRequest(BaseModel):
     system: str | None = Field(default=None, max_length=12000)
     prompt: str = Field(default="", max_length=40000)
@@ -53,14 +60,15 @@ class AIRequest(BaseModel):
     task: Literal["auto", "text", "vision", "image_generation", "audio"] = "auto"
     images: list[ImageInput] = Field(default_factory=list, max_length=4)
     audio: AudioInput | None = None
+    documents: list[DocumentInput] = Field(default_factory=list, max_length=3)
     image_size: Literal["1024x1024", "1536x1024", "1024x1536"] = "1024x1024"
     voice: str = Field(default="", max_length=80)
     audio_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = "wav"
 
     @model_validator(mode="after")
     def require_input(self) -> "AIRequest":
-        if not self.prompt.strip() and not self.images and self.audio is None:
-            raise ValueError("prompt、images 或 audio 至少需要提供一项")
+        if not self.prompt.strip() and not self.images and self.audio is None and not self.documents:
+            raise ValueError("prompt、images、audio 或 documents 至少需要提供一项")
         return self
 
 
@@ -90,6 +98,18 @@ def _audio(payload: AIRequest) -> dict[str, str] | None:
     if payload.audio is None:
         return None
     return {"data": payload.audio.data, "format": payload.audio.format}
+
+
+def _documents(payload: AIRequest) -> list[dict[str, str]]:
+    return [
+        {"name": item.name, "mime_type": item.mime_type, "data": item.data}
+        for item in payload.documents
+    ]
+
+
+def _prepared_prompt(payload: AIRequest) -> tuple[str, int, list[str]]:
+    prepared = prepare_documents(payload.prompt, _documents(payload))
+    return prepared.prompt, prepared.extracted_count, prepared.notes
 
 
 def _sse(event_type: str, **payload: Any) -> str:
@@ -189,11 +209,6 @@ def _failure_detail(result: RouteResult, fallback: str) -> str:
 
 
 def _image_providers(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Image generation through browser bridges often needs more than the text timeout.
-
-    Keep the configured value when it is already larger, otherwise give media generation
-    a six-minute window. The copied dictionaries avoid mutating the provider store snapshot.
-    """
     adjusted: list[dict[str, Any]] = []
     for provider in providers:
         item = dict(provider)
@@ -206,8 +221,9 @@ def _image_providers(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]]) -> RouteResult:
     images = _images(payload)
     audio = _audio(payload)
+    prompt, _, _ = _prepared_prompt(payload)
     task, explicit = detect_task(
-        payload.prompt,
+        prompt,
         requested_task=payload.task,
         has_images=bool(images),
         has_audio=audio is not None,
@@ -216,7 +232,7 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
     if task == TASK_IMAGE:
         if _has_specialized(providers, TASK_IMAGE):
             result = await route_image_generation(
-                prompt=payload.prompt,
+                prompt=prompt,
                 size=payload.image_size,
                 providers=_image_providers(providers),
             )
@@ -226,7 +242,7 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
             return RouteResult(False, TASK_IMAGE, errors=["未配置可用的图片生成模型供应商"])
         fallback = await route_text(
             system=payload.system,
-            prompt=payload.prompt,
+            prompt=prompt,
             max_tokens=payload.max_tokens,
             providers=providers,
         )
@@ -237,7 +253,7 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
         if _has_specialized(providers, TASK_AUDIO):
             result = await route_audio(
                 system=payload.system,
-                prompt=payload.prompt,
+                prompt=prompt,
                 max_tokens=payload.max_tokens,
                 audio_input=audio,
                 requested_voice=payload.voice,
@@ -250,7 +266,7 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
             return RouteResult(False, TASK_AUDIO, errors=["未配置可用的语音模型供应商"])
         fallback = await route_text(
             system=payload.system,
-            prompt=payload.prompt,
+            prompt=prompt,
             max_tokens=payload.max_tokens,
             providers=providers,
         )
@@ -259,7 +275,7 @@ async def _route_non_stream(payload: AIRequest, providers: list[dict[str, Any]])
 
     return await route_text(
         system=payload.system,
-        prompt=payload.prompt,
+        prompt=prompt,
         max_tokens=payload.max_tokens,
         images=images if task == TASK_VISION else None,
         providers=providers,
@@ -292,6 +308,7 @@ async def _emit_specialized(
     providers: list[dict[str, Any]],
     task: str,
     explicit: bool,
+    prompt: str,
 ) -> AsyncIterator[str]:
     if task == TASK_IMAGE:
         if not _has_specialized(providers, TASK_IMAGE):
@@ -303,7 +320,7 @@ async def _emit_specialized(
         yield _sse("status", status="已识别为图片生成请求，正在调用图片模型…")
         image_task = asyncio.create_task(
             route_image_generation(
-                prompt=payload.prompt,
+                prompt=prompt,
                 size=payload.image_size,
                 providers=_image_providers(providers),
             )
@@ -338,7 +355,7 @@ async def _emit_specialized(
         yield _sse("status", status="已识别为语音请求，正在切换语音模型…")
         result = await route_audio(
             system=payload.system,
-            prompt=payload.prompt,
+            prompt=prompt,
             max_tokens=payload.max_tokens,
             audio_input=_audio(payload),
             requested_voice=payload.voice,
@@ -376,8 +393,9 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
         raise HTTPException(503, "服务端尚未配置已启用的 AI 供应商，请先在管理后台添加供应商。")
 
     images = _images(payload)
+    prompt, extracted_documents, document_notes = _prepared_prompt(payload)
     task, explicit = detect_task(
-        payload.prompt,
+        prompt,
         requested_task=payload.task,
         has_images=bool(images),
         has_audio=payload.audio is not None,
@@ -387,9 +405,15 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
         started_all = perf_counter()
         errors: list[str] = []
 
+        if payload.documents:
+            if extracted_documents:
+                yield _sse("status", status=f"已从 {extracted_documents} 份附件提取正文，正在结合内容分析…")
+            elif document_notes:
+                yield _sse("status", status="附件未提取到可读正文，AI 只会基于实际可用内容回答。")
+
         if task in {TASK_IMAGE, TASK_AUDIO}:
             completed = False
-            async for event in _emit_specialized(payload, providers, task, explicit):
+            async for event in _emit_specialized(payload, providers, task, explicit, prompt):
                 if '"type":"done"' in event or event == "data: [DONE]\n\n":
                     completed = True
                 yield event
@@ -412,7 +436,7 @@ async def client_ai_stream(payload: AIRequest) -> StreamingResponse:
                 body = chat_payload(
                     model=model,
                     system=payload.system,
-                    prompt=payload.prompt,
+                    prompt=prompt,
                     max_tokens=payload.max_tokens,
                     stream=True,
                     images=images if vision else None,
