@@ -3,6 +3,7 @@ package com.b8vipvip.fdex.network
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -14,6 +15,8 @@ import kotlin.math.roundToInt
 
 private const val ATTACHMENT_MARKER = "FDEX_ATTACHMENTS_V1"
 private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+private const val IMAGE_COMPRESS_THRESHOLD_BYTES = 1024 * 1024
+private const val MAX_IMAGE_EDGE = 1600
 private const val MAX_AUDIO_BYTES = 16 * 1024 * 1024
 private const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 private const val MAX_DOCUMENT_TOTAL_BYTES = 12 * 1024 * 1024
@@ -194,8 +197,7 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
                         notes += "图片《${attachment.name}》未送入视觉模型：文件不可读取或超过 8 MB。"
                     } else {
                         val mime = lowerMime.takeIf { it.startsWith("image/") } ?: "image/jpeg"
-                        val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                        images += AiImagePayload("data:$mime;base64,$base64")
+                        images += imageBytesToPayload(bytes, mime)
                     }
                 }
             }
@@ -300,6 +302,62 @@ private fun audioFormat(attachment: ChatAttachment): String? {
         mime in setOf("audio/wav", "audio/x-wav", "audio/wave") || name.endsWith(".wav") -> "wav"
         mime == "audio/mpeg" || name.endsWith(".mp3") -> "mp3"
         else -> null
+    }
+}
+
+
+private fun imageBytesToPayload(bytes: ByteArray, mimeType: String): AiImagePayload {
+    if (bytes.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        return AiImagePayload("data:$mimeType;base64,$encoded")
+    }
+
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        return AiImagePayload("data:$mimeType;base64,$encoded")
+    }
+
+    var sampleSize = 1
+    while (maxOf(bounds.outWidth / sampleSize, bounds.outHeight / sampleSize) > MAX_IMAGE_EDGE * 2) {
+        sampleSize *= 2
+    }
+    val decoded = BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    ) ?: run {
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        return AiImagePayload("data:$mimeType;base64,$encoded")
+    }
+
+    val longest = maxOf(decoded.width, decoded.height)
+    val scaled = if (longest > MAX_IMAGE_EDGE) {
+        val ratio = MAX_IMAGE_EDGE.toFloat() / longest.toFloat()
+        Bitmap.createScaledBitmap(
+            decoded,
+            (decoded.width * ratio).roundToInt().coerceAtLeast(1),
+            (decoded.height * ratio).roundToInt().coerceAtLeast(1),
+            true,
+        )
+    } else {
+        decoded
+    }
+
+    return try {
+        val out = ByteArrayOutputStream()
+        if (!scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            AiImagePayload("data:$mimeType;base64,$encoded")
+        } else {
+            val encoded = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+            AiImagePayload("data:image/jpeg;base64,$encoded")
+        }
+    } finally {
+        if (scaled !== decoded) scaled.recycle()
+        decoded.recycle()
     }
 }
 
