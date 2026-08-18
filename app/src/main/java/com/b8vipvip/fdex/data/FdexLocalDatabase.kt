@@ -192,6 +192,8 @@ internal class FdexLocalDatabase(context: Context) :
         const val KIND_REPORT = "report"
         const val KIND_GROUP = "group"
         const val KIND_GROUP_MESSAGE = "group_message"
+        const val KIND_KNOWLEDGE = "knowledge"
+        const val KIND_EMPLOYEE_PERMISSION = "employee_permission"
 
         private const val DATABASE_NAME = "fdex-local-v3.db"
         private const val DATABASE_VERSION = 1
