@@ -41,6 +41,22 @@ def test_memory_control_is_consumed_and_acl_is_normalized() -> None:
     assert control.allowed_employee_ids == {"9", "11"}
 
 
+def test_invalid_memory_control_is_stripped_before_upstream() -> None:
+    malformed = "[[FDEX_MEMORY_V2:bm90LWpzb24]]"
+    clean, control = decode_memory_control(f"问题\n{malformed}")
+    assert clean == "问题"
+    assert control is None
+    assert "FDEX_MEMORY_V2" not in clean
+
+
+def test_short_or_invalid_scope_marker_is_also_stripped() -> None:
+    marker = _marker({"scope": "too-short", "employee_id": "7"})
+    clean, control = decode_memory_control(f"继续处理\n{marker}")
+    assert clean == "继续处理"
+    assert control is None
+    assert "FDEX_MEMORY_V2" not in clean
+
+
 def test_local_context_is_moved_out_of_user_prompt() -> None:
     prompt = "本轮问题\n\n<fdex_company_context>\n知识库候选资料：\n- A\n</fdex_company_context>"
     clean, local = extract_local_context(prompt)
