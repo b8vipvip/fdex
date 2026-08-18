@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.b8vipvip.fdex.BuildConfig
 import com.b8vipvip.fdex.data.AppRepository
+import com.b8vipvip.fdex.data.ClientPreferences
 import com.b8vipvip.fdex.network.ServerApi
 import com.b8vipvip.fdex.network.ServerCheckResult
 import com.b8vipvip.fdex.update.ApkUpdater
@@ -59,15 +60,26 @@ internal sealed interface Route {
     data object NewGroup : Route
     data class GroupChat(val id: Long) : Route
     data object Account : Route
+    data object PrivacySecurity : Route
     data object Settings : Route
     data object Deleted : Route
-    data object About : Route
+    data object Update : Route
+    data object Guide : Route
+    data object PrivacyPolicy : Route
+    data object Contact : Route
 }
 
 internal fun fallbackBackTarget(route: Route): Route = when (route) {
     Route.Login -> Route.Login
     Route.Register -> Route.Login
     Route.Messages -> Route.Messages
+    else -> Route.Messages
+}
+
+internal fun clientHomeRoute(value: String): Route = when (value) {
+    ClientPreferences.HOME_KNOWLEDGE -> Route.Work
+    ClientPreferences.HOME_DISCOVER -> Route.Discover
+    ClientPreferences.HOME_ME -> Route.Me
     else -> Route.Messages
 }
 
@@ -82,10 +94,11 @@ internal fun shouldHandleSystemBack(
 fun FdexApp() {
     val context = LocalContext.current
     val repo = remember { AppRepository(context) }
+    val clientPreferences = remember { ClientPreferences(context) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var revision by remember { mutableIntStateOf(0) }
-    var route by remember { mutableStateOf<Route>(if (repo.isLoggedIn()) Route.Messages else Route.Login) }
+    var route by remember { mutableStateOf<Route>(if (repo.isLoggedIn()) clientHomeRoute(clientPreferences.defaultHome()) else Route.Login) }
     val history = remember { mutableStateListOf<Route>() }
     var availableRelease by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateChecking by remember { mutableStateOf(false) }
@@ -158,9 +171,13 @@ fun FdexApp() {
         Route.NewGroup -> "创建工作群"
         is Route.GroupChat -> repo.group(current.id)?.name ?: "工作群"
         Route.Account -> "账号信息"
+        Route.PrivacySecurity -> "隐私与安全"
         Route.Settings -> "设置"
         Route.Deleted -> "最近删除"
-        Route.About -> "关于 FDEX"
+        Route.Update -> "检查更新"
+        Route.Guide -> "使用说明"
+        Route.PrivacyPolicy -> "隐私说明"
+        Route.Contact -> "联系我们"
     }
 
     Scaffold(
@@ -236,8 +253,8 @@ fun FdexApp() {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val current = route) {
-                Route.Login -> LoginScreen(repo, onLogin = { touch(); history.clear(); route = Route.Messages }, onRegister = { route = Route.Register })
-                Route.Register -> RegisterScreen(repo, onDone = { touch(); history.clear(); route = Route.Messages }, onLogin = { route = Route.Login })
+                Route.Login -> LoginScreen(repo, onLogin = { touch(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) }, onRegister = { route = Route.Register })
+                Route.Register -> RegisterScreen(repo, onDone = { touch(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) }, onLogin = { route = Route.Login })
                 Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
                 Route.Work -> KnowledgeScreen(
                     repo = repo,
@@ -252,10 +269,14 @@ fun FdexApp() {
                     repo,
                     revision,
                     onAccount = { go(Route.Account) },
+                    onPrivacy = { go(Route.PrivacySecurity) },
                     onEmployees = { go(Route.Employees) },
                     onDeleted = { go(Route.Deleted) },
                     onSettings = { go(Route.Settings) },
-                    onAbout = { go(Route.About) },
+                    onUpdate = { go(Route.Update) },
+                    onGuide = { go(Route.Guide) },
+                    onPrivacyPolicy = { go(Route.PrivacyPolicy) },
+                    onContact = { go(Route.Contact) },
                     onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
                 )
                 is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
@@ -274,9 +295,13 @@ fun FdexApp() {
                 Route.NewGroup -> NewGroupScreen(repo) { id -> touch(); go(Route.GroupChat(id), keepCurrent = false) }
                 is Route.GroupChat -> StreamingGroupChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Account -> AccountScreen(repo, onChanged = { touch() }, snackbar = snackbar)
-                Route.Settings -> SettingsScreen(repo, revision, onAbout = { go(Route.About) }, onChanged = { touch() })
+                Route.PrivacySecurity -> PrivacySecurityScreen(onChanged = { touch() }, snackbar = snackbar)
+                Route.Settings -> SettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
-                Route.About -> AboutScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
+                Route.Update -> UpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
+                Route.Guide -> UsageGuideScreen()
+                Route.PrivacyPolicy -> PrivacyPolicyScreen()
+                Route.Contact -> ContactScreen()
             }
         }
     }

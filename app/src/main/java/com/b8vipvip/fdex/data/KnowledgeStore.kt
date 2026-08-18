@@ -9,6 +9,7 @@ class KnowledgeStore(context: Context) {
     private val appContext = context.applicationContext
     private val database = FdexLocalDatabase(appContext)
     private val metaPrefs = appContext.getSharedPreferences("fdex_knowledge_meta_v1", Context.MODE_PRIVATE)
+    private val clientPreferences = ClientPreferences(appContext)
 
     fun permissionsFor(employeeId: Long): EmployeePermissions {
         val json = database.query(FdexLocalDatabase.KIND_EMPLOYEE_PERMISSION, employeeId).firstOrNull()
@@ -56,6 +57,7 @@ class KnowledgeStore(context: Context) {
         employee: Employee,
         conversationId: String,
     ): String {
+        if (!clientPreferences.remoteLongTermMemory()) return ""
         val permissions = permissionsFor(employee.id)
         val localScope = scopeKey(repo)
         val preferenceKey = "remote_memory_scope_" + KnowledgeEngine.contentHash(localScope).take(20)
@@ -80,6 +82,8 @@ class KnowledgeStore(context: Context) {
         )
         return "[[FDEX_MEMORY_V2:$encoded]]"
     }
+
+    fun automaticArchiveEnabled(): Boolean = clientPreferences.autoArchiveKnowledge()
 
     fun entries(includeArchived: Boolean = false): List<KnowledgeEntry> = database
         .query(FdexLocalDatabase.KIND_KNOWLEDGE)
@@ -186,6 +190,7 @@ class KnowledgeStore(context: Context) {
      * can safely retry on the next launch/send.
      */
     fun backfillIfNeeded(repo: AppRepository): Int {
+        if (!clientPreferences.autoArchiveKnowledge()) return 0
         val marker = "history_backfilled_${scopeKey(repo)}"
         if (metaPrefs.getBoolean(marker, false)) return 0
         val created = backfill(repo)

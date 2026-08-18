@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,13 +29,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.b8vipvip.fdex.BuildConfig
+import com.b8vipvip.fdex.data.AccountSecurityManager
 import com.b8vipvip.fdex.data.AppRepository
+import com.b8vipvip.fdex.data.ClientPreferences
+import com.b8vipvip.fdex.update.UpdatePreferences
+import java.text.DateFormat
+import java.util.Date
 import kotlinx.coroutines.launch
 
 @Composable
@@ -67,10 +75,14 @@ internal fun MeScreen(
     repo: AppRepository,
     revision: Int,
     onAccount: () -> Unit,
+    onPrivacy: () -> Unit,
     onEmployees: () -> Unit,
     onDeleted: () -> Unit,
     onSettings: () -> Unit,
-    onAbout: () -> Unit,
+    onUpdate: () -> Unit,
+    onGuide: () -> Unit,
+    onPrivacyPolicy: () -> Unit,
+    onContact: () -> Unit,
     onLogout: () -> Unit,
 ) {
     revision.hashCode()
@@ -78,44 +90,58 @@ internal fun MeScreen(
     LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Avatar("👤", 64)
-                    Column(Modifier.padding(start = 14.dp)) {
-                        Text(profile.companyName.ifBlank { "我的 AI 公司" }, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        Text(profile.name)
-                        Text(profile.industry.ifBlank { "未设置公司行业" }, color = Emerald)
-                        Text(profile.email, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                        Text(profile.name.ifBlank { "我" }, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(profile.companyName.ifBlank { "我的 AI 公司" }, color = Emerald)
+                        Text(profile.email.ifBlank { "未设置登录邮箱" }, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
+        item { SectionTitle("账号与数据") }
         item {
             MenuCard(
                 listOf(
                     "👤" to "账号信息",
-                    "🤖" to "AI 员工管理",
                     "🔐" to "隐私与安全",
+                    "🤖" to "AI 员工管理",
                     "🗑️" to "最近删除",
-                    "⚙️" to "设置",
                 ),
             ) { label ->
                 when (label) {
                     "账号信息" -> onAccount()
+                    "隐私与安全" -> onPrivacy()
                     "AI 员工管理" -> onEmployees()
                     "最近删除" -> onDeleted()
-                    "设置", "隐私与安全" -> onSettings()
+                }
+            }
+        }
+        item { SectionTitle("客户端与支持") }
+        item {
+            MenuCard(
+                listOf(
+                    "⚙️" to "设置",
+                    "⬆️" to "检查更新",
+                    "📖" to "使用说明",
+                    "🛡️" to "隐私说明",
+                    "✉️" to "联系我们",
+                ),
+            ) { label ->
+                when (label) {
+                    "设置" -> onSettings()
+                    "检查更新" -> onUpdate()
+                    "使用说明" -> onGuide()
+                    "隐私说明" -> onPrivacyPolicy()
+                    "联系我们" -> onContact()
                 }
             }
         }
         item {
-            MenuCard(
-                listOf("📖" to "使用说明", "📄" to "隐私条款", "ℹ️" to "关于我们", "✉️" to "联系我们"),
-            ) { onAbout() }
-        }
-        item {
             Card {
                 Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("软件版本")
+                    Text("FDEX Android")
                     Text("v${BuildConfig.VERSION_NAME}", color = Muted)
                 }
             }
@@ -130,72 +156,260 @@ internal fun MeScreen(
 
 @Composable
 internal fun AccountScreen(repo: AppRepository, onChanged: () -> Unit, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val prefs = remember { ClientPreferences(context) }
     val scope = rememberCoroutineScope()
     val current = repo.profile()
     var name by remember { mutableStateOf(current.name) }
-    var company by remember { mutableStateOf(current.companyName) }
-    var industry by remember { mutableStateOf(current.industry) }
-    var level by remember { mutableStateOf(current.professionalLevel) }
+    var phone by remember { mutableStateOf(prefs.phone()) }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        OutlinedTextField(name, { name = it }, label = { Text("姓名") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(company, { company = it }, label = { Text("公司名称") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(industry, { industry = it }, label = { Text("公司行业") }, modifier = Modifier.fillMaxWidth())
-        SelectorCard(
-            "专业程度",
-            listOf("beginner" to "完全小白", "business" to "懂业务不懂技术", "product" to "产品/项目经理", "developer" to "技术人员", "auto" to "AI 自动判断"),
-            level,
-        ) { level = it }
-        Button(
-            onClick = {
-                repo.updateProfile(current.copy(name = name.trim(), companyName = company.trim(), industry = industry.trim(), professionalLevel = level))
-                onChanged()
-                scope.launch { snackbar.showSnackbar("账号信息已保存") }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("保存") }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("当前登录账号", fontWeight = FontWeight.Bold)
+                InfoRow("账号", current.email.ifBlank { "未设置" })
+                InfoRow("登录方式", "邮箱 + 本机密码")
+                Text("登录邮箱与本机密码共同用于识别当前账号。", color = Muted)
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("个人信息", fontWeight = FontWeight.Bold)
+                OutlinedTextField(name, { name = it }, label = { Text("姓名 / 昵称") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(phone, { phone = it }, label = { Text("手机号") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(
+                    value = current.email,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("邮箱") },
+                    supportingText = { Text("当前邮箱同时是登录账号；本版本不在资料页直接修改登录标识。") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = {
+                        repo.updateProfile(current.copy(name = name.trim()))
+                        prefs.setPhone(phone)
+                        onChanged()
+                        scope.launch { snackbar.showSnackbar("个人信息已保存") }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存个人信息") }
+            }
+        }
     }
 }
 
 @Composable
-internal fun SettingsScreen(repo: AppRepository, revision: Int, onAbout: () -> Unit, onChanged: () -> Unit) {
-    revision.hashCode()
-    val profile = repo.profile()
-    var auto by remember { mutableStateOf(profile.autoCompanyMode) }
+internal fun PrivacySecurityScreen(onChanged: () -> Unit, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val prefs = remember { ClientPreferences(context) }
+    val security = remember { AccountSecurityManager(context) }
+    val scope = rememberCoroutineScope()
+    var autoArchive by remember { mutableStateOf(prefs.autoArchiveKnowledge()) }
+    var remoteMemory by remember { mutableStateOf(prefs.remoteLongTermMemory()) }
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("公司自动化", fontWeight = FontWeight.Bold)
-                Text("新建工作时默认启动公司自动运营模式。", color = Muted, modifier = Modifier.padding(vertical = 8.dp))
-                ToggleRow("默认启动自动运营", auto) {
-                    auto = it
-                    repo.updateProfile(profile.copy(autoCompanyMode = it))
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("个人隐私权限", fontWeight = FontWeight.Bold)
+                PreferenceToggle(
+                    title = "自动整理聊天到本机知识库",
+                    description = "关闭后不再自动回填或新增聊天知识；已有知识仍可手动查看和检索。",
+                    checked = autoArchive,
+                ) {
+                    autoArchive = it
+                    prefs.setAutoArchiveKnowledge(it)
+                    onChanged()
+                }
+                PreferenceToggle(
+                    title = "启用 MemPalace / Letta 长期记忆",
+                    description = "关闭后客户端不再发送远程记忆控制信息，新对话不会进行跨会话远程召回或写入。",
+                    checked = remoteMemory,
+                ) {
+                    remoteMemory = it
+                    prefs.setRemoteLongTermMemory(it)
                     onChanged()
                 }
             }
         }
-        Card(Modifier.fillMaxWidth().clickable(onClick = onAbout)) {
-            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
-                    Text("关于与版本更新", fontWeight = FontWeight.SemiBold)
-                    Text("当前 v${BuildConfig.VERSION_NAME}", color = Muted)
-                }
-                Text("›", fontSize = 24.sp)
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("修改密码", fontWeight = FontWeight.Bold)
+                Text("修改前必须验证当前密码；新密码继续使用 PBKDF2 与 Android Keystore 设备密钥保护。", color = Muted)
+                OutlinedTextField(
+                    currentPassword,
+                    { currentPassword = it },
+                    label = { Text("当前密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    newPassword,
+                    { newPassword = it },
+                    label = { Text("新密码（至少 8 位）") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    confirmPassword,
+                    { confirmPassword = it },
+                    label = { Text("再次输入新密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Button(
+                    onClick = {
+                        val result = security.changePassword(currentPassword, newPassword, confirmPassword)
+                        if (result.isSuccess) {
+                            currentPassword = ""
+                            newPassword = ""
+                            confirmPassword = ""
+                            scope.launch { snackbar.showSnackbar("密码已修改") }
+                        } else {
+                            scope.launch { snackbar.showSnackbar(result.exceptionOrNull()?.message ?: "密码修改失败") }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("修改密码") }
             }
         }
         Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("隐私与数据", fontWeight = FontWeight.Bold)
-                Text(
-                    "工作、员工、聊天和群组数据默认保存在当前设备。AI 请求经 fdex.k2n.cn 转发，第三方 API Key 只保存在服务端。",
-                    color = Muted,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("数据边界", fontWeight = FontWeight.Bold)
+                Text("• 账号密码不以明文保存。", color = Muted)
+                Text("• 本机聊天与知识库使用本地数据库保存。", color = Muted)
+                Text("• 启用远程长期记忆后，仅按员工 ACL 将获准文本交给 FDEX 记忆服务。", color = Muted)
+                Text("• Realtime 语音的长期记忆只使用转写后的文字，不保存语音 PCM/Base64。", color = Muted)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsScreen(
+    repo: AppRepository,
+    revision: Int,
+    onChanged: () -> Unit,
+    snackbar: SnackbarHostState,
+) {
+    revision.hashCode()
+    val context = LocalContext.current
+    val prefs = remember { ClientPreferences(context) }
+    val scope = rememberCoroutineScope()
+    val profile = repo.profile()
+    var company by remember { mutableStateOf(profile.companyName) }
+    var industry by remember { mutableStateOf(profile.industry) }
+    var level by remember { mutableStateOf(profile.professionalLevel) }
+    var autoCompany by remember { mutableStateOf(profile.autoCompanyMode) }
+    var home by remember { mutableStateOf(prefs.defaultHome()) }
+    var showReasoning by remember { mutableStateOf(prefs.showReasoning()) }
+    var autoScroll by remember { mutableStateOf(prefs.autoScrollChat()) }
+    var autoUpdate by remember { mutableStateOf(UpdatePreferences.automaticCheckEnabled(context)) }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("公司与工作偏好", fontWeight = FontWeight.Bold)
+                OutlinedTextField(company, { company = it }, label = { Text("公司名称") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(industry, { industry = it }, label = { Text("公司行业") }, modifier = Modifier.fillMaxWidth())
+                SelectorCard(
+                    "默认专业程度",
+                    listOf(
+                        "beginner" to "完全小白",
+                        "business" to "懂业务不懂技术",
+                        "product" to "产品/项目经理",
+                        "developer" to "技术人员",
+                        "auto" to "AI 自动判断",
+                    ),
+                    level,
+                ) { level = it }
+                PreferenceToggle(
+                    title = "默认启动公司自动运营",
+                    description = "新建工作时默认开启自动运营模式。",
+                    checked = autoCompany,
+                ) { autoCompany = it }
+                Button(
+                    onClick = {
+                        repo.updateProfile(
+                            profile.copy(
+                                companyName = company.trim(),
+                                industry = industry.trim(),
+                                professionalLevel = level,
+                                autoCompanyMode = autoCompany,
+                            ),
+                        )
+                        onChanged()
+                        scope.launch { snackbar.showSnackbar("工作偏好已保存") }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存工作偏好") }
+            }
+        }
+        SelectorCard(
+            "默认打开页面",
+            listOf(
+                ClientPreferences.HOME_MESSAGES to "消息",
+                ClientPreferences.HOME_KNOWLEDGE to "知识库",
+                ClientPreferences.HOME_DISCOVER to "发现",
+                ClientPreferences.HOME_ME to "我的",
+            ),
+            home,
+        ) {
+            home = it
+            prefs.setDefaultHome(it)
+            onChanged()
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("聊天体验", fontWeight = FontWeight.Bold)
+                PreferenceToggle(
+                    title = "显示 AI 思考摘要",
+                    description = "关闭后仍正常生成答案，但聊天页不展示流式 reasoning 摘要。",
+                    checked = showReasoning,
+                ) {
+                    showReasoning = it
+                    prefs.setShowReasoning(it)
+                    onChanged()
+                }
+                PreferenceToggle(
+                    title = "回答时自动滚动到底部",
+                    description = "流式生成正文时自动跟随最新内容。",
+                    checked = autoScroll,
+                ) {
+                    autoScroll = it
+                    prefs.setAutoScrollChat(it)
+                    onChanged()
+                }
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("版本更新", fontWeight = FontWeight.Bold)
+                PreferenceToggle(
+                    title = "自动检查新版本",
+                    description = "启用后应用启动时最多每 6 小时检查一次；关闭后仍可手动检查。",
+                    checked = autoUpdate,
+                ) {
+                    autoUpdate = it
+                    UpdatePreferences.setAutomaticCheckEnabled(context, it)
+                    onChanged()
+                }
+                Text("手动检查与版本详情请从“我的 → 检查更新”进入。", color = Muted)
             }
         }
     }
@@ -225,25 +439,126 @@ internal fun DeletedScreen(repo: AppRepository, revision: Int, onChanged: () -> 
 }
 
 @Composable
-internal fun AboutScreen(serverStatus: String, updateChecking: Boolean, onCheckUpdate: () -> Unit) {
+internal fun UpdateScreen(serverStatus: String, updateChecking: Boolean, onCheckUpdate: () -> Unit) {
+    val context = LocalContext.current
+    val lastChecked = UpdatePreferences.lastCheckAt(context)
+    val lastCheckedLabel = if (lastChecked <= 0L) "尚未检查" else DateFormat.getDateTimeInstance().format(Date(lastChecked))
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Card {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("FDEX", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("关于 FDEX", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("FDEX 是面向个人与小团队的 AI 虚拟公司客户端，提供员工协作、知识库、项目与实时语音能力。", color = Muted)
                 InfoRow("版本名称", BuildConfig.VERSION_NAME)
                 InfoRow("版本号", BuildConfig.VERSION_CODE.toString())
                 InfoRow("构建提交", BuildConfig.GIT_SHA)
                 InfoRow("服务端", BuildConfig.SERVER_BASE_URL)
                 InfoRow("服务状态", serverStatus)
                 InfoRow("更新来源", "GitHub Releases")
+                InfoRow("上次检查", lastCheckedLabel)
             }
         }
         Button(onClick = onCheckUpdate, enabled = !updateChecking, modifier = Modifier.fillMaxWidth()) {
             if (updateChecking) CircularProgressIndicator() else Text("检查更新")
         }
-        Text("新版本由 GitHub Release 提供签名 APK。应用内更新会沿用当前正式签名。", color = Muted)
+        Text("正式更新包由 GitHub Release 提供签名 APK；应用内安装会沿用当前正式签名。", color = Muted)
+    }
+}
+
+@Composable
+internal fun UsageGuideScreen() {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { GuideCard("1", "创建或管理 AI 员工", "在“消息”或“我的 → AI 员工管理”中添加员工，为员工设置部门、职位、角色 Prompt 和访问权限。") }
+        item { GuideCard("2", "开始私聊或工作群", "私聊适合明确分工；工作群适合多个员工围绕同一个任务协作。聊天支持文字、图片、文档和实时语音。") }
+        item { GuideCard("3", "使用知识库", "聊天可自动整理为分类、摘要和关键词；员工能读取哪些知识和其他员工聊天，由员工权限单独控制。") }
+        item { GuideCard("4", "使用 Realtime 实时语音", "语音通话使用同一个实时模型会话保持上下文；长期记忆只保存已经转写并回显的文字，不保存音频格式。") }
+        item { GuideCard("5", "排查异常", "优先记录当前版本、复现步骤和界面提示；AI 请求异常时可结合服务端 FDEX_AI 日志中的 request_id 定位。") }
+    }
+}
+
+@Composable
+internal fun PrivacyPolicyScreen() {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("账号与密码", fontWeight = FontWeight.Bold)
+                Text("登录密码不会以明文保存。当前客户端使用 PBKDF2 派生密码，并结合 Android Keystore 中不可导出的设备密钥验证。", color = Muted)
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("聊天、知识库与长期记忆", fontWeight = FontWeight.Bold)
+                Text("聊天和本机知识库默认保存在当前设备。开启 MemPalace / Letta 后，按员工 ACL 获准的聊天文本可发送到 FDEX 服务端进行跨会话原始历史与结构化记忆管理。", color = Muted)
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("AI 请求", fontWeight = FontWeight.Bold)
+                Text("需要 AI 生成时，请求经 FDEX 服务端路由到配置的 AI 供应商。第三方供应商 API Key 由服务端管理，不写入 Android 客户端。", color = Muted)
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("实时语音", fontWeight = FontWeight.Bold)
+                Text("实时音频用于当前通话传输与播放；FDEX 长期记忆链路只接收转写后的用户文字与 AI 回复文字，不把 PCM/Base64 音频写入 MemPalace 或 Letta。", color = Muted)
+            }
+        }
+        Text("你可以随时在“隐私与安全”中关闭自动知识归档或远程长期记忆。", color = Muted)
+    }
+}
+
+@Composable
+internal fun ContactScreen() {
+    val uriHandler = LocalUriHandler.current
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("技术支持与问题反馈", fontWeight = FontWeight.Bold)
+                Text("推荐通过 GitHub Issues 提交问题。请附上 FDEX 版本、复现步骤、相关 request_id 或脱敏日志，不要提交账号密码、API Key 或其他密钥。", color = Muted)
+                OutlinedButton(onClick = { uriHandler.openUri("https://github.com/b8vipvip/fdex/issues") }, modifier = Modifier.fillMaxWidth()) {
+                    Text("打开 GitHub Issues")
+                }
+            }
+        }
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("当前服务", fontWeight = FontWeight.Bold)
+                InfoRow("客户端版本", "v${BuildConfig.VERSION_NAME}")
+                InfoRow("服务端", BuildConfig.SERVER_BASE_URL)
+                InfoRow("项目", "b8vipvip/fdex")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreferenceToggle(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(description, color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp))
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun GuideCard(step: String, title: String, description: String) {
+    Card {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Top) {
+            Text(step, color = Emerald, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(description, color = Muted, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
     }
 }
