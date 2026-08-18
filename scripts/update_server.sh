@@ -77,6 +77,24 @@ if not values.get("ADMIN_LOG_LINES", "").strip():
     updates["ADMIN_LOG_LINES"] = "300"
 if not values.get("RELEASE_CACHE_DIR", "").strip():
     updates["RELEASE_CACHE_DIR"] = "/opt/fdex/server/data/releases"
+if not values.get("FDEX_MEMORY_ENABLED", "").strip():
+    updates["FDEX_MEMORY_ENABLED"] = "true"
+if not values.get("FDEX_MEMORY_MANAGED_STACK", "").strip():
+    updates["FDEX_MEMORY_MANAGED_STACK"] = "true"
+if not values.get("FDEX_MEMORY_REQUIRED", "").strip():
+    updates["FDEX_MEMORY_REQUIRED"] = "false"
+if len(values.get("FDEX_MEMORY_PROXY_TOKEN", "")) < 32:
+    updates["FDEX_MEMORY_PROXY_TOKEN"] = secrets.token_urlsafe(48)
+if len(values.get("FDEX_LETTA_SERVER_PASSWORD", "")) < 32:
+    updates["FDEX_LETTA_SERVER_PASSWORD"] = secrets.token_urlsafe(48)
+if len(values.get("FDEX_LETTA_ENCRYPTION_KEY", "")) < 32:
+    updates["FDEX_LETTA_ENCRYPTION_KEY"] = secrets.token_hex(32)
+if not values.get("FDEX_MEMORY_PROXY_PORT", "").strip():
+    updates["FDEX_MEMORY_PROXY_PORT"] = "18100"
+if not values.get("FDEX_MEMORY_QDRANT_PORT", "").strip():
+    updates["FDEX_MEMORY_QDRANT_PORT"] = "6333"
+if not values.get("FDEX_LETTA_PORT", "").strip():
+    updates["FDEX_LETTA_PORT"] = "8283"
 
 remaining = dict(updates)
 output: list[str] = []
@@ -155,6 +173,19 @@ fi
 python3 -m venv "${APP_DIR}/server/.venv"
 "${APP_DIR}/server/.venv/bin/pip" install --upgrade pip
 "${APP_DIR}/server/.venv/bin/pip" install -r "${APP_DIR}/server/requirements.txt"
+
+MEMORY_ENABLED="$(read_env_value FDEX_MEMORY_ENABLED)"
+MEMORY_MANAGED="$(read_env_value FDEX_MEMORY_MANAGED_STACK)"
+MEMORY_REQUIRED="$(read_env_value FDEX_MEMORY_REQUIRED)"
+if [[ "${MEMORY_ENABLED,,}" != "false" && "${MEMORY_MANAGED,,}" != "false" ]]; then
+  if ! APP_DIR="${APP_DIR}" bash "${APP_DIR}/scripts/setup_memory_stack.sh"; then
+    if [[ "${MEMORY_REQUIRED,,}" == "true" ]]; then
+      echo "FDEX 长期记忆栈启动失败，并且 FDEX_MEMORY_REQUIRED=true，停止部署。" >&2
+      exit 1
+    fi
+    echo "警告：MemPalace/Letta 记忆栈暂不可用；核心 FDEX 服务将继续启动，记忆能力按 fail-open 降级。" >&2
+  fi
+fi
 
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 install -m 0644 "${APP_DIR}/deploy/systemd/fdex-release-sync.service" "/etc/systemd/system/fdex-release-sync.service"

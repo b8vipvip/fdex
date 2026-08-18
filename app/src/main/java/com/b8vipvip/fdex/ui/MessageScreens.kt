@@ -246,7 +246,7 @@ private fun EmployeeEditor(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音仍只使用员工自己的 Prompt；知识库与聊天权限由客户端独立 ACL 控制，不会写进 Prompt。",
+            "员工角色 Prompt 保存在客户端员工资料中。普通聊天会在服务端按员工权限叠加 FDEX 企业知识、MemPalace 原始历史和 Letta 结构化记忆 system 层；实时语音仍以角色 Prompt 为会话基础。",
             color = Muted,
             style = MaterialTheme.typography.bodySmall,
         )

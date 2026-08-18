@@ -28,6 +28,40 @@ class Settings(BaseSettings):
     ai_model: str = ""
     ai_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
 
+    # MemPalace raw history + Letta structured memory. FDEX uses the same encrypted
+    # provider pool through a loopback-only provider proxy; Android never receives
+    # provider credentials or these service tokens.
+    fdex_memory_enabled: bool = True
+    fdex_memory_managed_stack: bool = True
+    fdex_memory_required: bool = False
+    fdex_memory_data_dir: str = str(SERVER_DIR / "data" / "memory")
+    fdex_memory_context_max_chars: int = Field(default=8000, ge=1000, le=40000)
+    fdex_memory_system_max_chars: int = Field(default=11900, ge=2000, le=12000)
+    fdex_memory_recall_limit: int = Field(default=6, ge=1, le=30)
+    fdex_memory_recall_timeout_seconds: float = Field(default=12.0, ge=0.5, le=120.0)
+    fdex_memory_write_timeout_seconds: float = Field(default=180.0, ge=1.0, le=1800.0)
+
+    fdex_memory_proxy_url: str = "http://127.0.0.1:18100/v1"
+    fdex_memory_proxy_token: str = ""
+    fdex_memory_proxy_port: int = Field(default=18100, ge=1, le=65535)
+    fdex_memory_embedding_model: str = "text-embedding-3-small"
+    fdex_memory_embedding_dimension: int = Field(default=1536, ge=128, le=4096)
+    fdex_memory_embedding_max_chars: int = Field(default=12000, ge=256, le=100000)
+
+    fdex_memory_qdrant_url: str = "http://127.0.0.1:6333"
+    fdex_memory_qdrant_port: int = Field(default=6333, ge=1, le=65535)
+    fdex_memory_qdrant_collection: str = "fdex_mempalace_remote_v1"
+    fdex_memory_qdrant_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
+
+    fdex_letta_enabled: bool = True
+    fdex_letta_base_url: str = "http://127.0.0.1:8283"
+    fdex_letta_port: int = Field(default=8283, ge=1, le=65535)
+    fdex_letta_server_password: str = ""
+    fdex_letta_encryption_key: str = ""
+    fdex_letta_model: str = "openai/gpt-4o-mini"
+    fdex_letta_embedding: str = "openai/text-embedding-3-small"
+    fdex_letta_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+
     # Admin dashboard. update_server.sh generates password and session secret when missing.
     admin_username: str = "admin"
     admin_password: str = ""

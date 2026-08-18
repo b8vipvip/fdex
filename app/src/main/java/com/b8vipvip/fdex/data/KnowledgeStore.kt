@@ -46,6 +46,41 @@ class KnowledgeStore(context: Context) {
         )
     }
 
+    /**
+     * Builds an opaque, server-consumed control marker for MemPalace/Letta. The random
+     * account scope never contains the email/password and is stable only inside this app.
+     * The server removes this marker before any third-party AI provider sees the prompt.
+     */
+    fun remoteMemoryControl(
+        repo: AppRepository,
+        employee: Employee,
+        conversationId: String,
+    ): String {
+        val permissions = permissionsFor(employee.id)
+        val localScope = scopeKey(repo)
+        val preferenceKey = "remote_memory_scope_" + KnowledgeEngine.contentHash(localScope).take(20)
+        var token = metaPrefs.getString(preferenceKey, "").orEmpty().trim()
+        if (token.length < 24) {
+            token = java.util.UUID.randomUUID().toString().replace("-", "") +
+                java.util.UUID.randomUUID().toString().replace("-", "")
+            metaPrefs.edit().putString(preferenceKey, token).commit()
+        }
+        val payload = JSONObject()
+            .put("scope", token)
+            .put("conversation_id", conversationId.take(512))
+            .put("employee_id", employee.id.toString())
+            .put("knowledge_read", permissions.knowledgeRead)
+            .put("knowledge_write", permissions.knowledgeWrite)
+            .put("chat_access_mode", EmployeeChatAccess.normalize(permissions.chatAccessMode))
+            .put("readable_employee_ids", JSONArray(permissions.readableEmployeeIds))
+            .toString()
+        val encoded = android.util.Base64.encodeToString(
+            payload.toByteArray(Charsets.UTF_8),
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+        )
+        return "[[FDEX_MEMORY_V2:$encoded]]"
+    }
+
     fun entries(includeArchived: Boolean = false): List<KnowledgeEntry> = database
         .query(FdexLocalDatabase.KIND_KNOWLEDGE)
         .mapNotNull { runCatching { knowledgeFromJson(it) }.getOrNull() }

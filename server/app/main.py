@@ -15,6 +15,8 @@ from app.admin_routes import router as admin_router
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
+from app.fdex_memory import close_memory_coordinator
+from app.memory_middleware import FdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
@@ -49,6 +51,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Runs before the AI router sees the request. It consumes the Android-only memory
+# control marker, recalls MemPalace/Letta, and upgrades the old single rolePrompt
+# contract into ordered FDEX system layers. All memory failures are fail-open.
+app.add_middleware(FdexMemoryMiddleware)
 
 
 @app.middleware("http")
@@ -107,6 +113,11 @@ app.include_router(realtime_diagnostic_admin_router)
 app.include_router(client_ai_router)
 app.include_router(realtime_voice_router)
 app.include_router(client_update_router)
+
+
+@app.on_event("shutdown")
+async def shutdown_memory_clients() -> None:
+    await close_memory_coordinator()
 
 
 @app.get("/", include_in_schema=False)

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="${APP_DIR:-/opt/fdex}"
+ENV_FILE="${APP_DIR}/server/.env"
+COMPOSE_FILE="${APP_DIR}/docker-compose.memory.yml"
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "请使用 root 执行：sudo bash scripts/setup_memory_stack.sh" >&2
+  exit 1
+fi
+if ! command -v docker >/dev/null 2>&1; then
+  echo "未安装 Docker，无法启动 MemPalace(Qdrant) + Letta 记忆栈。" >&2
+  exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose v2 不可用。" >&2
+  exit 1
+fi
+if [[ ! -f "${ENV_FILE}" || ! -f "${COMPOSE_FILE}" ]]; then
+  echo "缺少 ${ENV_FILE} 或 ${COMPOSE_FILE}。" >&2
+  exit 1
+fi
+
+read_env() {
+  local key="$1"
+  local value
+  value="$(grep -E "^${key}=" "${ENV_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+  value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+  printf '%s' "${value}"
+}
+
+PROXY_PORT="$(read_env FDEX_MEMORY_PROXY_PORT)"; PROXY_PORT="${PROXY_PORT:-18100}"
+QDRANT_PORT="$(read_env FDEX_MEMORY_QDRANT_PORT)"; QDRANT_PORT="${QDRANT_PORT:-6333}"
+LETTA_PORT="$(read_env FDEX_LETTA_PORT)"; LETTA_PORT="${LETTA_PORT:-8283}"
+
+for pair in "proxy:${PROXY_PORT}" "qdrant:${QDRANT_PORT}" "letta:${LETTA_PORT}"; do
+  name="${pair%%:*}"; port="${pair##*:}"
+  if ! [[ "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    echo "${name} 端口 ${port} 无效。" >&2; exit 1
+  fi
+done
+
+mkdir -p "${APP_DIR}/server/data/memory"
+chmod 700 "${APP_DIR}/server/data" "${APP_DIR}/server/data/memory" 2>/dev/null || true
+
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build
+
+wait_url() {
+  local name="$1" url="$2" attempts="${3:-60}"
+  for ((i=1;i<=attempts;i++)); do
+    if curl --silent --fail "${url}" >/dev/null 2>&1; then
+      echo "${name} 已就绪。"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "${name} 健康检查超时：${url}" >&2
+  return 1
+}
+
+wait_url "FDEX Memory Provider Proxy" "http://127.0.0.1:${PROXY_PORT}/health" 45
+wait_url "Qdrant" "http://127.0.0.1:${QDRANT_PORT}/readyz" 45
+# Letta health requires auth; rely on Docker health status rather than exposing the password to curl history.
+for _ in {1..60}; do
+  cid="$(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps -q letta)"
+  status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${cid}" 2>/dev/null || true)"
+  if [[ "${status}" == "healthy" ]]; then
+    echo "Letta 已就绪。"
+    exit 0
+  fi
+  sleep 2
+done
+
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+echo "Letta 健康检查超时。" >&2
+exit 1
