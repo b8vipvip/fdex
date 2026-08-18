@@ -6,7 +6,9 @@ import org.json.JSONObject
 import java.time.Instant
 
 class KnowledgeStore(context: Context) {
-    private val database = FdexLocalDatabase(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val database = FdexLocalDatabase(appContext)
+    private val metaPrefs = appContext.getSharedPreferences("fdex_knowledge_meta_v1", Context.MODE_PRIVATE)
 
     fun permissionsFor(employeeId: Long): EmployeePermissions {
         val json = database.query(FdexLocalDatabase.KIND_EMPLOYEE_PERMISSION, employeeId).firstOrNull()
@@ -143,9 +145,19 @@ class KnowledgeStore(context: Context) {
     )
 
     /**
-     * Imports historical private/group exchanges idempotently. New messages are archived immediately;
-     * this exists so upgrading users do not lose older conversations from the new knowledge view.
+     * Imports historical private/group exchanges once for each account scope. New conversations
+     * are archived immediately, so rescanning the full history on every prompt would only add cost.
+     * The import itself remains content-hash idempotent, therefore a crash before the marker is set
+     * can safely retry on the next launch/send.
      */
+    fun backfillIfNeeded(repo: AppRepository): Int {
+        val marker = "history_backfilled_${scopeKey(repo)}"
+        if (metaPrefs.getBoolean(marker, false)) return 0
+        val created = backfill(repo)
+        metaPrefs.edit().putBoolean(marker, true).apply()
+        return created
+    }
+
     fun backfill(repo: AppRepository): Int {
         var created = 0
         repo.employees(activeOnly = false).forEach { employee ->
@@ -198,7 +210,7 @@ class KnowledgeStore(context: Context) {
         query: String,
         maxChars: Int = 12_000,
     ): String {
-        backfill(repo)
+        backfillIfNeeded(repo)
         val permissions = permissionsFor(employee.id)
         val allEntries = entries()
         val sections = mutableListOf<String>()
