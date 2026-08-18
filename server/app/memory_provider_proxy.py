@@ -85,7 +85,7 @@ async def health() -> dict[str, Any]:
         "status": "ok" if providers else "degraded",
         "service": "fdex-memory-provider-proxy",
         "provider_count": len(providers),
-        "embedding_mode": "remote-semantic-hash",
+        "embedding_mode": "native-openai-compatible-with-semantic-hash-fallback",
         "local_models": False,
     }
 
@@ -124,6 +124,17 @@ async def responses(request: Request) -> Response:
 async def embeddings(request: Request) -> JSONResponse:
     payload = await _json_body(request)
     values = _embedding_inputs(payload.get("input"))
+
+    # Keep SuMeMe/MemPalace semantics first: use a real remote OpenAI-compatible
+    # embedding endpoint whenever any configured FDEX provider supports it.
+    native = await _native_embeddings(request, values)
+    if native is not None:
+        return JSONResponse(native)
+
+    # Some chat2api-style providers expose chat/vision/realtime but no embedding
+    # model. In that case we still avoid a local ONNX model: a remote text model
+    # normalizes semantic tags, then FDEX hashes those tags into a deterministic
+    # normalized vector so Qdrant/Letta remain available as a degraded fallback.
     tags = await _semantic_tags(request, values)
     dimension = _settings().fdex_memory_embedding_dimension
     vectors = [hash_tags(item, dimension) for item in tags]
@@ -134,10 +145,68 @@ async def embeddings(request: Request) -> JSONResponse:
                 {"object": "embedding", "embedding": vector, "index": index}
                 for index, vector in enumerate(vectors)
             ],
-            "model": str(payload.get("model") or "text-embedding-3-small"),
+            "model": _settings().fdex_memory_embedding_model,
             "usage": {"prompt_tokens": 0, "total_tokens": 0},
+            "fdex_fallback": "remote_semantic_hash",
         }
     )
+
+
+async def _native_embeddings(request: Request, values: list[str]) -> dict[str, Any] | None:
+    settings = _settings()
+    model = settings.fdex_memory_embedding_model.strip() or "text-embedding-3-small"
+    payload = {"model": model, "input": values}
+    for provider in _providers():
+        api_key = str(provider.get("api_key") or "")
+        if not api_key:
+            continue
+        for root in api_roots(str(provider.get("base_url") or "")):
+            try:
+                response = await request.app.state.http.post(
+                    f"{root.rstrip('/')}/embeddings",
+                    headers=_headers(api_key),
+                    json=payload,
+                    timeout=max(1.0, settings.fdex_memory_recall_timeout_seconds),
+                )
+            except httpx.HTTPError:
+                continue
+            if response.status_code >= 400:
+                continue
+            try:
+                data = response.json()
+                items = data.get("data") if isinstance(data, dict) else None
+                if not isinstance(items, list) or len(items) != len(values):
+                    continue
+                ordered: list[dict[str, Any] | None] = [None] * len(values)
+                dimension: int | None = None
+                for fallback_index, item in enumerate(items):
+                    if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+                        raise ValueError("invalid embedding item")
+                    index = int(item.get("index", fallback_index))
+                    vector = [float(value) for value in item["embedding"]]
+                    if not vector or not 0 <= index < len(values):
+                        raise ValueError("invalid embedding vector")
+                    if dimension is None:
+                        dimension = len(vector)
+                    if len(vector) != dimension:
+                        raise ValueError("inconsistent embedding dimension")
+                    ordered[index] = {
+                        "object": "embedding",
+                        "embedding": vector,
+                        "index": index,
+                    }
+                if any(item is None for item in ordered):
+                    continue
+                return {
+                    "object": "list",
+                    "data": [item for item in ordered if item is not None],
+                    "model": model,
+                    "usage": data.get("usage", {"prompt_tokens": 0, "total_tokens": 0}),
+                    "fdex_embedding_source": "native_remote",
+                }
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 async def _json_body(request: Request) -> dict[str, Any]:
@@ -259,4 +328,3 @@ def _assistant_text(payload: Any) -> str:
         if joined:
             return joined
     raise ValueError("missing assistant content")
-
