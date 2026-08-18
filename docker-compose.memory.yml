@@ -1,0 +1,75 @@
+name: fdex-memory
+
+services:
+  memory-provider-proxy:
+    build:
+      context: ./server
+    command: ["python", "-m", "uvicorn", "app.memory_provider_proxy:app", "--host", "0.0.0.0", "--port", "18100"]
+    env_file:
+      - ./server/.env
+    environment:
+      APP_DIR: /opt/fdex
+    volumes:
+      - ./server/data:/opt/fdex/server/data
+    ports:
+      - "127.0.0.1:${FDEX_MEMORY_PROXY_PORT:-18100}:18100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18100/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 20
+      start_period: 20s
+    networks: [fdex-memory]
+
+  qdrant:
+    image: ${FDEX_QDRANT_IMAGE:-qdrant/qdrant:latest}
+    ports:
+      - "127.0.0.1:${FDEX_MEMORY_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - fdex-qdrant-data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [fdex-memory]
+
+  letta:
+    image: ${FDEX_LETTA_IMAGE:-letta/letta:0.16.8}
+    env_file:
+      - ./server/.env
+    environment:
+      SECURE: "true"
+      LETTA_SERVER_PASSWORD: ${FDEX_LETTA_SERVER_PASSWORD}
+      LETTA_ENCRYPTION_KEY: ${FDEX_LETTA_ENCRYPTION_KEY}
+      OPENAI_API_KEY: ${FDEX_MEMORY_PROXY_TOKEN}
+      OPENAI_API_BASE: http://memory-provider-proxy:18100/v1
+      OPENAI_BASE_URL: http://memory-provider-proxy:18100/v1
+    ports:
+      - "127.0.0.1:${FDEX_LETTA_PORT:-8283}:8283"
+    volumes:
+      - fdex-letta-data:/var/lib/postgresql/data
+    depends_on:
+      memory-provider-proxy:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:8283/v1/health/', headers={'Authorization':'Bearer '+os.environ['FDEX_LETTA_SERVER_PASSWORD']}); urllib.request.urlopen(r, timeout=5)"
+      interval: 15s
+      timeout: 8s
+      retries: 30
+      start_period: 60s
+    networks: [fdex-memory]
+
+networks:
+  fdex-memory:
+    name: fdex-memory
+
+volumes:
+  fdex-qdrant-data:
+  fdex-letta-data:
