@@ -45,16 +45,17 @@ def decode_memory_control(prompt: str) -> tuple[str, MemoryControl | None]:
         return prompt, None
     encoded = match.group(1)
     padding = "=" * ((4 - len(encoded) % 4) % 4)
+    clean = _MEMORY_MARKER.sub("", prompt, count=1).strip()
     try:
         raw = base64.urlsafe_b64decode(encoded + padding)
         payload = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        return _MEMORY_MARKER.sub("", prompt, count=1).strip(), None
+        return clean, None
     if not isinstance(payload, dict):
-        return _MEMORY_MARKER.sub("", prompt, count=1).strip(), None
+        return clean, None
     scope_token = str(payload.get("scope") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{24,128}", scope_token):
-        return _MEMORY_MARKER.sub("", prompt, count=1).strip(), None
+        return clean, None
     mode = str(payload.get("chat_access_mode") or "self").strip().lower()
     if mode not in {"none", "self", "all", "selected"}:
         mode = "self"
@@ -75,7 +76,7 @@ def decode_memory_control(prompt: str) -> tuple[str, MemoryControl | None]:
         chat_access_mode=mode,
         readable_employee_ids=ids,
     )
-    return _MEMORY_MARKER.sub("", prompt, count=1).strip(), control
+    return clean, control
 
 
 def extract_local_context(prompt: str) -> tuple[str, str]:
@@ -208,9 +209,17 @@ class FdexMemoryMiddleware:
             await self._replay(scope, body, receive, send)
             return
 
-        without_marker, control = decode_memory_control(payload["prompt"])
+        original_prompt = payload["prompt"]
+        without_marker, control = decode_memory_control(original_prompt)
         if control is None:
-            await self._replay(scope, body, receive, send)
+            # A malformed/forged internal marker must never leak to an upstream model.
+            # If there was no marker at all, replay the original bytes without churn.
+            if without_marker != original_prompt:
+                payload["prompt"] = without_marker
+                sanitized = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                await self._replay(scope, sanitized, receive, send)
+            else:
+                await self._replay(scope, body, receive, send)
             return
 
         user_prompt, local_context = extract_local_context(without_marker)
