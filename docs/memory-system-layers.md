@@ -54,7 +54,11 @@ FDEX 会限制最终 system 总长度，但不会再按“先到先占满”的�
 
 ## 实时语音
 
-Realtime 会话仍保持现有“同一实时模型/同一会话、不回退普通供应商”的约束。客户端不会把远程 memory control 标记发送到 realtime 上游；实时语音当前继续使用员工角色 Prompt 和本机可用上下文。MemPalace/Letta 的逐轮语义召回首先用于普通文字、图片、文档与群聊 HTTP AI 路径，避免改变现有低延迟语音协议。后续若要把远程长期记忆加入 realtime，应在 FDEX WebSocket 服务端按转写文本召回，而不是把 scope token 暴露给上游模型。
+Realtime 会话继续保持“同一实时模型 / 同一会话 / 不回退普通供应商”的约束。Android 在 FDEX WebSocket 的 `start` 帧中单独携带不透明 `memory_control`；该字段只由 FDEX 服务端消费，绝不会转发给 GPT-Live / OpenAI Realtime 上游。建连前，服务端按员工 ACL 读取最近 MemPalace 原始历史并召回 Letta 结构化长期记忆，再与员工角色 Prompt 组合成当前实时会话的 system/instructions。
+
+语音 PCM/Base64 只用于实时传输和播放，**不会写入 MemPalace 或 Letta**。长期记忆仅使用实时协议已经生成、同时会在 FDEX 聊天界面回显的文字：`user_transcript` / `transcript.final` 作为用户文本，`assistant_transcript` / `response.text.delta` 作为 AI 文本。每个完成或被打断且已经产生文字回显的问答异步写入 MemPalace；员工 `knowledgeWrite=true` 时同时更新 Letta。实时输入框里的文字仍通过当前 WebSocket 的 `input.text` / `conversation.item.create` 进入同一模型会话，并以去掉 FDEX 本地候选上下文后的可见文字写入长期记忆。
+
+当前 `chat2api-live-v1` 明确定义 `session.start`、文本输入、打断和结束，但没有会话中途更新 instructions/system 的事件，因此 FDEX 不伪造 `session.update`。跨会话长期记忆在新 Realtime 会话建立前装载；本次实时通话内部的新上下文由同一个 GPT-Live/Realtime 会话自身持续维护，通话完成后的文本记忆供后续新会话召回。
 
 ## 运行组件
 

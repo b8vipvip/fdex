@@ -15,6 +15,7 @@ from websockets.asyncio.client import connect
 from app.multimodal_service import infer_audio_protocol
 from app.provider_manager import audio_model_candidates, provider_store
 from app.realtime_diagnostics import write_realtime_diagnostic
+from app.realtime_memory import RealtimeMemoryRecorder, clean_realtime_user_text, prepare_realtime_memory
 
 router = APIRouter(prefix="/api/client/voice", tags=["android-client"])
 
@@ -317,7 +318,17 @@ async def realtime_voice(websocket: WebSocket) -> None:
         await websocket.close(code=1013)
         return
 
-    system = str(start.get("system") or "").strip()
+    raw_system = str(start.get("system") or "").strip()
+    raw_memory_control = str(start.get("memory_control") or "").strip()
+    system, memory_control, memory_recall = await prepare_realtime_memory(raw_system, raw_memory_control)
+    memory_recorder = RealtimeMemoryRecorder(memory_control, diag=diag)
+    diag(
+        "realtime_memory_bootstrap",
+        control=memory_control is not None,
+        mempalace_chars=len(memory_recall.mempalace_raw),
+        letta_chars=len(memory_recall.letta_structured),
+        errors=list(memory_recall.error_codes),
+    )
     requested_voice = str(start.get("voice") or "").strip()
     upstream = None
     chosen_provider: dict[str, Any] | None = None
@@ -496,6 +507,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 text = str(data.get("text") or "").strip()
                 if not text:
                     continue
+                memory_recorder.add_user(clean_realtime_user_text(text), source="text")
                 diag("client_text_in_session", chars=len(text))
                 if chosen_protocol == CHAT2API_LIVE:
                     await upstream.send(
@@ -585,6 +597,17 @@ async def realtime_voice(websocket: WebSocket) -> None:
             else:
                 event = normalize_realtime_event(data)
             if event:
+                memory_event_type = str(event.get("type") or "")
+                if memory_event_type == "user_transcript":
+                    memory_recorder.add_user(str(event.get("text") or ""), source="voice")
+                elif memory_event_type == "assistant_transcript":
+                    memory_recorder.add_assistant_delta(str(event.get("delta") or ""))
+                elif memory_event_type == "interrupt":
+                    memory_recorder.complete(reason="interrupt")
+                elif memory_event_type == "done":
+                    if chosen_protocol == CHAT2API_LIVE:
+                        memory_recorder.set_assistant_final(str(data.get("text") or ""))
+                    memory_recorder.complete(reason="done")
                 if event.get("type") == "audio" and chosen_protocol == OPENAI_REALTIME:
                     encoded = str(event.get("delta") or "")
                     try:
