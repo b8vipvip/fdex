@@ -114,6 +114,11 @@ internal fun StreamingEmployeeChatScreen(
                 RealtimeVoiceBar(
                     employeeName = employee.name,
                     system = employeeSystemPrompt(employee),
+                    memoryControl = knowledgeStore.remoteMemoryControl(
+                        repo = repo,
+                        employee = employee,
+                        conversationId = "realtime:employee:${employee.id}",
+                    ),
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(horizontal = 12.dp, vertical = 8.dp),

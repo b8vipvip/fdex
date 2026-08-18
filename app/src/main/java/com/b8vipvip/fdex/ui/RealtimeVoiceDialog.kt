@@ -51,6 +51,7 @@ import com.b8vipvip.fdex.network.RealtimeVoiceSession
 internal fun RealtimeVoiceBar(
     employeeName: String,
     system: String?,
+    memoryControl: String?,
     modifier: Modifier = Modifier,
     onEnd: () -> Unit,
     onSessionChanged: (RealtimeVoiceSession?) -> Unit = {},
@@ -79,10 +80,10 @@ internal fun RealtimeVoiceBar(
         if (!permissionGranted) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    DisposableEffect(permissionGranted, system) {
+    DisposableEffect(permissionGranted, system, memoryControl) {
         var created: RealtimeVoiceSession? = null
         if (permissionGranted) {
-            created = RealtimeVoiceSession(context, system) { event ->
+            created = RealtimeVoiceSession(context, system, memoryControl) { event ->
                 when (event) {
                     is RealtimeVoiceEvent.Status -> status = event.value
                     is RealtimeVoiceEvent.Ready -> {

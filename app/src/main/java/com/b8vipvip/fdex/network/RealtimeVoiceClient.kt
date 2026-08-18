@@ -43,6 +43,7 @@ sealed interface RealtimeVoiceEvent {
 class RealtimeVoiceSession(
     context: Context,
     private val system: String?,
+    private val memoryControl: String?,
     private val onEvent: (RealtimeVoiceEvent) -> Unit,
 ) {
     private val appContext = context.applicationContext
@@ -97,6 +98,9 @@ class RealtimeVoiceSession(
                     .put("type", "start")
                     .put("sample_rate", DEFAULT_OUTPUT_SAMPLE_RATE)
                 if (!system.isNullOrBlank()) payload.put("system", system)
+                // Opaque FDEX-only ACL/scope metadata. The FDEX server consumes this field
+                // before opening the upstream realtime provider; it is never forwarded.
+                if (!memoryControl.isNullOrBlank()) payload.put("memory_control", memoryControl)
                 webSocket.send(payload.toString())
                 sendDiagnostic("client_websocket_open")
             }

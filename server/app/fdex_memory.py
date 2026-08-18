@@ -222,6 +222,40 @@ class MemPalaceStore:
             )
         return output[: self.settings.fdex_memory_recall_limit]
 
+    async def recent(
+        self,
+        scope: MemoryScope,
+        allowed_employee_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent verbatim drawers without embedding/Qdrant.
+
+        Realtime needs cross-session context before the first new utterance exists, so a
+        semantic query is not yet available. Reading the newest ACL-authorized drawers
+        directly also keeps voice startup independent from the embedding provider.
+        """
+        await self.initialize()
+        requested = max(1, min(limit or self.settings.fdex_memory_recall_limit * 2, 60))
+        rows = await anyio.to_thread.run_sync(
+            self._read_recent_drawers_sync,
+            scope,
+            allowed_employee_ids,
+            requested,
+        )
+        return [
+            {
+                "drawer_id": str(row["drawer_id"]),
+                "wing": str(row["wing"]),
+                "room": str(row["room"]),
+                "role": str(row["role"]),
+                "conversation_id": str(row["conversation_id"]),
+                "employee_id": str(row["employee_id"]),
+                "text": str(row["content"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     async def add_exchange(
         self,
         *,
@@ -510,6 +544,35 @@ class MemPalaceStore:
                 ).fetchall()
             )
 
+    def _read_recent_drawers_sync(
+        self,
+        scope: MemoryScope,
+        allowed_employee_ids: set[str] | None,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        employee_clause = ""
+        params: list[Any] = [scope.account_id, scope.vault_id]
+        if allowed_employee_ids is not None:
+            normalized = sorted({str(value) for value in allowed_employee_ids if str(value)})
+            if not normalized:
+                return []
+            employee_clause = " AND employee_id IN (" + ",".join("?" for _ in normalized) + ")"
+            params.extend(normalized)
+        params.append(max(1, min(int(limit), 60)))
+        with self._connect() as connection:
+            return list(
+                connection.execute(
+                    f"""
+                    SELECT drawer_id,wing,room,role,conversation_id,employee_id,content,created_at
+                    FROM mempalace_drawers
+                    WHERE account_id=? AND vault_id=?{employee_clause}
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                ).fetchall()
+            )
+
     async def aclose(self) -> None:
         await self._embedding.aclose()
         await self._qdrant.aclose()
@@ -769,6 +832,50 @@ class MemoryCoordinator:
             rendered.append(
                 f"- [{item.get('wing')}/{item.get('room')} score={item.get('similarity', 0):.4f} "
                 f"conversation={item.get('conversation_id')}] {role}：{item.get('text', '')}"
+            )
+        errors = tuple(code for code in (raw_error, letta_error) if code)
+        return MemoryRecall(
+            mempalace_raw="\n".join(rendered)[: self.settings.fdex_memory_context_max_chars],
+            letta_structured=str(structured_value)[: self.settings.fdex_memory_context_max_chars],
+            error_codes=errors,
+        )
+
+    async def recall_recent(
+        self,
+        scope: MemoryScope,
+        *,
+        allowed_employee_ids: set[str] | None = None,
+        include_letta: bool = True,
+    ) -> MemoryRecall:
+        """Bootstrap a new realtime session from cross-session long-term memory."""
+        if not self.settings.fdex_memory_enabled:
+            return MemoryRecall()
+        if allowed_employee_ids is not None and not allowed_employee_ids:
+            raw_task = asyncio.sleep(0, result=([], ""))
+        else:
+            raw_task = self._recall_component(
+                "mempalace",
+                self.mempalace.recent(scope, allowed_employee_ids),
+                [],
+            )
+        if include_letta:
+            query = (
+                "召回最近与当前用户、当前员工、正在进行的项目、偏好、决定、日期、待办和变化相关的"
+                "长期结构化记忆。只返回记忆事实和不确定性，不回答任何新任务。"
+            )
+            letta_task = self._recall_component("letta", self.letta.recall(query, scope), "")
+        else:
+            letta_task = asyncio.sleep(0, result=("", ""))
+        raw, structured = await asyncio.gather(raw_task, letta_task)
+        raw_value, raw_error = raw
+        structured_value, letta_error = structured
+        rendered: list[str] = []
+        # SQL returns newest-first; present the selected window chronologically to the model.
+        for item in reversed(raw_value[: self.settings.fdex_memory_recall_limit * 2]):
+            role = "用户" if item.get("role") == "user" else "AI"
+            rendered.append(
+                f"- [{item.get('created_at', '')} conversation={item.get('conversation_id', '')}] "
+                f"{role}：{item.get('text', '')}"
             )
         errors = tuple(code for code in (raw_error, letta_error) if code)
         return MemoryRecall(
