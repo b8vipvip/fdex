@@ -46,6 +46,7 @@ internal sealed interface Route {
     data object Login : Route
     data object Register : Route
     data object Messages : Route
+    // Internal route name is kept for navigation compatibility; the visible product surface is now Knowledge.
     data object Work : Route
     data object Discover : Route
     data object Me : Route
@@ -145,7 +146,7 @@ fun FdexApp() {
         Route.Login -> "登录"
         Route.Register -> "注册"
         Route.Messages -> "消息"
-        Route.Work -> "工作"
+        Route.Work -> "知识库"
         Route.Discover -> "发现"
         Route.Me -> "我的"
         is Route.EmployeeChat -> repo.employee(current.id)?.name ?: "聊天"
@@ -174,7 +175,6 @@ fun FdexApp() {
                     actions = {
                         when (val current = route) {
                             Route.Messages -> TextButton(onClick = { go(Route.NewGroup) }) { Text("＋", fontSize = 26.sp) }
-                            Route.Work -> TextButton(onClick = { go(Route.NewProject) }) { Text("＋", fontSize = 26.sp) }
                             is Route.EmployeeChat -> {
                                 Box {
                                     TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
@@ -219,7 +219,7 @@ fun FdexApp() {
                 NavigationBar(modifier = Modifier.navigationBarsPadding()) {
                     listOf(
                         Triple<Route, String, String>(Route.Messages, "💬", "消息"),
-                        Triple<Route, String, String>(Route.Work, "📁", "工作"),
+                        Triple<Route, String, String>(Route.Work, "📚", "知识库"),
                         Triple<Route, String, String>(Route.Discover, "🧭", "发现"),
                         Triple<Route, String, String>(Route.Me, "👤", "我的"),
                     ).forEach { (target, icon, label) ->
@@ -239,7 +239,14 @@ fun FdexApp() {
                 Route.Login -> LoginScreen(repo, onLogin = { touch(); history.clear(); route = Route.Messages }, onRegister = { route = Route.Register })
                 Route.Register -> RegisterScreen(repo, onDone = { touch(); history.clear(); route = Route.Messages }, onLogin = { route = Route.Login })
                 Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
-                Route.Work -> WorkScreen(repo, revision, onOpen = { go(Route.ProjectDetail(it)) }, onNew = { go(Route.NewProject) })
+                Route.Work -> KnowledgeScreen(
+                    repo = repo,
+                    revision = revision,
+                    onOpenProject = { go(Route.ProjectDetail(it)) },
+                    onNewProject = { go(Route.NewProject) },
+                    onChanged = { touch() },
+                    snackbar = snackbar,
+                )
                 Route.Discover -> DiscoverScreen()
                 Route.Me -> MeScreen(
                     repo,

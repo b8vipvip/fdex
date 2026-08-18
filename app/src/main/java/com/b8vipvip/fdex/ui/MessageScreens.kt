@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -30,10 +31,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.Employee
+import com.b8vipvip.fdex.data.EmployeeChatAccess
+import com.b8vipvip.fdex.data.EmployeePermissions
+import com.b8vipvip.fdex.data.KnowledgeStore
 import com.b8vipvip.fdex.data.isPrivateAssistant
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.ClientAiApi
@@ -119,6 +124,8 @@ internal fun EmployeeManageScreen(
     onChanged: () -> Unit,
 ) {
     revision.hashCode()
+    val context = LocalContext.current
+    val knowledgeStore = remember { KnowledgeStore(context) }
     var industry by remember { mutableStateOf(repo.profile().industry) }
     LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -141,6 +148,7 @@ internal fun EmployeeManageScreen(
             )
         }
         items(repo.employees(), key = { it.id }) { employee ->
+            val permissions = knowledgeStore.permissionsFor(employee.id)
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -153,6 +161,7 @@ internal fun EmployeeManageScreen(
                                 color = if (employee.rolePrompt.isBlank()) MaterialTheme.colorScheme.error else Emerald,
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            Text(permissionSummary(permissions), color = Muted, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
@@ -208,6 +217,11 @@ private fun EmployeeEditor(
     snackbar: SnackbarHostState,
     onDone: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val knowledgeStore = remember { KnowledgeStore(context) }
+    val initialPermissions = remember(initial?.id) {
+        initial?.let { knowledgeStore.permissionsFor(it.id) } ?: EmployeePermissions()
+    }
     val scope = rememberCoroutineScope()
     var name by remember(initial?.id) { mutableStateOf(initial?.name.orEmpty()) }
     var department by remember(initial?.id) { mutableStateOf(initial?.department ?: randomDepartment()) }
@@ -215,6 +229,12 @@ private fun EmployeeEditor(
     var idea by remember(initial?.id) { mutableStateOf("") }
     var prompt by remember(initial?.id) { mutableStateOf(initial?.rolePrompt.orEmpty()) }
     var generating by remember { mutableStateOf(false) }
+    var knowledgeRead by remember(initial?.id) { mutableStateOf(initialPermissions.knowledgeRead) }
+    var knowledgeWrite by remember(initial?.id) { mutableStateOf(initialPermissions.knowledgeWrite) }
+    var chatAccessMode by remember(initial?.id) { mutableStateOf(initialPermissions.chatAccessMode) }
+    val readableEmployeeIds = remember(initial?.id) {
+        mutableStateListOf<Long>().apply { addAll(initialPermissions.readableEmployeeIds) }
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -226,7 +246,7 @@ private fun EmployeeEditor(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音只发送下面这份 Prompt，不再自动追加隐藏员工提示词。",
+            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音仍只使用员工自己的 Prompt；知识库与聊天权限由客户端独立 ACL 控制，不会写进 Prompt。",
             color = Muted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -297,17 +317,87 @@ private fun EmployeeEditor(
             modifier = Modifier.fillMaxWidth(),
         )
 
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("权限设置", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "权限决定这个员工回答时能读取哪些本地资料。所有聊天仍由系统自动归档；“写入知识库”决定该员工产生的知识摘要是否可共享给其他拥有读取权限的员工。",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                PermissionCheckRow(
+                    title = "读取知识库",
+                    description = "允许检索企业知识库中已标记为“员工可召回”的摘要和关键词。",
+                    checked = knowledgeRead,
+                ) { knowledgeRead = it }
+                PermissionCheckRow(
+                    title = "写入知识库",
+                    description = "允许该员工后续聊天整理出的知识成为共享知识；关闭时聊天仍会归档，但只用于管理和显式聊天记录权限。",
+                    checked = knowledgeWrite,
+                ) { knowledgeWrite = it }
+
+                Text("聊天记录读取范围", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                listOf(
+                    EmployeeChatAccess.NONE to "不读取聊天记录",
+                    EmployeeChatAccess.SELF to "仅读取自己的历史聊天",
+                    EmployeeChatAccess.ALL to "读取所有员工聊天记录",
+                    EmployeeChatAccess.SELECTED to "只读取指定员工聊天记录",
+                ).forEach { (mode, label) ->
+                    OutlinedButton(
+                        onClick = { chatAccessMode = mode },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(if (chatAccessMode == mode) "✓ $label" else label) }
+                }
+
+                if (chatAccessMode == EmployeeChatAccess.SELECTED) {
+                    Text("指定可读取员工", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    val candidates = repo.employees(activeOnly = false).filter { it.id != initial?.id }
+                    if (candidates.isEmpty()) {
+                        Text("当前没有其他员工可选择", color = Muted)
+                    } else {
+                        candidates.forEach { employee ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    if (readableEmployeeIds.contains(employee.id)) {
+                                        readableEmployeeIds.remove(employee.id)
+                                    } else {
+                                        readableEmployeeIds.add(employee.id)
+                                    }
+                                },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = readableEmployeeIds.contains(employee.id),
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            if (!readableEmployeeIds.contains(employee.id)) readableEmployeeIds.add(employee.id)
+                                        } else {
+                                            readableEmployeeIds.remove(employee.id)
+                                        }
+                                    },
+                                )
+                                Column {
+                                    Text("${employee.name} · ${employee.position}")
+                                    Text(employee.department, color = Muted, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Button(
             enabled = name.isNotBlank() && department.isNotBlank() && position.isNotBlank() && prompt.isNotBlank() && !generating,
             onClick = {
-                if (initial == null) {
+                val employeeId = if (initial == null) {
                     repo.addEmployee(
                         name = name,
                         department = department,
                         position = position,
                         prompt = prompt,
                         industry = repo.profile().industry,
-                    )
+                    ).id
                 } else {
                     repo.updateEmployee(
                         initial.copy(
@@ -317,12 +407,55 @@ private fun EmployeeEditor(
                             rolePrompt = prompt.trim(),
                         ),
                     )
+                    initial.id
                 }
+                knowledgeStore.savePermissions(
+                    employeeId,
+                    EmployeePermissions(
+                        knowledgeRead = knowledgeRead,
+                        knowledgeWrite = knowledgeWrite,
+                        chatAccessMode = chatAccessMode,
+                        readableEmployeeIds = readableEmployeeIds.toList(),
+                    ),
+                )
                 onDone()
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (initial == null) "保存员工" else "保存修改") }
     }
+}
+
+@Composable
+private fun PermissionCheckRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(description, color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private fun permissionSummary(permissions: EmployeePermissions): String {
+    val knowledge = buildList {
+        if (permissions.knowledgeRead) add("知识库读")
+        if (permissions.knowledgeWrite) add("知识库写")
+    }.joinToString("/").ifBlank { "知识库无权限" }
+    val chat = when (permissions.chatAccessMode) {
+        EmployeeChatAccess.NONE -> "不读聊天"
+        EmployeeChatAccess.ALL -> "全部聊天"
+        EmployeeChatAccess.SELECTED -> "指定员工聊天(${permissions.readableEmployeeIds.size})"
+        else -> "仅自己聊天"
+    }
+    return "权限：$knowledge · $chat"
 }
 
 @Composable
@@ -387,7 +520,7 @@ internal fun NewGroupScreen(repo: AppRepository, onDone: (Long) -> Unit) {
                 },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                androidx.compose.material3.Checkbox(
+                Checkbox(
                     checked = selected.contains(employee.id),
                     onCheckedChange = { checked -> if (checked) selected.add(employee.id) else selected.remove(employee.id) },
                 )
