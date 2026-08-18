@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     fdex_memory_proxy_url: str = "http://127.0.0.1:18100/v1"
     fdex_memory_proxy_token: str = ""
     fdex_memory_proxy_port: int = Field(default=18100, ge=1, le=65535)
+    fdex_memory_embedding_model: str = "text-embedding-3-small"
     fdex_memory_embedding_dimension: int = Field(default=1536, ge=128, le=4096)
     fdex_memory_embedding_max_chars: int = Field(default=12000, ge=256, le=100000)
 
