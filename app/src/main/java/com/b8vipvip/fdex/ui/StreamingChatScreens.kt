@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.ChatMessage
+import com.b8vipvip.fdex.data.ClientPreferences
 import com.b8vipvip.fdex.data.Employee
 import com.b8vipvip.fdex.data.GroupMessage
 import com.b8vipvip.fdex.data.KnowledgeStore
@@ -67,6 +68,9 @@ internal fun StreamingEmployeeChatScreen(
     val context = LocalContext.current
     val employee = repo.employee(employeeId) ?: return
     val knowledgeStore = remember { KnowledgeStore(context) }
+    val clientPreferences = remember { ClientPreferences(context) }
+    val showReasoning = clientPreferences.showReasoning()
+    val autoScrollChat = clientPreferences.autoScrollChat()
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val realtimePendingUsers = remember { mutableListOf<ChatMessage>() }
@@ -78,9 +82,11 @@ internal fun StreamingEmployeeChatScreen(
     var streamStatus by remember { mutableStateOf("") }
     var streamReasoning by remember { mutableStateOf("") }
 
-    LaunchedEffect(revision, streamMarkdown.length, streamStatus, busy) {
-        val last = listState.layoutInfo.totalItemsCount - 1
-        if (last >= 0) listState.animateScrollToItem(last)
+    LaunchedEffect(revision, streamMarkdown.length, streamStatus, busy, autoScrollChat) {
+        if (autoScrollChat) {
+            val last = listState.layoutInfo.totalItemsCount - 1
+            if (last >= 0) listState.animateScrollToItem(last)
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -104,7 +110,7 @@ internal fun StreamingEmployeeChatScreen(
                         LiveAssistantMessage(
                             markdown = streamMarkdown,
                             status = streamStatus,
-                            reasoning = streamReasoning,
+                            reasoning = if (showReasoning) streamReasoning else "",
                         )
                     }
                 }
@@ -139,7 +145,7 @@ internal fun StreamingEmployeeChatScreen(
                         if (reply.isNotBlank()) {
                             val stored = repo.addMessage(employeeId, "employee", reply)
                             val user = if (realtimePendingUsers.isNotEmpty()) realtimePendingUsers.removeAt(0) else null
-                            if (user != null) {
+                            if (user != null && knowledgeStore.automaticArchiveEnabled()) {
                                 val entry = knowledgeStore.rememberEmployeeExchange(
                                     repo = repo,
                                     employeeId = employeeId,
@@ -215,19 +221,21 @@ internal fun StreamingEmployeeChatScreen(
                         snackbar.showSnackbar(message)
                         repo.addMessage(employeeId, "employee", "暂时无法完成请求：$message")
                     }
-                    val knowledge = knowledgeStore.rememberEmployeeExchange(
-                        repo = repo,
-                        employeeId = employeeId,
-                        user = userMessage,
-                        assistant = assistantMessage,
-                        allowSharing = result.content.isNotBlank(),
-                    )
+                    val knowledge = if (knowledgeStore.automaticArchiveEnabled()) {
+                        knowledgeStore.rememberEmployeeExchange(
+                            repo = repo,
+                            employeeId = employeeId,
+                            user = userMessage,
+                            assistant = assistantMessage,
+                            allowSharing = result.content.isNotBlank(),
+                        )
+                    } else null
                     busy = false
                     streamMarkdown = ""
                     streamStatus = ""
                     streamReasoning = ""
                     onChanged()
-                    launch {
+                    if (knowledge != null) launch {
                         KnowledgeOrganizer.enrich(knowledgeStore, knowledge.id)
                         onChanged()
                     }
@@ -250,6 +258,9 @@ internal fun StreamingGroupChatScreen(
     val group = repo.group(groupId) ?: return
     val members = group.memberIds.mapNotNull { repo.employee(it) }
     val knowledgeStore = remember { KnowledgeStore(context) }
+    val clientPreferences = remember { ClientPreferences(context) }
+    val showReasoning = clientPreferences.showReasoning()
+    val autoScrollChat = clientPreferences.autoScrollChat()
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var text by remember { mutableStateOf("") }
@@ -259,9 +270,11 @@ internal fun StreamingGroupChatScreen(
     var streamStatus by remember { mutableStateOf("") }
     var streamReasoning by remember { mutableStateOf("") }
 
-    LaunchedEffect(revision, streamMarkdown.length, streamStatus, busy) {
-        val last = listState.layoutInfo.totalItemsCount - 1
-        if (last >= 0) listState.animateScrollToItem(last)
+    LaunchedEffect(revision, streamMarkdown.length, streamStatus, busy, autoScrollChat) {
+        if (autoScrollChat) {
+            val last = listState.layoutInfo.totalItemsCount - 1
+            if (last >= 0) listState.animateScrollToItem(last)
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -291,7 +304,7 @@ internal fun StreamingGroupChatScreen(
                         LiveAssistantMessage(
                             markdown = streamMarkdown,
                             status = streamStatus,
-                            reasoning = streamReasoning,
+                            reasoning = if (showReasoning) streamReasoning else "",
                         )
                     }
                 }
@@ -343,15 +356,17 @@ internal fun StreamingGroupChatScreen(
                         "暂时无法完成：${result.failure ?: "AI 没有返回正文或媒体内容"}"
                     }
                     val assistantMessage = repo.addGroupMessage(groupId, "employee", target.name, reply)
-                    val knowledge = knowledgeStore.rememberGroupExchange(
-                        repo = repo,
-                        groupId = groupId,
-                        targetEmployeeId = target.id,
-                        targetEmployeeName = target.name,
-                        user = userMessage,
-                        assistant = assistantMessage,
-                        allowSharing = result.content.isNotBlank(),
-                    )
+                    val knowledge = if (knowledgeStore.automaticArchiveEnabled()) {
+                        knowledgeStore.rememberGroupExchange(
+                            repo = repo,
+                            groupId = groupId,
+                            targetEmployeeId = target.id,
+                            targetEmployeeName = target.name,
+                            user = userMessage,
+                            assistant = assistantMessage,
+                            allowSharing = result.content.isNotBlank(),
+                        )
+                    } else null
                     if (result.content.isBlank()) snackbar.showSnackbar(result.failure ?: "AI 没有返回正文或媒体内容")
                     busy = false
                     liveEmployee = null
@@ -359,7 +374,7 @@ internal fun StreamingGroupChatScreen(
                     streamStatus = ""
                     streamReasoning = ""
                     onChanged()
-                    launch {
+                    if (knowledge != null) launch {
                         KnowledgeOrganizer.enrich(knowledgeStore, knowledge.id)
                         onChanged()
                     }
