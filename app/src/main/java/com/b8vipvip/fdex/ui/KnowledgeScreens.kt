@@ -68,7 +68,7 @@ internal fun KnowledgeScreen(
     var organizing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val imported = store.backfill(repo)
+        val imported = store.backfillIfNeeded(repo)
         val enriched = KnowledgeOrganizer.enrichPending(store, limit = 5)
         if (imported > 0 || enriched > 0) onChanged()
     }
