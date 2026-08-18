@@ -7,63 +7,9 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply_memory_upgrade:
-    name: Apply memory upgrade
-    if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/mempalace-letta-system-memory
-          fetch-depth: 0
-      - name: Materialize and apply upgrade
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('app/src/main/java/com/b8vipvip/fdex/ui/MessageScreens.kt')
-          text = path.read_text(encoding='utf-8')
-          current = '            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音仍只使用员工自己的 Prompt；知识库与聊天权限由客户端独立 ACL 控制，不会写进 Prompt。",\n'
-          expected = '            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音只发送下面这份 Prompt，不再自动追加隐藏员工提示词。",\n'
-          if current not in text:
-              raise SystemExit('MessageScreens compatibility anchor missing')
-          path.write_text(text.replace(current, expected, 1), encoding='utf-8')
-          PY
-          cat .fdex-memory-payload/* > /tmp/fdex-memory-bootstrap.txt
-          python3 - <<'PY'
-          import base64
-          import gzip
-          from pathlib import Path
-          raw = Path('/tmp/fdex-memory-bootstrap.txt').read_text(encoding='utf-8')
-          Path('/tmp/apply_memory_upgrade.py').write_bytes(gzip.decompress(base64.b64decode(raw)))
-          PY
-          python3 /tmp/apply_memory_upgrade.py
-          python3 -m py_compile \
-            server/app/config.py \
-            server/app/fdex_memory.py \
-            server/app/memory_middleware.py \
-            server/app/memory_provider_proxy.py \
-            server/app/memory_semantic.py \
-            server/app/main.py
-          git diff --check
-      - name: Commit generated implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          if git diff --cached --quiet; then
-            echo 'No generated changes to commit.'
-            exit 0
-          fi
-          git commit -m '接入 MemPalace 与 Letta 多 system 记忆层'
-          git push origin HEAD:agent/mempalace-letta-system-memory
-
   android:
     name: Android Debug APK
     runs-on: ubuntu-latest
