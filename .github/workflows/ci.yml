@@ -23,6 +23,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/com/b8vipvip/fdex/ui/MessageScreens.kt')
+          text = path.read_text(encoding='utf-8')
+          current = '            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音仍只使用员工自己的 Prompt；知识库与聊天权限由客户端独立 ACL 控制，不会写进 Prompt。",\n'
+          expected = '            "员工 Prompt 完全保存在客户端员工资料中。聊天、群聊和实时语音只发送下面这份 Prompt，不再自动追加隐藏员工提示词。",\n'
+          if current not in text:
+              raise SystemExit('MessageScreens compatibility anchor missing')
+          path.write_text(text.replace(current, expected, 1), encoding='utf-8')
+          PY
           cat .fdex-memory-payload/* > /tmp/fdex-memory-bootstrap.txt
           python3 - <<'PY'
           import base64
