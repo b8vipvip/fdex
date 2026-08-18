@@ -30,7 +30,7 @@ FDEX 不再把员工 `rolePrompt` 定义成“唯一 system prompt”。普通 A
 - SQLite 保存 MemPalace verbatim drawer 原文；
 - Qdrant 只保存向量、`scope_key`、`drawer_id`、`employee_id` 等检索元数据；
 - `content_hash + conversation_id + role + scope` 生成确定性 ID，重复写入幂等；
-- 远程 embedding，不加载 Android/服务器本地 embedding 模型；
+- embedding 优先调用现有 FDEX 供应商的 OpenAI-compatible `/embeddings`，默认模型 `text-embedding-3-small`；若现有供应商不提供 embedding 接口，则由远程 AI 提取语义标签并生成确定性归一化兼容向量，不加载 Android/服务器本地 embedding 模型；
 - MemPalace 原文召回和 Letta 结构化召回并发执行；
 - 单个记忆组件超时或故障时 fail-open，主聊天仍可继续；
 - Letta 一账户作用域一 Agent，禁止跨作用域复用；
@@ -40,13 +40,17 @@ FDEX 新增的 `memory-provider-proxy` 复用 `server/data/ai-providers.db` 中�
 
 ## 账户隔离
 
-Android 为每个本地 FDEX 账户生成一个随机高熵 memory scope token。发送普通 HTTP AI 请求时，客户端把 scope 和 ACL 放进 `FDEX_MEMORY_V2` 控制标记；FDEX 服务端在进入供应商之前消费并删除这个标记，第三方模型不应看到它。
+Android 为每个本地 FDEX 账户生成一个随机高熵 memory scope token。发送普通 HTTP AI 请求时，客户端把 scope 和 ACL 放进 `FDEX_MEMORY_V2` 控制标记；FDEX 服务端在进入供应商之前消费并删除这个标记，第三方模型不应看到它。即使远程记忆功能临时关闭或标记内容损坏，服务端也会先剥离内部标记再继续主 AI 请求。
 
 服务端把 token 规范化为：
 
 `acct.<opaque-account-token>.vault.default`
 
 MemPalace SQLite、Qdrant filter 和 Letta Agent 映射都使用同一 scope。
+
+## System 上下文预算
+
+FDEX 会限制最终 system 总长度，但不会再按“先到先占满”的方式截断。员工角色层权重更高，同时本地知识、MemPalace 原始历史和 Letta 结构化记忆各自保留上下文份额；短层未使用的预算会继续供较长层使用。这样长知识库结果不会把 MemPalace/Letta 整层挤掉。
 
 ## 实时语音
 
