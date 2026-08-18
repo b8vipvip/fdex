@@ -1,0 +1,40 @@
+name: Apply profile settings center patch
+
+on:
+  push:
+    branches: ["agent/profile-settings-center"]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/profile-settings-center
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply refactor
+        run: python .fdex/profile_settings_patch.py
+      - name: Remove patch helpers
+        run: git rm .fdex/profile_settings_patch.py .github/workflows/profile-settings-patch.yml
+      - name: Validate diff
+        run: git diff --check
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "重构我的页面与客户端设置中心"
+          git push origin HEAD:agent/profile-settings-center
