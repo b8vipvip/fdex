@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import math
+from types import SimpleNamespace
 
+import httpx
+
+from app import memory_provider_proxy
 from app.fdex_memory import MemoryRecall, MemoryScope, MemPalaceStore
 from app.memory_middleware import (
     compose_system_layers,
@@ -115,6 +120,35 @@ def test_mempalace_qdrant_filter_respects_employee_acl() -> None:
     assert len(all_filter["must"]) == 1
     assert self_filter["must"][1]["match"] == {"value": "7"}
     assert set(selected_filter["must"][1]["match"]["any"]) == {"7", "9"}
+
+
+def test_native_remote_embedding_is_preferred_when_provider_supports_it(monkeypatch) -> None:
+    class FakeHttp:
+        async def post(self, url: str, **kwargs):
+            assert url.endswith("/embeddings")
+            assert kwargs["json"]["model"] == "text-embedding-3-small"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"object": "embedding", "index": 1, "embedding": [0.4, 0.5, 0.6]},
+                    ],
+                    "usage": {"prompt_tokens": 3, "total_tokens": 3},
+                },
+            )
+
+    monkeypatch.setattr(
+        memory_provider_proxy,
+        "_providers",
+        lambda: [{"api_key": "secret", "base_url": "https://example.invalid/v1"}],
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(http=FakeHttp())))
+    result = asyncio.run(memory_provider_proxy._native_embeddings(request, ["第一条", "第二条"]))
+    assert result is not None
+    assert result["fdex_embedding_source"] == "native_remote"
+    assert result["data"][0]["embedding"] == [0.1, 0.2, 0.3]
+    assert result["data"][1]["embedding"] == [0.4, 0.5, 0.6]
 
 
 def test_semantic_hash_vector_is_deterministic_normalized_and_no_local_model() -> None:
