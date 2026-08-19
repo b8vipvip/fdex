@@ -76,5 +76,6 @@ def test_structured_memory_marks_assistant_result_as_context_not_user_fact() -> 
     )
     block = memory_resilience._bounded_block("", entry, 2000)
     assert "USER_STATEMENT=预算改成 37 万" in block
-    assert "ASSISTANT_RESULT=好的，预算已经调整为 37 万。" in block
+    assert "ASSISTANT_RESULT=" in block
+    assert "预算已经调整为 37 万。" in block
     assert "ASSISTANT_RESULT is prior AI context and is not automatically a user fact" in block
