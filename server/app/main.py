@@ -16,7 +16,7 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
-from app.memory_middleware import FdexMemoryMiddleware
+from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
@@ -54,7 +54,10 @@ app.add_middleware(
 # Runs before the AI router sees the request. It consumes the Android-only memory
 # control marker, recalls MemPalace/Letta, and upgrades the old single rolePrompt
 # contract into ordered FDEX system layers. All memory failures are fail-open.
-app.add_middleware(FdexMemoryMiddleware)
+# The stream-safe wrapper replays the rewritten request body once, then delegates
+# subsequent ASGI receive() calls so StreamingResponse can wait for a real disconnect
+# instead of entering a CPU-spinning empty-request loop.
+app.add_middleware(StreamSafeFdexMemoryMiddleware)
 
 
 @app.middleware("http")
