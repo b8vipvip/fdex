@@ -2,6 +2,7 @@ package com.b8vipvip.fdex.network
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClientAiApiStreamParserTest {
@@ -42,5 +43,10 @@ class ClientAiApiStreamParserTest {
         assertNull(ClientAiApi.extractSseData(": heartbeat"))
         assertNull(ClientAiApi.extractSseData("event: message"))
         assertNull(ClientAiApi.extractSseData(""))
+    }
+
+    @Test
+    fun attachmentIdleBudgetOutlivesBrowserUploadPreparation() {
+        assertTrue(ClientAiApi.ATTACHMENT_STREAM_READ_TIMEOUT_SECONDS >= 120L)
     }
 }
