@@ -4,11 +4,12 @@ import asyncio
 import logging
 import re
 import unicodedata
+from datetime import UTC, datetime
 from typing import Any
 
 import anyio
 
-from app.fdex_memory import LettaMemory, MemPalaceStore, MemoryOperationError, MemoryScope
+from app.fdex_memory import LettaMemory, MemPalaceStore, MemoryOperationError, MemoryScope, safe_id
 
 logger = logging.getLogger(__name__)
 _PATCHED = False
@@ -16,6 +17,7 @@ _ORIGINAL_MEMPALACE_SEARCH = MemPalaceStore.search
 
 _LATIN = re.compile(r"[a-z0-9_+.#/-]{2,}", re.IGNORECASE)
 _CJK = re.compile(r"[\u4e00-\u9fff]{2,}")
+_WHITESPACE = re.compile(r"\s+")
 
 
 def _tokens(value: str) -> set[str]:
@@ -40,6 +42,40 @@ def _lexical_score(query: str, text: str) -> float:
     overlap = len(query_tokens & text_tokens) / max(1, len(query_tokens))
     phrase = 0.45 if query_normalized in text_normalized else 0.0
     return min(1.0, overlap + phrase)
+
+
+def _compact(value: str, limit: int) -> str:
+    return _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", value or "")).strip()[:limit]
+
+
+def _structured_entry(user_text: str, assistant_text: str, conversation_id: str) -> str:
+    user = _compact(user_text, 1400)
+    assistant = _compact(assistant_text, 1400)
+    tags = sorted(_tokens(f"{user} {assistant}"), key=lambda item: (-len(item), item))[:18]
+    return "\n".join(
+        [
+            "[FDEX_STRUCTURED_MEMORY_V2]",
+            f"time={datetime.now(UTC).isoformat()}",
+            f"conversation={safe_id(conversation_id, 'unknown')}",
+            f"tags={','.join(tags)}",
+            f"USER_STATEMENT={user}",
+            f"ASSISTANT_RESULT={assistant}",
+        ]
+    )
+
+
+def _bounded_block(existing: str, entry: str, max_chars: int) -> str:
+    header = (
+        "FDEX structured long-term memory. USER_STATEMENT is user-provided data; "
+        "ASSISTANT_RESULT is prior AI context and is not automatically a user fact.\n"
+    )
+    old = existing.strip()
+    combined = f"{old}\n\n{entry}".strip() if old else entry
+    budget = max(1000, max_chars)
+    if len(header) + len(combined) <= budget:
+        return (header + combined).strip()
+    tail_budget = max(1, budget - len(header))
+    return (header + combined[-tail_budget:]).strip()
 
 
 async def _mempalace_search_resilient(
@@ -126,22 +162,7 @@ async def _mempalace_search_resilient(
     )[: self.settings.fdex_memory_recall_limit]
 
 
-async def _letta_recall_from_block(self: LettaMemory, query: str, scope: MemoryScope) -> str:
-    """Recall Letta structured memory without generating another model response.
-
-    Letta's `human` core-memory block is the persistent structured memory that the agent
-    updates during the asynchronous MEMORY_UPDATE write. Reading that block is a local Letta
-    API operation, so a new employee message no longer triggers `[RECALL_ONLY]` against the
-    same chat2api/provider pool before the real user request begins.
-    """
-    if not query.strip() or not self.settings.fdex_letta_enabled:
-        return ""
-    agent_id = await self.ensure_agent(scope)
-    if not agent_id:
-        return ""
-
-    timeout_seconds = min(3.0, max(1.0, float(self.settings.fdex_letta_timeout_seconds)))
-
+async def _retrieve_human_block(self: LettaMemory, agent_id: str, timeout_seconds: float) -> Any:
     def retrieve() -> Any:
         return self._get_client().agents.blocks.retrieve(
             agent_id=agent_id,
@@ -150,7 +171,7 @@ async def _letta_recall_from_block(self: LettaMemory, query: str, scope: MemoryS
         )
 
     try:
-        block = await asyncio.wait_for(
+        return await asyncio.wait_for(
             anyio.to_thread.run_sync(retrieve, abandon_on_cancel=True),
             timeout=timeout_seconds + 0.5,
         )
@@ -159,10 +180,73 @@ async def _letta_recall_from_block(self: LettaMemory, query: str, scope: MemoryS
     except Exception as exc:
         raise self._operation_error(exc, "block_recall") from exc
 
+
+async def _letta_recall_from_block(self: LettaMemory, query: str, scope: MemoryScope) -> str:
+    """Recall Letta structured memory without generating another model response."""
+    if not query.strip() or not self.settings.fdex_letta_enabled:
+        return ""
+    agent_id = await self.ensure_agent(scope)
+    if not agent_id:
+        return ""
+    timeout_seconds = min(3.0, max(1.0, float(self.settings.fdex_letta_timeout_seconds)))
+    block = await _retrieve_human_block(self, agent_id, timeout_seconds)
     value = getattr(block, "value", "")
     if not isinstance(value, str):
         value = str(value or "")
     return value.strip()[: self.settings.fdex_memory_context_max_chars]
+
+
+async def _letta_remember_to_block(
+    self: LettaMemory,
+    *,
+    scope: MemoryScope,
+    user_text: str,
+    assistant_text: str,
+    conversation_id: str,
+) -> bool:
+    """Persist structured Letta memory by updating the core block, never by model generation.
+
+    MemPalace remains the verbatim source of truth. Letta's human block receives a bounded,
+    explicitly typed timeline so prior AI text cannot silently become a user fact. This keeps
+    memory writes independent from the chat2api generation capacity used by the live employee.
+    """
+    if not self.settings.fdex_letta_enabled:
+        return False
+    if not user_text.strip():
+        return True
+    agent_id = await self.ensure_agent(scope)
+    if not agent_id:
+        raise MemoryOperationError("letta_agent_unavailable")
+
+    timeout_seconds = min(3.0, max(1.0, float(self.settings.fdex_letta_timeout_seconds)))
+    entry = _structured_entry(user_text, assistant_text, conversation_id)
+
+    async with self._lock:
+        block = await _retrieve_human_block(self, agent_id, timeout_seconds)
+        existing = getattr(block, "value", "")
+        if not isinstance(existing, str):
+            existing = str(existing or "")
+        value = _bounded_block(existing, entry, self.settings.fdex_memory_context_max_chars)
+
+        def update() -> Any:
+            return self._get_client().agents.blocks.update(
+                agent_id=agent_id,
+                block_label="human",
+                value=value,
+                limit=max(1000, self.settings.fdex_memory_context_max_chars),
+                request_options={"timeout_in_seconds": timeout_seconds},
+            )
+
+        try:
+            await asyncio.wait_for(
+                anyio.to_thread.run_sync(update, abandon_on_cancel=True),
+                timeout=timeout_seconds + 0.5,
+            )
+        except TimeoutError as exc:
+            raise MemoryOperationError("letta_block_write_timeout") from exc
+        except Exception as exc:
+            raise self._operation_error(exc, "block_write") from exc
+    return True
 
 
 def apply_memory_resilience_patches() -> None:
@@ -171,4 +255,5 @@ def apply_memory_resilience_patches() -> None:
         return
     MemPalaceStore.search = _mempalace_search_resilient
     LettaMemory.recall = _letta_recall_from_block
+    LettaMemory.remember = _letta_remember_to_block
     _PATCHED = True
