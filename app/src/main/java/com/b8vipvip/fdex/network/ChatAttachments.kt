@@ -14,8 +14,9 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
 private const val ATTACHMENT_MARKER = "FDEX_ATTACHMENTS_V1"
-private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
-private const val IMAGE_COMPRESS_THRESHOLD_BYTES = 1024 * 1024
+internal const val MAX_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024
+internal const val MAX_IMAGE_PAYLOAD_BYTES = 2 * 1024 * 1024
+private const val IMAGE_PASSTHROUGH_BYTES = 1024 * 1024
 private const val MAX_IMAGE_EDGE = 1600
 private const val MAX_AUDIO_BYTES = 16 * 1024 * 1024
 private const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
@@ -78,6 +79,12 @@ data class PreparedAiContent(
     val audio: AiAudioPayload? = null,
     val documents: List<AiDocumentPayload> = emptyList(),
 )
+
+
+private sealed interface ImagePrepareResult {
+    data class Success(val payload: AiImagePayload) : ImagePrepareResult
+    data class Failure(val reason: String) : ImagePrepareResult
+}
 
 
 fun chatAttachmentFromUri(context: Context, uri: Uri, kind: ChatAttachmentKind): ChatAttachment {
@@ -192,12 +199,10 @@ fun prepareAiContent(context: Context?, content: String): PreparedAiContent {
                 } else if (context == null) {
                     notes += "图片《${attachment.name}》已附加，但当前调用没有文件读取上下文。"
                 } else {
-                    val bytes = readAttachmentBytes(context, attachment, MAX_IMAGE_BYTES)
-                    if (bytes == null) {
-                        notes += "图片《${attachment.name}》未送入视觉模型：文件不可读取或超过 8 MB。"
-                    } else {
-                        val mime = lowerMime.takeIf { it.startsWith("image/") } ?: "image/jpeg"
-                        images += imageBytesToPayload(bytes, mime)
+                    val mime = lowerMime.takeIf { it.startsWith("image/") } ?: "image/jpeg"
+                    when (val result = prepareImagePayload(context, attachment, mime)) {
+                        is ImagePrepareResult.Success -> images += result.payload
+                        is ImagePrepareResult.Failure -> notes += "图片《${attachment.name}》未送入视觉模型：${result.reason}"
                     }
                 }
             }
@@ -295,6 +300,9 @@ fun formatAttachmentSize(size: Long): String = when {
 }
 
 
+internal fun imageSourceSizeAllowed(size: Long): Boolean = size < 0L || size <= MAX_IMAGE_SOURCE_BYTES
+
+
 private fun audioFormat(attachment: ChatAttachment): String? {
     val mime = attachment.mimeType.lowercase()
     val name = attachment.name.lowercase()
@@ -306,58 +314,104 @@ private fun audioFormat(attachment: ChatAttachment): String? {
 }
 
 
-private fun imageBytesToPayload(bytes: ByteArray, mimeType: String): AiImagePayload {
-    if (bytes.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        return AiImagePayload("data:$mimeType;base64,$encoded")
+private fun prepareImagePayload(
+    context: Context,
+    attachment: ChatAttachment,
+    mimeType: String,
+): ImagePrepareResult {
+    val uri = runCatching { Uri.parse(attachment.uri) }.getOrNull()
+        ?: return ImagePrepareResult.Failure("文件地址无效。")
+    val sourceSize = resolvedAttachmentSize(context, attachment, uri)
+    if (!imageSourceSizeAllowed(sourceSize)) {
+        return ImagePrepareResult.Failure("原始图片超过 50 MB，请先在相册中缩小或另存后重试。")
     }
 
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        return AiImagePayload("data:$mimeType;base64,$encoded")
+    val boundsRead = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+            true
+        } ?: false
+    }.getOrDefault(false)
+    if (!boundsRead || bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        return ImagePrepareResult.Failure("文件不可读取或不是有效图片。")
+    }
+
+    if (sourceSize in 0..IMAGE_PASSTHROUGH_BYTES.toLong()) {
+        val bytes = readAttachmentBytes(context, attachment, IMAGE_PASSTHROUGH_BYTES)
+        if (bytes != null && bytes.isNotEmpty()) {
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            return ImagePrepareResult.Success(AiImagePayload("data:$mimeType;base64,$encoded"))
+        }
     }
 
     var sampleSize = 1
     while (maxOf(bounds.outWidth / sampleSize, bounds.outHeight / sampleSize) > MAX_IMAGE_EDGE * 2) {
         sampleSize *= 2
     }
-    val decoded = BitmapFactory.decodeByteArray(
-        bytes,
-        0,
-        bytes.size,
-        BitmapFactory.Options().apply { inSampleSize = sampleSize },
-    ) ?: run {
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        return AiImagePayload("data:$mimeType;base64,$encoded")
-    }
-
-    val longest = maxOf(decoded.width, decoded.height)
-    val scaled = if (longest > MAX_IMAGE_EDGE) {
-        val ratio = MAX_IMAGE_EDGE.toFloat() / longest.toFloat()
-        Bitmap.createScaledBitmap(
-            decoded,
-            (decoded.width * ratio).roundToInt().coerceAtLeast(1),
-            (decoded.height * ratio).roundToInt().coerceAtLeast(1),
-            true,
-        )
-    } else {
-        decoded
-    }
-
-    return try {
-        val out = ByteArrayOutputStream()
-        if (!scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
-            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            AiImagePayload("data:$mimeType;base64,$encoded")
-        } else {
-            val encoded = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-            AiImagePayload("data:image/jpeg;base64,$encoded")
+    val decoded = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(
+                input,
+                null,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
         }
+    }.getOrNull() ?: return ImagePrepareResult.Failure("图片解码失败，请重新选择图片或另存为 JPG/PNG 后重试。")
+
+    val payload = bitmapToBoundedImagePayload(decoded)
+        ?: return ImagePrepareResult.Failure("图片压缩失败，为避免发送超大请求，原图没有直接上传。")
+    return ImagePrepareResult.Success(payload)
+}
+
+
+private fun resolvedAttachmentSize(context: Context, attachment: ChatAttachment, uri: Uri): Long {
+    if (attachment.size >= 0L) return attachment.size
+    return runCatching {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+            descriptor.length.takeIf { it >= 0L } ?: -1L
+        } ?: -1L
+    }.getOrDefault(-1L)
+}
+
+
+private fun bitmapToBoundedImagePayload(bitmap: Bitmap): AiImagePayload? {
+    var working = bitmap
+    try {
+        val edgeTargets = intArrayOf(MAX_IMAGE_EDGE, 1400, 1200, 1024)
+        val qualities = intArrayOf(90, 84, 78, 72, 66, 58, 50)
+
+        for (targetEdge in edgeTargets) {
+            val longest = maxOf(working.width, working.height)
+            if (longest > targetEdge) {
+                val ratio = targetEdge.toFloat() / longest.toFloat()
+                val scaled = Bitmap.createScaledBitmap(
+                    working,
+                    (working.width * ratio).roundToInt().coerceAtLeast(1),
+                    (working.height * ratio).roundToInt().coerceAtLeast(1),
+                    true,
+                )
+                if (working !== bitmap) working.recycle()
+                working = scaled
+            }
+
+            for (quality in qualities) {
+                val out = ByteArrayOutputStream()
+                if (!working.compress(Bitmap.CompressFormat.JPEG, quality, out)) continue
+                val bytes = out.toByteArray()
+                if (bytes.size <= MAX_IMAGE_PAYLOAD_BYTES) {
+                    val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    return AiImagePayload("data:image/jpeg;base64,$encoded")
+                }
+            }
+        }
+        return null
     } finally {
-        if (scaled !== decoded) scaled.recycle()
-        decoded.recycle()
+        if (working !== bitmap && !working.isRecycled) working.recycle()
+        if (!bitmap.isRecycled) bitmap.recycle()
     }
 }
 
