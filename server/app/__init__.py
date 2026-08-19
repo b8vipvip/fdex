@@ -24,3 +24,10 @@ def _image_model_candidates_with_aliases(provider: dict[str, object]) -> list[st
 
 
 _provider_manager.image_model_candidates = _image_model_candidates_with_aliases
+
+# Keep memory recall off the user's provider-generation critical path. The patch keeps
+# MemPalace semantic/Qdrant recall bounded with a raw SQLite lexical fallback and reads
+# Letta's structured core-memory block directly instead of generating a RECALL_ONLY reply.
+from app.memory_resilience import apply_memory_resilience_patches as _apply_memory_resilience_patches
+
+_apply_memory_resilience_patches()
