@@ -43,9 +43,14 @@ internal sealed interface SseLineResult {
 object ClientAiApi {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    // The FDEX server emits attachment/provider progress at <= 12 s intervals. Keep a much
-    // shorter idle timeout for non-audio attachment streams so a broken proxy/mobile tail can
-    // switch to the existing non-stream fallback instead of leaving the last status on screen.
+    // Browser-backed vision/file requests may spend up to ~45 s only preparing an
+    // attachment in ChatGPT before inference begins. The server also has its own
+    // provider/keepalive budget, and reverse proxies are allowed to coalesce tiny SSE
+    // status frames. Therefore the Android idle timeout must be longer than a normal
+    // browser attachment-preparation window instead of assuming every heartbeat reaches
+    // the socket within 30 seconds.
+    internal const val ATTACHMENT_STREAM_READ_TIMEOUT_SECONDS = 120L
+
     private val requestClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
@@ -58,7 +63,7 @@ object ClientAiApi {
         .build()
 
     private val attachmentStreamClient = requestClient.newBuilder()
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(ATTACHMENT_STREAM_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 
     fun newRequestId(): String = UUID.randomUUID().toString()
