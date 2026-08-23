@@ -88,6 +88,7 @@ data class GroupMessage(
     val employeeName: String,
     val content: String,
     val createdAt: String,
+    val deleted: Boolean = false,
 )
 
 class AppRepository(context: Context) {
@@ -237,7 +238,10 @@ class AppRepository(context: Context) {
     }
 
     fun deleteMessage(messageId: Long) {
-        database.delete(FdexLocalDatabase.KIND_MESSAGE, messageId)
+        val message = database.queryById(FdexLocalDatabase.KIND_MESSAGE, messageId)
+            ?.let { runCatching { messageFromJson(it) }.getOrNull() }
+            ?: return
+        if (!message.deleted) saveMessage(message.copy(deleted = true))
     }
 
     fun clearMessages(employeeId: Long) {
@@ -377,26 +381,34 @@ class AppRepository(context: Context) {
         )
     }
 
-    fun groupMessages(groupId: Long): List<GroupMessage> = database
+    fun groupMessages(groupId: Long, includeDeleted: Boolean = false): List<GroupMessage> = database
         .query(FdexLocalDatabase.KIND_GROUP_MESSAGE, groupId)
         .mapNotNull { runCatching { groupMessageFromJson(it) }.getOrNull() }
+        .filter { includeDeleted || !it.deleted }
         .sortedBy { it.id }
 
     fun addGroupMessage(groupId: Long, role: String, employeeName: String, content: String): GroupMessage {
         val message = GroupMessage(nextId(), groupId, role, employeeName, content, now())
-        database.upsert(
-            FdexLocalDatabase.KIND_GROUP_MESSAGE,
-            message.id,
-            groupId,
-            idSort(message.id),
-            message.toJson(),
-        )
+        saveGroupMessage(message)
         group(groupId)?.let { saveGroup(it.copy(updatedAt = now())) }
         return message
     }
 
+    private fun saveGroupMessage(message: GroupMessage) {
+        database.upsert(
+            FdexLocalDatabase.KIND_GROUP_MESSAGE,
+            message.id,
+            message.groupId,
+            idSort(message.id),
+            message.toJson(),
+        )
+    }
+
     fun deleteGroupMessage(messageId: Long) {
-        database.delete(FdexLocalDatabase.KIND_GROUP_MESSAGE, messageId)
+        val message = database.queryById(FdexLocalDatabase.KIND_GROUP_MESSAGE, messageId)
+            ?.let { runCatching { groupMessageFromJson(it) }.getOrNull() }
+            ?: return
+        if (!message.deleted) saveGroupMessage(message.copy(deleted = true))
     }
 
     fun resetAll() {
@@ -580,6 +592,7 @@ private fun GroupMessage.toJson() = JSONObject()
     .put("employee", employeeName)
     .put("content", content)
     .put("at", createdAt)
+    .put("deleted", deleted)
 
 private fun groupMessageFromJson(o: JSONObject) = GroupMessage(
     o.getLong("id"),
@@ -588,4 +601,5 @@ private fun groupMessageFromJson(o: JSONObject) = GroupMessage(
     o.optString("employee"),
     o.optString("content"),
     o.optString("at"),
+    o.optBoolean("deleted"),
 )
