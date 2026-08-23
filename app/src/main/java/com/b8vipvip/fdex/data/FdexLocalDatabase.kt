@@ -92,6 +92,14 @@ internal class FdexLocalDatabase(context: Context) :
         }
     }
 
+    fun delete(kind: String, id: Long) {
+        writableDatabase.delete(
+            "records",
+            "kind=? AND id=?",
+            arrayOf(kind, id.toString()),
+        )
+    }
+
     fun clearAll() {
         val db = writableDatabase
         db.beginTransaction()
