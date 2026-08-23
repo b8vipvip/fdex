@@ -388,7 +388,14 @@ private fun EmployeeEditor(
         }
 
         Button(
-            enabled = name.isNotBlank() && department.isNotBlank() && position.isNotBlank() && prompt.isNotBlank() && !generating,
+            enabled = canSaveEmployeeEditor(
+                isEditing = initial != null,
+                name = name,
+                department = department,
+                position = position,
+                prompt = prompt,
+                generating = generating,
+            ),
             onClick = {
                 val employeeId = if (initial == null) {
                     repo.addEmployee(
