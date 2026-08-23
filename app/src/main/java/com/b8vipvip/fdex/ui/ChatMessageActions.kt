@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -43,10 +44,12 @@ internal fun ActionableEmployeeChatMessage(
 ) {
     val user = message.role == "user"
     Column(Modifier.fillMaxWidth()) {
-        if (user) {
-            AttachmentUserMessage(message.content)
-        } else {
-            RichAssistantMessage(message.content, modifier = Modifier.fillMaxWidth())
+        SelectableMessageBody {
+            if (user) {
+                AttachmentUserMessage(message.content)
+            } else {
+                RichAssistantMessage(message.content, modifier = Modifier.fillMaxWidth())
+            }
         }
         MessageActionBar(
             content = message.content,
@@ -68,8 +71,10 @@ internal fun ActionableGroupChatMessage(
     val user = message.role == "user"
     Column(Modifier.fillMaxWidth()) {
         when (message.role) {
-            "user" -> AttachmentUserMessage(message.content)
-            "system" -> {
+            "user" -> SelectableMessageBody {
+                AttachmentUserMessage(message.content)
+            }
+            "system" -> SelectableMessageBody {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     Surface(
                         shape = RoundedCornerShape(14.dp),
@@ -94,7 +99,9 @@ internal fun ActionableGroupChatMessage(
                         modifier = Modifier.padding(bottom = 5.dp),
                     )
                 }
-                RichAssistantMessage(message.content, modifier = Modifier.fillMaxWidth())
+                SelectableMessageBody {
+                    RichAssistantMessage(message.content, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
         MessageActionBar(
@@ -111,6 +118,11 @@ internal fun ActionableGroupChatMessage(
             },
         )
     }
+}
+
+@Composable
+internal fun SelectableMessageBody(content: @Composable () -> Unit) {
+    SelectionContainer(content = content)
 }
 
 @Composable
