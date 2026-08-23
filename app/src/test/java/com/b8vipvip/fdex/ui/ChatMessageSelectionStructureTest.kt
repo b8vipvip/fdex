@@ -54,7 +54,7 @@ class ChatMessageSelectionStructureTest {
         val candidates = listOf(relative, Path.of("app").resolve(relative))
         val path = candidates.firstOrNull { Files.exists(it) }
             ?: error("Unable to locate Android UI source $fileName from ${Path.of("").toAbsolutePath()}")
-        return Files.readString(path)
+        return String(Files.readAllBytes(path), Charsets.UTF_8)
     }
 
     private fun String.substringBetween(start: String, end: String): String {
