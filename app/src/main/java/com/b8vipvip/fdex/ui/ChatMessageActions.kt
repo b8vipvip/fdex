@@ -5,23 +5,34 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.ChatMessage
 import com.b8vipvip.fdex.data.GroupMessage
+
+private val CopyActionColor = Color(0xFF64748B)
+private val QuoteActionColor = Color(0xFF2563EB)
+private val DeleteActionColor = Color(0xFFDC2626)
 
 @Composable
 internal fun ActionableEmployeeChatMessage(
@@ -111,24 +122,49 @@ private fun MessageActionBar(
 ) {
     val context = LocalContext.current
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
     ) {
-        SmallAction("复制") {
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            clipboard?.setPrimaryClip(ClipData.newPlainText("FDEX 聊天消息", visibleMessageText(content)))
-        }
-        SmallAction("删除", onDelete)
-        SmallAction("引用", onQuote)
+        MessageActionIcon(
+            imageVector = Icons.Default.ContentCopy,
+            contentDescription = "复制消息",
+            tint = CopyActionColor,
+            onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("FDEX 聊天消息", visibleMessageText(content)))
+            },
+        )
+        MessageActionIcon(
+            imageVector = Icons.Default.FormatQuote,
+            contentDescription = "引用消息",
+            tint = QuoteActionColor,
+            onClick = onQuote,
+        )
+        MessageActionIcon(
+            imageVector = Icons.Default.Delete,
+            contentDescription = "删除消息",
+            tint = DeleteActionColor,
+            onClick = onDelete,
+        )
     }
 }
 
 @Composable
-private fun SmallAction(label: String, onClick: () -> Unit) {
-    TextButton(
+private fun MessageActionIcon(
+    imageVector: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    IconButton(
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+        modifier = Modifier.size(34.dp),
+        colors = IconButtonDefaults.iconButtonColors(contentColor = tint),
     ) {
-        Text(label, color = Muted, style = MaterialTheme.typography.labelSmall)
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }

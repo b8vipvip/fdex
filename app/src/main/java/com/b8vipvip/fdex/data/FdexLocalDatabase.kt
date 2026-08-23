@@ -92,6 +92,20 @@ internal class FdexLocalDatabase(context: Context) :
         }
     }
 
+    fun queryById(kind: String, id: Long): JSONObject? = readableDatabase.query(
+        "records",
+        arrayOf("payload"),
+        "kind=? AND id=?",
+        arrayOf(kind, id.toString()),
+        null,
+        null,
+        null,
+        "1",
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        runCatching { JSONObject(cursor.getString(0)) }.getOrNull()
+    }
+
     fun delete(kind: String, id: Long) {
         writableDatabase.delete(
             "records",
