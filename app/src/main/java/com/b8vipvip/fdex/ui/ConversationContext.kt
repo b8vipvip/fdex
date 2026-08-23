@@ -43,6 +43,7 @@ internal fun recentGroupConversationContext(
 ): String {
     val lines = messages
         .asSequence()
+        .filterNot { it.deleted }
         .filterNot { excludeMessageId != null && it.id == excludeMessageId }
         .map { message ->
             val author = when (message.role) {
