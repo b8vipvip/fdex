@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -125,24 +126,24 @@ private fun MessageActionBar(
         horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
     ) {
         MessageActionIcon(
+            imageVector = Icons.Default.ContentCopy,
             contentDescription = "复制消息",
             tint = CopyActionColor,
-            icon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(17.dp)) },
             onClick = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 clipboard?.setPrimaryClip(ClipData.newPlainText("FDEX 聊天消息", visibleMessageText(content)))
             },
         )
         MessageActionIcon(
+            imageVector = Icons.Default.FormatQuote,
             contentDescription = "引用消息",
             tint = QuoteActionColor,
-            icon = { Icon(Icons.Default.FormatQuote, contentDescription = null, modifier = Modifier.size(18.dp)) },
             onClick = onQuote,
         )
         MessageActionIcon(
+            imageVector = Icons.Default.Delete,
             contentDescription = "删除消息",
             tint = DeleteActionColor,
-            icon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(17.dp)) },
             onClick = onDelete,
         )
     }
@@ -150,9 +151,9 @@ private fun MessageActionBar(
 
 @Composable
 private fun MessageActionIcon(
+    imageVector: ImageVector,
     contentDescription: String,
     tint: Color,
-    icon: @Composable () -> Unit,
     onClick: () -> Unit,
 ) {
     IconButton(
@@ -160,6 +161,10 @@ private fun MessageActionIcon(
         modifier = Modifier.size(34.dp),
         colors = IconButtonDefaults.iconButtonColors(contentColor = tint),
     ) {
-        icon()
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
