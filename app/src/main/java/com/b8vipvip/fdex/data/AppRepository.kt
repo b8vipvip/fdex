@@ -140,8 +140,6 @@ class AppRepository(context: Context) {
             val legacy = prefs.getString(LocalCredentialStore.LEGACY_PASSWORD_HASH, "").orEmpty()
             val legacyOk = legacy.isNotBlank() && legacy == legacyHash(password)
             if (legacyOk) {
-                // Existing users are upgraded on their first successful login;
-                // no password reset or destructive account migration is needed.
                 runCatching { credentials.createRecord(password) }.onSuccess { upgraded ->
                     prefs.edit()
                         .putString(LocalCredentialStore.PREF_PASSWORD_RECORD, upgraded)
@@ -236,6 +234,10 @@ class AppRepository(context: Context) {
             idSort(message.id),
             message.toJson(),
         )
+    }
+
+    fun deleteMessage(messageId: Long) {
+        database.delete(FdexLocalDatabase.KIND_MESSAGE, messageId)
     }
 
     fun clearMessages(employeeId: Long) {
@@ -391,6 +393,10 @@ class AppRepository(context: Context) {
         )
         group(groupId)?.let { saveGroup(it.copy(updatedAt = now())) }
         return message
+    }
+
+    fun deleteGroupMessage(messageId: Long) {
+        database.delete(FdexLocalDatabase.KIND_GROUP_MESSAGE, messageId)
     }
 
     fun resetAll() {
