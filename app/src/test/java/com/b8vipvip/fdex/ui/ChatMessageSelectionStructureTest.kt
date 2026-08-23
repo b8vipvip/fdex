@@ -52,7 +52,7 @@ class ChatMessageSelectionStructureTest {
     private fun mainSource(fileName: String): String {
         val relative = Path.of("src", "main", "java", "com", "b8vipvip", "fdex", "ui", fileName)
         val candidates = listOf(relative, Path.of("app").resolve(relative))
-        val path = candidates.firstOrNull(Files::exists)
+        val path = candidates.firstOrNull { Files.exists(it) }
             ?: error("Unable to locate Android UI source $fileName from ${Path.of("").toAbsolutePath()}")
         return Files.readString(path)
     }
