@@ -35,6 +35,27 @@ class ConversationContextTest {
     }
 
     @Test
+    fun deletedMessagesAreExcludedFromBothPrivateAndGroupContext() {
+        val privateContext = recentEmployeeConversationContext(
+            listOf(
+                ChatMessage(1, 7, "user", "保留私聊", "t1"),
+                ChatMessage(2, 7, "employee", "已删除私聊", "t2", deleted = true),
+            ),
+        )
+        assertTrue(privateContext.contains("保留私聊"))
+        assertFalse(privateContext.contains("已删除私聊"))
+
+        val groupContext = recentGroupConversationContext(
+            listOf(
+                GroupMessage(1, 9, "employee", "小策", "保留群聊", "t1"),
+                GroupMessage(2, 9, "employee", "小知", "已删除群聊", "t2", deleted = true),
+            ),
+        )
+        assertTrue(groupContext.contains("保留群聊"))
+        assertFalse(groupContext.contains("已删除群聊"))
+    }
+
+    @Test
     fun quoteRemovesOpaqueAttachmentMarkerAndPreservesDraft() {
         val content = "请看这个\n\n[[FDEX_ATTACHMENTS_V1:YWJjZA==]]"
         val draft = quoteMessageIntoDraft("小策", content, "我的追问")
