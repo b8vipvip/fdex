@@ -25,6 +25,7 @@ from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_ro
 from app.realtime_voice import router as realtime_voice_router
 from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
+from app.update_monitor_routes import router as update_monitor_router
 
 settings = get_settings()
 app = FastAPI(
@@ -105,6 +106,7 @@ app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(admin_router)
 app.include_router(agent_admin_router)
+app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
 app.include_router(realtime_diagnostic_admin_router)
 app.include_router(client_ai_router)

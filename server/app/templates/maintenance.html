@@ -39,6 +39,34 @@
     <span class="large-status">{{ 'UPDATE' if update_available else 'OK' }}</span>
 </section>
 
+<section class="panel" id="server-update-progress" style="display:none">
+    <div class="panel-header">
+        <div>
+            <h2>服务端更新实时进度</h2>
+            <p id="update-progress-subtitle">正在读取最近更新任务…</p>
+        </div>
+        <span id="update-progress-badge" class="badge">等待</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;margin:14px 0 8px">
+        <div style="height:12px;flex:1;background:#e8edf4;border-radius:999px;overflow:hidden">
+            <div id="update-progress-bar" style="height:100%;width:0%;background:#2563eb;border-radius:999px;transition:width .35s ease"></div>
+        </div>
+        <strong id="update-progress-percent" style="min-width:48px;text-align:right">0%</strong>
+    </div>
+    <div class="inline-note" id="update-progress-message">等待任务状态…</div>
+    <dl class="kv-list" style="margin-top:12px">
+        <div><dt>当前阶段</dt><dd id="update-progress-stage">—</dd></div>
+        <div><dt>任务单元</dt><dd><code id="update-progress-unit">—</code></dd></div>
+        <div><dt>开始时间</dt><dd id="update-progress-started">—</dd></div>
+        <div><dt>完成时间</dt><dd id="update-progress-completed">—</dd></div>
+    </dl>
+    <div style="margin-top:14px">
+        <strong>最近执行日志</strong>
+        <pre id="update-progress-logs" style="margin-top:8px;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px;font-size:12px;line-height:1.55">暂无日志</pre>
+    </div>
+    <div id="update-progress-reconnect" class="inline-note warning-note" style="display:none;margin-top:12px">FDEX 正在重启，控制台暂时无法连接。页面会自动重试，无需手动刷新。</div>
+</section>
+
 <section class="panel" id="realtime-diagnostics">
     <div class="panel-header">
         <div>
@@ -66,10 +94,10 @@
         <div class="panel-header"><div><h2>从 GitHub 更新服务端</h2><p>执行仓库内固定的 update_server.sh</p></div></div>
         <p>更新任务会拉取 <code>origin/main</code>、更新依赖、重新安装 systemd 配置并进行健康检查。</p>
         {% if local_git.dirty %}<div class="inline-note error-note">仓库有未提交修改，网页更新已被安全锁定。</div>{% endif %}
-        <form method="post" action="/admin/update" data-confirm="确定从 GitHub main 更新服务端吗？当前服务会在更新过程中重启。">
+        <form id="server-update-form" method="post" action="/admin/update" data-confirm="确定从 GitHub main 更新服务端吗？当前服务会在更新过程中重启。">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label class="checkbox-field"><input type="checkbox" name="confirm" value="update" required><span>我确认要拉取 main 并更新服务端</span></label>
-            <button class="button danger full" type="submit" {% if local_git.dirty %}disabled{% endif %}>启动后台更新任务</button>
+            <label class="checkbox-field"><input id="server-update-confirm" type="checkbox" name="confirm" value="update" required><span>我确认要拉取 main 并更新服务端</span></label>
+            <button id="server-update-button" class="button danger full" type="submit" {% if local_git.dirty %}disabled{% endif %}>启动后台更新任务</button>
         </form>
     </section>
 </div>
@@ -80,8 +108,101 @@
         <li>网页更新只能执行固定路径 <code>{{ settings.app_dir }}/scripts/update_server.sh</code>，不能提交任意 Shell 命令。</li>
         <li>目标端口被其他服务占用时，更新脚本只会报错退出，不会结束其他进程。</li>
         <li><code>server/.env</code> 在更新前自动备份并恢复，第三方 API Key 不会提交到 GitHub。</li>
+        <li>更新进度写入本机 <code>server/data/admin-update-status.json</code>，并结合 systemd journal 显示最近日志；服务重启后仍可恢复显示。</li>
         <li>实时语音诊断下载仅对已登录管理员开放，诊断目录不会作为公开静态目录暴露。</li>
         <li>所有重启、更新和诊断下载操作都会记录管理员、IP、时间和执行结果。</li>
     </ul>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const panel = document.getElementById('server-update-progress');
+    const badge = document.getElementById('update-progress-badge');
+    const subtitle = document.getElementById('update-progress-subtitle');
+    const bar = document.getElementById('update-progress-bar');
+    const percent = document.getElementById('update-progress-percent');
+    const message = document.getElementById('update-progress-message');
+    const stage = document.getElementById('update-progress-stage');
+    const unit = document.getElementById('update-progress-unit');
+    const started = document.getElementById('update-progress-started');
+    const completed = document.getElementById('update-progress-completed');
+    const logs = document.getElementById('update-progress-logs');
+    const reconnect = document.getElementById('update-progress-reconnect');
+    const updateButton = document.getElementById('server-update-button');
+    const updateConfirm = document.getElementById('server-update-confirm');
+    let lastStatus = '';
+
+    const statusText = {
+        idle: '暂无任务',
+        running: '更新中',
+        succeeded: '更新成功',
+        failed: '更新失败',
+    };
+    const stageText = {
+        starting: '初始化任务', backup: '备份配置', git: '拉取 GitHub main', config: '恢复配置',
+        credentials: '初始化安全配置', validate: '校验配置', venv: '准备 Python 环境',
+        dependencies: '安装后端依赖', memory: '检查长期记忆', service_stop: '切换服务版本',
+        systemd: '安装 systemd 配置', restart: '重启 FDEX', release_sync: '同步 Release',
+        health: '健康检查', completed: '完成',
+    };
+
+    function applyStatus(data) {
+        const hasTask = Boolean(data.unit || data.started_at || data.status !== 'idle');
+        panel.style.display = hasTask ? '' : 'none';
+        if (!hasTask) return;
+
+        const value = Math.max(0, Math.min(Number(data.percent || 0), 100));
+        const state = data.status || 'idle';
+        badge.textContent = statusText[state] || state;
+        badge.className = 'badge ' + (state === 'succeeded' ? 'success' : state === 'failed' ? 'error' : state === 'running' ? 'warning' : '');
+        subtitle.textContent = state === 'running' ? '页面每秒自动刷新；服务重启期间会自动断线重连。' : '这里保留最近一次服务端更新的最终结果。';
+        bar.style.width = value + '%';
+        bar.style.background = state === 'failed' ? '#dc2626' : state === 'succeeded' ? '#16a34a' : '#2563eb';
+        percent.textContent = value + '%';
+        message.textContent = data.message || (state === 'failed' ? '更新执行失败，请查看下方日志。' : '等待状态…');
+        message.className = 'inline-note' + (state === 'failed' ? ' error-note' : state === 'succeeded' ? ' success-note' : '');
+        stage.textContent = stageText[data.stage] || data.stage || '—';
+        unit.textContent = data.unit || '—';
+        started.textContent = data.started_at || '—';
+        completed.textContent = data.completed_at || '—';
+        logs.textContent = Array.isArray(data.logs) && data.logs.length ? data.logs.join('\n') : '暂无日志';
+        logs.scrollTop = logs.scrollHeight;
+        reconnect.style.display = 'none';
+
+        const running = state === 'running';
+        if (updateButton && !updateButton.dataset.serverLocked) {
+            updateButton.disabled = running;
+            updateButton.textContent = running ? '服务端正在更新…' : '启动后台更新任务';
+        }
+        if (updateConfirm) updateConfirm.disabled = running;
+
+        if (lastStatus === 'running' && (state === 'succeeded' || state === 'failed')) {
+            panel.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+        lastStatus = state;
+    }
+
+    async function poll() {
+        try {
+            const response = await fetch('/admin/update/status', {cache: 'no-store', credentials: 'same-origin'});
+            if (response.status === 401) return;
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            const data = await response.json();
+            applyStatus(data);
+            setTimeout(poll, data.status === 'running' ? 1000 : 5000);
+        } catch (error) {
+            if (panel.style.display !== 'none' && lastStatus === 'running') {
+                reconnect.style.display = '';
+                subtitle.textContent = '服务暂时不可连接，正在自动重试…';
+            }
+            setTimeout(poll, 1500);
+        }
+    }
+
+    if (updateButton && updateButton.disabled) updateButton.dataset.serverLocked = '1';
+    poll();
+})();
+</script>
 {% endblock %}
