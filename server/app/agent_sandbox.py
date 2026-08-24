@@ -26,14 +26,15 @@ class SandboxLimits:
 class SystemdExecutionSandbox:
     """Ephemeral Linux execution sandbox for build/test commands.
 
-    No per-account process is kept alive. systemd creates a transient scope/service for
-    each command, enforces cgroup limits and namespace protections, then collects it.
-    MemoryMax is a ceiling, not a reservation, so idle accounts consume no sandbox RAM.
+    No per-account process is kept alive. systemd creates a transient unit for each build,
+    applies cgroup limits and mount/network restrictions, then collects it. MemoryMax is a
+    ceiling rather than a reservation, so an idle FDEX account has effectively zero sandbox RAM.
     """
 
     def __init__(self) -> None:
         settings = get_settings()
         self.sandbox_root = Path(settings.fdex_agent_sandbox_root).expanduser().resolve()
+        self.app_dir = Path(settings.app_dir).expanduser().resolve()
         self.default_memory_mb = settings.fdex_agent_sandbox_memory_mb
         self.default_cpu_percent = settings.fdex_agent_sandbox_cpu_percent
         self.default_pids_max = settings.fdex_agent_sandbox_pids_max
@@ -52,6 +53,51 @@ class SystemdExecutionSandbox:
         for name in ("home", "gradle", "npm", "pip"):
             (root / name).mkdir(parents=True, exist_ok=True)
         return root
+
+    def _hidden_paths(self, owner_id: str, worktree: Path) -> list[Path]:
+        hidden: list[Path] = []
+        # FDEX credentials and state must never be visible to repository build scripts.
+        for relative in (
+            "server/.env",
+            "server/data/ai-providers.db",
+            "server/data/ai-providers.key",
+            "server/data/agent-projects.db",
+            "server/data/agent-projects.key",
+            "server/data/agent-accounts.db",
+            "server/data/memory",
+        ):
+            path = (self.app_dir / relative).resolve()
+            if path.exists():
+                hidden.append(path)
+
+        owners_root = (self.sandbox_root / "owners").resolve()
+        current_owner = (owners_root / owner_id).resolve()
+        if owners_root.is_dir():
+            for sibling in owners_root.iterdir():
+                try:
+                    resolved = sibling.resolve()
+                except OSError:
+                    continue
+                if resolved != current_owner:
+                    hidden.append(resolved)
+
+        # Within one account, hide every sibling project. The current project repository
+        # remains read-only under ProtectSystem=strict while only this task worktree/cache
+        # are writable.
+        try:
+            relative = worktree.resolve().relative_to(current_owner)
+            parts = relative.parts
+            if len(parts) >= 3 and parts[0] == "projects":
+                current_project = (current_owner / "projects" / parts[1]).resolve()
+                projects_root = (current_owner / "projects").resolve()
+                if projects_root.is_dir():
+                    for sibling in projects_root.iterdir():
+                        resolved = sibling.resolve()
+                        if resolved != current_project:
+                            hidden.append(resolved)
+        except (ValueError, OSError):
+            pass
+        return hidden
 
     def build_systemd_command(
         self,
@@ -77,17 +123,22 @@ class SystemdExecutionSandbox:
             "-p", f"TasksMax={max(32, limits.pids_max)}",
             "-p", "PrivateTmp=yes",
             "-p", "PrivateDevices=yes",
+            "-p", "PrivateIPC=yes",
             "-p", "NoNewPrivileges=yes",
             "-p", "ProtectSystem=strict",
             "-p", "ProtectHome=yes",
+            "-p", "ProtectHostname=yes",
             "-p", "ProtectKernelTunables=yes",
             "-p", "ProtectKernelModules=yes",
             "-p", "ProtectKernelLogs=yes",
             "-p", "ProtectControlGroups=yes",
+            "-p", "ProtectProc=invisible",
+            "-p", "ProcSubset=pid",
             "-p", "RestrictSUIDSGID=yes",
             "-p", "LockPersonality=yes",
             "-p", "RestrictRealtime=yes",
             "-p", "CapabilityBoundingSet=",
+            "-p", "UMask=0077",
             "-p", f"ReadWritePaths={worktree}",
             "-p", f"ReadWritePaths={cache}",
             "-p", f"WorkingDirectory={cwd}",
@@ -98,6 +149,8 @@ class SystemdExecutionSandbox:
             "--setenv=CI=true",
             "--setenv=GIT_TERMINAL_PROMPT=0",
         ]
+        for hidden in self._hidden_paths(owner_id, worktree):
+            command += ["-p", f"InaccessiblePaths={hidden}"]
         if not limits.allow_network:
             command += ["-p", "PrivateNetwork=yes"]
         command += ["--", *argv]
