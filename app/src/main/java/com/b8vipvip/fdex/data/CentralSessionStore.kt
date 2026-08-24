@@ -4,6 +4,7 @@ import android.content.Context
 import com.b8vipvip.fdex.network.CentralSessionDto
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 
 /** Stores only FDEX Center session material. Passwords are never persisted on Android. */
 class CentralSessionStore(context: Context) {
@@ -54,6 +55,9 @@ class CentralSessionStore(context: Context) {
 }
 
 internal fun sessionExpiresWithin(value: String, seconds: Long, now: Instant = Instant.now()): Boolean {
-    val expiry = runCatching { Instant.parse(value.trim()) }.getOrNull() ?: return false
+    val clean = value.trim()
+    val expiry = runCatching { Instant.parse(clean) }.getOrNull()
+        ?: runCatching { OffsetDateTime.parse(clean).toInstant() }.getOrNull()
+        ?: return false
     return !expiry.isAfter(now.plus(Duration.ofSeconds(seconds.coerceAtLeast(0))))
 }
