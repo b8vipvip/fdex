@@ -1,4 +1,4 @@
-from app.agent_routes import agent_token_valid
+from app.agent_access import agent_token_valid
 
 
 def test_agent_token_requires_both_values() -> None:
