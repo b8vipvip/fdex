@@ -40,7 +40,8 @@ def test_agent_loop_runs_tool_then_finishes(tmp_path: Path) -> None:
     prompts: list[str] = []
 
     async def fake_model(system: str, prompt: str, max_tokens: int) -> str:
-        assert "direct shell access" in system
+        assert "shared provider-management pool" in system
+        assert "shell access" in system
         assert max_tokens >= 128
         prompts.append(prompt)
         return next(responses)
@@ -53,6 +54,7 @@ def test_agent_loop_runs_tool_then_finishes(tmp_path: Path) -> None:
     assert any(event.type == "tool.completed" for event in completed.events)
     assert any(event.type == "agent.progress" for event in completed.events)
     assert "TOOL: git_status" in prompts[1]
+    assert "OWNER SCOPE:" in prompts[0]
 
 
 def test_agent_loop_rejects_model_tool_escalation(tmp_path: Path) -> None:
