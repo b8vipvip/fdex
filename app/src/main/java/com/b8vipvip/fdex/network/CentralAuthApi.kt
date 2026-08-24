@@ -218,24 +218,28 @@ object CentralAuthApi {
         payload: JSONObject?,
         parser: (JSONObject) -> T,
     ): CentralAuthResult<T> = withContext(Dispatchers.IO) {
-        var token = CentralSessionManager.ensureAccess(context)
-            ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
-        repeat(2) { attempt ->
-            val request = buildAuthorizedRequest(method, path, token, payload)
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (response.code == 401 && attempt == 0) {
-                    token = CentralSessionManager.refreshAfterUnauthorized(context, token)
-                        ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
-                } else if (!response.isSuccessful) {
-                    return@withContext CentralAuthResult.Failure(errorMessage(body, "FDEX 账号服务 HTTP ${response.code}"))
-                } else {
-                    return@withContext runCatching { parser(JSONObject(body.ifBlank { "{}" })) }
-                        .fold({ CentralAuthResult.Success(it) }, { CentralAuthResult.Failure("FDEX 账号响应格式无效") })
+        try {
+            var token = CentralSessionManager.ensureAccess(context)
+                ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+            repeat(2) { attempt ->
+                val request = buildAuthorizedRequest(method, path, token, payload)
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.code == 401 && attempt == 0) {
+                        token = CentralSessionManager.refreshAfterUnauthorized(context, token)
+                            ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+                    } else if (!response.isSuccessful) {
+                        return@withContext CentralAuthResult.Failure(errorMessage(body, "FDEX 账号服务 HTTP ${response.code}"))
+                    } else {
+                        return@withContext runCatching { parser(JSONObject(body.ifBlank { "{}" })) }
+                            .fold({ CentralAuthResult.Success(it) }, { CentralAuthResult.Failure("FDEX 账号响应格式无效") })
+                    }
                 }
             }
+            CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+        } catch (error: Exception) {
+            CentralAuthResult.Failure(error.message ?: "无法连接 FDEX 中心服务器")
         }
-        CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
     }
 
     private fun buildAuthorizedRequest(method: String, path: String, token: String, payload: JSONObject?): Request {
