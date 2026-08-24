@@ -33,7 +33,8 @@ class AgentEmployeePreferences(context: Context) {
     private fun projectKey(employeeId: Long): String = "coding_agent_project_$employeeId"
 
     companion object {
-        private const val PREFS_NAME = "fdex_agent_preferences_v2"
+        // Keep the v1 storage name so existing employee flags and Agent token survive upgrades.
+        private const val PREFS_NAME = "fdex_agent_preferences_v1"
         private const val KEY_ACCESS_TOKEN = "agent_access_token"
     }
 }
