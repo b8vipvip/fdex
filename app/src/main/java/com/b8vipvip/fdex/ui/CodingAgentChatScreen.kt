@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
+import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.network.AgentApi
 import com.b8vipvip.fdex.network.AgentApiResult
 import com.b8vipvip.fdex.network.AgentProjectDto
@@ -51,16 +52,13 @@ internal fun CodingAgentChatScreen(
     val context = LocalContext.current
     val employee = repo.employee(employeeId) ?: return
     val agentPrefs = remember { AgentEmployeePreferences(context) }
+    val sessions = remember { CentralSessionStore(context) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val accessToken = sessions.accessToken()
+    val userId = sessions.userId()
 
     var text by remember { mutableStateOf("") }
-    var bootstrapToken by remember { mutableStateOf(agentPrefs.accessToken()) }
-    var accountId by remember { mutableStateOf(agentPrefs.accountId()) }
-    var accountToken by remember { mutableStateOf(agentPrefs.accountToken()) }
-    var editingBootstrap by remember { mutableStateOf(accountToken.isBlank() && bootstrapToken.isBlank()) }
-    var enrollmentBusy by remember { mutableStateOf(false) }
-
     var busy by remember { mutableStateOf(false) }
     var liveTask by remember { mutableStateOf<AgentTaskDto?>(null) }
     var projects by remember { mutableStateOf<List<AgentProjectDto>>(emptyList()) }
@@ -75,8 +73,9 @@ internal fun CodingAgentChatScreen(
     var memoryMb by remember { mutableStateOf("2048") }
     var allowNetwork by remember { mutableStateOf(false) }
 
-    suspend fun reloadProjects(token: String) {
-        when (val result = AgentApi.listProjects(token)) {
+    suspend fun reloadProjects() {
+        if (accessToken.isBlank()) return
+        when (val result = AgentApi.listProjects(accessToken)) {
             is AgentApiResult.Success -> {
                 projects = result.value
                 if (selectedProjectId == null || projects.none { it.id == selectedProjectId }) {
@@ -88,65 +87,13 @@ internal fun CodingAgentChatScreen(
         }
     }
 
-    LaunchedEffect(accountToken) {
-        if (accountToken.isNotBlank()) reloadProjects(accountToken)
-    }
-
+    LaunchedEffect(accessToken) { reloadProjects() }
     LaunchedEffect(revision, liveTask?.events?.size, busy) {
         val last = listState.layoutInfo.totalItemsCount - 1
         if (last >= 0) listState.animateScrollToItem(last)
     }
 
     Column(Modifier.fillMaxSize()) {
-        if (editingBootstrap) {
-            Card(Modifier.fillMaxWidth().padding(12.dp)) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("注册 Coding Agent 账号空间", fontWeight = FontWeight.Bold)
-                    Text(
-                        "此令牌只用于首次注册。注册后服务端会签发本账号独立凭据，GitHub、项目和沙箱都会绑定到该账号；AI 仍统一使用供应商管理。",
-                        color = Muted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    OutlinedTextField(
-                        value = bootstrapToken,
-                        onValueChange = { bootstrapToken = it },
-                        label = { Text("FDEX Agent 注册令牌") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            enabled = bootstrapToken.isNotBlank() && !enrollmentBusy,
-                            onClick = {
-                                enrollmentBusy = true
-                                scope.launch {
-                                    when (val enrolled = AgentApi.enrollAccount(bootstrapToken, "Android · ${employee.name}")) {
-                                        is AgentApiResult.Failure -> snackbar.showSnackbar(enrolled.message)
-                                        is AgentApiResult.Success -> {
-                                            accountId = enrolled.value.ownerId
-                                            accountToken = enrolled.value.accountToken
-                                            agentPrefs.setAccountCredential(accountId, accountToken)
-                                            // Do not retain the server-wide enrollment secret after account provisioning.
-                                            agentPrefs.setAccessToken("")
-                                            bootstrapToken = ""
-                                            editingBootstrap = false
-                                            reloadProjects(accountToken)
-                                            snackbar.showSnackbar("Coding Agent 账号空间已创建")
-                                        }
-                                    }
-                                    enrollmentBusy = false
-                                }
-                            },
-                        ) { Text(if (enrollmentBusy) "注册中" else "注册账号空间") }
-                        if (accountToken.isNotBlank()) {
-                            OutlinedButton(onClick = { editingBootstrap = false }) { Text("取消") }
-                        }
-                    }
-                }
-            }
-        }
-
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
@@ -157,99 +104,44 @@ internal fun CodingAgentChatScreen(
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("💻 Coding Agent · ${employee.name}", fontWeight = FontWeight.Bold)
                         Text("AI：统一供应商模型池", color = Emerald)
-                        Text("账号沙箱：${accountId.ifBlank { "尚未注册" }}", color = Muted)
+                        Text("FDEX 账号：${sessions.email().ifBlank { userId }}", color = Muted)
+                        Text("账号沙箱：$userId", color = Muted, style = MaterialTheme.typography.bodySmall)
                         val selected = projects.firstOrNull { it.id == selectedProjectId }
                         Text("项目：${selected?.name ?: "未选择"}${selected?.repository?.let { " · $it" } ?: ""}", color = Muted)
                         selected?.let {
-                            Text(
-                                "执行限制：${it.sandboxMemoryMb} MB · CPU ${it.sandboxCpuPercent}% · 网络${if (it.allowNetwork) "允许" else "隔离"}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Muted,
-                            )
+                            Text("执行限制：${it.sandboxMemoryMb} MB · CPU ${it.sandboxCpuPercent}% · 网络${if (it.allowNetwork) "允许" else "隔离"}", style = MaterialTheme.typography.bodySmall, color = Muted)
                         }
                         if (projects.isNotEmpty()) {
                             projects.forEach { project ->
-                                OutlinedButton(
-                                    enabled = !busy,
-                                    onClick = {
-                                        selectedProjectId = project.id
-                                        agentPrefs.setProjectId(employeeId, project.id)
-                                    },
-                                ) {
+                                OutlinedButton(enabled = !busy, onClick = {
+                                    selectedProjectId = project.id
+                                    agentPrefs.setProjectId(employeeId, project.id)
+                                }) {
                                     val marker = if (project.id == selectedProjectId) "✓ " else ""
                                     Text("$marker${project.name} · ${project.baseBranch}${if (project.allowPr) " · PR" else ""}")
                                 }
                             }
-                        } else if (accountToken.isNotBlank()) {
-                            Text("这个 FDEX 账号还没有 GitHub 项目。", style = MaterialTheme.typography.bodySmall, color = Muted)
+                        } else {
+                            Text("当前 FDEX 账号还没有 GitHub 项目。", style = MaterialTheme.typography.bodySmall, color = Muted)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                enabled = accountToken.isNotBlank() && !busy,
-                                onClick = { showProjectSetup = !showProjectSetup },
-                            ) { Text(if (showProjectSetup) "收起 GitHub 配置" else "添加 GitHub 项目") }
-                            OutlinedButton(
-                                enabled = !busy,
-                                onClick = {
-                                    agentPrefs.clearAccountCredential()
-                                    accountId = ""
-                                    accountToken = ""
-                                    projects = emptyList()
-                                    selectedProjectId = null
-                                    editingBootstrap = true
-                                },
-                            ) { Text("切换账号空间") }
+                        OutlinedButton(enabled = accessToken.isNotBlank() && !busy, onClick = { showProjectSetup = !showProjectSetup }) {
+                            Text(if (showProjectSetup) "收起 GitHub 配置" else "添加 GitHub 项目")
                         }
                     }
                 }
             }
 
-            if (showProjectSetup && accountToken.isNotBlank()) {
+            if (showProjectSetup && accessToken.isNotBlank()) {
                 item(key = "github-project-setup") {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("GitHub · 当前 FDEX 账号独立配置", fontWeight = FontWeight.Bold)
-                            Text(
-                                "GitHub Token 只提交到服务端加密保存，不会写入手机；其它 FDEX 账号无法读取此连接、项目或沙箱目录。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Muted,
-                            )
-                            OutlinedTextField(
-                                value = githubToken,
-                                onValueChange = { githubToken = it },
-                                label = { Text("GitHub Token") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = repositoryName,
-                                onValueChange = { repositoryName = it },
-                                label = { Text("仓库，例如 b8vipvip/fdex") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = projectName,
-                                onValueChange = { projectName = it },
-                                label = { Text("项目名称（可选）") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = baseBranch,
-                                onValueChange = { baseBranch = it },
-                                label = { Text("基础分支") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = memoryMb,
-                                onValueChange = { memoryMb = it.filter(Char::isDigit) },
-                                label = { Text("单任务内存上限 MB") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            Text("GitHub · ${sessions.email()}", fontWeight = FontWeight.Bold)
+                            Text("GitHub Token 只提交到服务端加密保存；连接、项目和沙箱全部绑定当前 FDEX user_id。", style = MaterialTheme.typography.bodySmall, color = Muted)
+                            OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("GitHub Token") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = repositoryName, onValueChange = { repositoryName = it }, label = { Text("仓库，例如 b8vipvip/fdex") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = projectName, onValueChange = { projectName = it }, label = { Text("项目名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = baseBranch, onValueChange = { baseBranch = it }, label = { Text("基础分支") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = memoryMb, onValueChange = { memoryMb = it.filter(Char::isDigit) }, label = { Text("单任务内存上限 MB") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Checkbox(checked = allowNetwork, onCheckedChange = { allowNetwork = it })
                                 Text("允许构建任务联网下载依赖（默认关闭更安全）")
@@ -259,34 +151,29 @@ internal fun CodingAgentChatScreen(
                                 onClick = {
                                     setupBusy = true
                                     scope.launch {
-                                        when (val connection = AgentApi.saveGitHubConnection(accountToken, githubToken)) {
+                                        when (val connection = AgentApi.saveGitHubConnection(accessToken, githubToken)) {
                                             is AgentApiResult.Failure -> snackbar.showSnackbar(connection.message)
                                             is AgentApiResult.Success -> {
                                                 val memory = memoryMb.toIntOrNull()?.coerceIn(128, 16384) ?: 2048
                                                 val shortName = repositoryName.substringAfterLast('/').ifBlank { "GitHub Project" }
-                                                when (
-                                                    val saved = AgentApi.saveProject(
-                                                        accountToken = accountToken,
-                                                        connectionId = connection.value.id,
-                                                        repository = repositoryName.trim(),
-                                                        name = projectName.trim().ifBlank { shortName },
-                                                        baseBranch = baseBranch.trim().ifBlank { "main" },
-                                                        allowPush = true,
-                                                        allowPr = true,
-                                                        allowNetwork = allowNetwork,
-                                                        sandboxMemoryMb = memory,
-                                                    )
-                                                ) {
+                                                when (val saved = AgentApi.saveProject(
+                                                    accessToken = accessToken,
+                                                    connectionId = connection.value.id,
+                                                    repository = repositoryName.trim(),
+                                                    name = projectName.trim().ifBlank { shortName },
+                                                    baseBranch = baseBranch.trim().ifBlank { "main" },
+                                                    allowPush = true,
+                                                    allowPr = true,
+                                                    allowNetwork = allowNetwork,
+                                                    sandboxMemoryMb = memory,
+                                                )) {
                                                     is AgentApiResult.Failure -> snackbar.showSnackbar(saved.message)
                                                     is AgentApiResult.Success -> {
-                                                        githubToken = ""
-                                                        repositoryName = ""
-                                                        projectName = ""
+                                                        githubToken = ""; repositoryName = ""; projectName = ""
                                                         selectedProjectId = saved.value.id
                                                         agentPrefs.setProjectId(employeeId, saved.value.id)
-                                                        reloadProjects(accountToken)
-                                                        showProjectSetup = false
-                                                        snackbar.showSnackbar("GitHub 项目已加入当前账号沙箱")
+                                                        reloadProjects(); showProjectSetup = false
+                                                        snackbar.showSnackbar("GitHub 项目已加入当前 FDEX 账号")
                                                     }
                                                 }
                                             }
@@ -325,58 +212,34 @@ internal fun CodingAgentChatScreen(
         }
 
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("给 Coding Agent 安排开发任务") },
-                modifier = Modifier.weight(1f),
-                enabled = !busy,
-                minLines = 1,
-                maxLines = 5,
-            )
+            OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("给 Coding Agent 安排开发任务") }, modifier = Modifier.weight(1f), enabled = !busy, minLines = 1, maxLines = 5)
             Button(
-                enabled = text.isNotBlank() && !busy && !editingBootstrap && accountToken.isNotBlank(),
+                enabled = text.isNotBlank() && !busy && accessToken.isNotBlank(),
                 onClick = {
                     val prompt = text.trim()
-                    if (accountToken.isBlank()) {
-                        editingBootstrap = true
-                        scope.launch { snackbar.showSnackbar("请先注册 Coding Agent 账号空间") }
+                    if (accessToken.isBlank()) {
+                        scope.launch { snackbar.showSnackbar("FDEX 登录状态已失效，请重新登录") }
                         return@Button
                     }
-                    text = ""
-                    repo.addMessage(employeeId, "user", prompt)
-                    onChanged()
-                    busy = true
-                    liveTask = null
+                    text = ""; repo.addMessage(employeeId, "user", prompt); onChanged(); busy = true; liveTask = null
                     scope.launch {
-                        when (val created = AgentApi.createTask(accountToken, prompt, selectedProjectId)) {
-                            is AgentApiResult.Failure -> {
-                                busy = false
-                                snackbar.showSnackbar(created.message)
-                            }
+                        when (val created = AgentApi.createTask(accessToken, prompt, selectedProjectId)) {
+                            is AgentApiResult.Failure -> { busy = false; snackbar.showSnackbar(created.message) }
                             is AgentApiResult.Success -> {
                                 liveTask = created.value
-                                val runner = async { AgentApi.runTask(accountToken, created.value.id) }
+                                val runner = async { AgentApi.runTask(accessToken, created.value.id) }
                                 while (runner.isActive) {
                                     delay(1000)
-                                    when (val polled = AgentApi.getTask(accountToken, created.value.id)) {
+                                    when (val polled = AgentApi.getTask(accessToken, created.value.id)) {
                                         is AgentApiResult.Success -> liveTask = polled.value
                                         is AgentApiResult.Failure -> Unit
                                     }
                                 }
                                 when (val completed = runner.await()) {
-                                    is AgentApiResult.Failure -> repo.addMessage(
-                                        employeeId,
-                                        "employee",
-                                        "Coding Agent 执行失败：${liveTask?.error.orEmpty().ifBlank { completed.message }}",
-                                    )
-                                    is AgentApiResult.Success -> {
-                                        liveTask = completed.value
-                                        repo.addMessage(employeeId, "employee", formatAgentResult(completed.value))
-                                    }
+                                    is AgentApiResult.Failure -> repo.addMessage(employeeId, "employee", "Coding Agent 执行失败：${liveTask?.error.orEmpty().ifBlank { completed.message }}")
+                                    is AgentApiResult.Success -> { liveTask = completed.value; repo.addMessage(employeeId, "employee", formatAgentResult(completed.value)) }
                                 }
-                                busy = false
-                                onChanged()
+                                busy = false; onChanged()
                             }
                         }
                     }
