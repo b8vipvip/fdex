@@ -1,46 +1,73 @@
 {% extends "base.html" %}
 {% block title %}Coding Agent · FDEX{% endblock %}
 {% block heading %}Coding Agent{% endblock %}
-{% block subheading %}控制 FDEX Agent Runtime 是否允许 Android Coding Agent 执行开发任务{% endblock %}
-{% block actions %}<a class="button secondary" href="/admin">返回仪表盘</a>{% endblock %}
+{% block subheading %}统一供应商 AI、GitHub 连接、项目沙箱与执行权限{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/providers">供应商管理</a>{% endblock %}
 
 {% block content %}
 <section class="panel form-section">
-    <div class="panel-header">
-        <div>
-            <h2>Agent Runtime 总开关</h2>
-            <p>此开关对应 <code>FDEX_AGENT_ENABLED</code>。默认开启，可随时在控制台关闭。</p>
-        </div>
-        <span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">
-            {% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}
-        </span>
-    </div>
-
-    <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启以应用 Coding Agent 设置。确定继续吗？">
+    <div class="panel-header"><div><h2>Agent Runtime</h2><p>模型直接使用 FDEX“供应商管理”的统一 AI 接口，不单独配置 API、Key 或模型。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
+    <div class="inline-note success-note">AI 来源：<strong>统一供应商模型池</strong>。Coding Agent 与普通 AI 员工共享供应商优先级、主/备用文本模型和自动故障切换。</div>
+    <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启。确定继续吗？">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="checkbox-field aligned">
-            <input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}>
-            <span>启用 Coding Agent Runtime</span>
-        </label>
-        <p class="muted">开启后，持有正确 Agent Token 的 Android Coding Agent 员工可以创建和执行受限开发任务。关闭后 <code>/api/agent</code> 执行能力不可用。</p>
-        <div class="inline-note {% if token_ready %}success-note{% else %}warning-note{% endif %}">
-            {% if token_ready %}
-            Agent Token 已配置。Android 端仍需填写对应的 <code>FDEX_AGENT_ACCESS_TOKEN</code>。
-            {% else %}
-            当前 Agent Token 尚未就绪。请先运行服务器更新脚本生成高强度 <code>FDEX_AGENT_ACCESS_TOKEN</code>，不要复用 GitHub、管理员或 AI API Key。
-            {% endif %}
+        <label class="checkbox-field aligned"><input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}><span>启用 Coding Agent Runtime</span></label>
+        <div class="inline-note {% if token_ready %}success-note{% else %}warning-note{% endif %}">{% if token_ready %}Agent 访问令牌已配置。{% else %}Agent 访问令牌尚未就绪，请运行服务器更新脚本。{% endif %}</div>
+        <button class="button primary" type="submit">保存 Runtime 设置</button>
+    </form>
+</section>
+
+<section class="panel form-section" id="github">
+    <div class="panel-header"><div><h2>GitHub Connector</h2><p>连接信息只保存在服务端加密库，Android 不会获得 GitHub Token。</p></div><span class="badge">Owner: {{ owner_id }}</span></div>
+    <form method="post" action="/admin/agent/github" class="form-grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>连接名称</span><input name="name" value="GitHub" required maxlength="80"></label>
+        <label class="field"><span>GitHub Token</span><input type="password" name="token" required autocomplete="new-password"><small>建议使用 Fine-grained PAT，仅授权需要的仓库；需要 Contents/PR 写权限时再开启。</small></label>
+        <div><button class="button primary" type="submit">验证并连接 GitHub</button></div>
+    </form>
+    {% if connections %}
+    <div class="content-grid equal" style="margin-top:16px">
+        {% for item in connections %}
+        <div class="inline-note success-note"><strong>{{ item.name }}</strong> · {{ item.login }} · Token 已加密
+            <form method="post" action="/admin/agent/github/{{ item.id }}/delete" style="margin-top:8px" data-confirm="确定删除此 GitHub 连接吗？仍被项目使用时会阻止删除。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger-outline" type="submit">删除连接</button></form>
         </div>
-        <button class="button primary" type="submit">保存并自动重启服务</button>
+        {% endfor %}
+    </div>
+    {% endif %}
+</section>
+
+<section class="panel form-section" id="projects">
+    <div class="panel-header"><div><h2>Agent 项目沙箱</h2><p>每个项目使用独立 repository，每个任务再创建独立 worktree。</p></div></div>
+    <div class="inline-note">沙箱结构：<code>{{ settings.fdex_agent_sandbox_root }}/owners/&lt;owner&gt;/projects/&lt;project-id&gt;/repository</code> + <code>worktrees/&lt;task-id&gt;</code></div>
+    <form method="post" action="/admin/agent/projects" class="form-grid" style="margin-top:16px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>项目名称</span><input name="name" placeholder="FDEX" required maxlength="100"></label>
+        <label class="field"><span>GitHub 仓库</span><input name="repo_full_name" placeholder="owner/repository" required></label>
+        <label class="field"><span>基础分支</span><input name="base_branch" value="main" required></label>
+        <label class="field"><span>GitHub 连接</span><select name="connection_id"><option value="">公开仓库 / 只读</option>{% for item in connections %}<option value="{{ item.id }}">{{ item.name }} · {{ item.login }}</option>{% endfor %}</select></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="allow_push" value="true"><span>允许 push Agent 分支</span></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="allow_pr" value="true"><span>允许创建 Pull Request</span></label>
+        <div><button class="button primary" type="submit">添加 Agent 项目</button></div>
     </form>
 
-    <p class="path-note">配置文件：<code>{{ env_path }}</code>。关闭开关不会删除 Agent Token、任务历史或工作区。</p>
+    {% if projects %}
+    <div class="content-grid equal" style="margin-top:18px">
+        {% for project in projects %}
+        <div class="panel" style="margin:0">
+            <div class="panel-header"><div><h3>{{ project.name }}</h3><p>{{ project.repo_full_name }} · {{ project.base_branch }}</p></div><span class="badge success">已启用</span></div>
+            <p class="muted">Push：{{ '允许' if project.allow_push else '禁止' }} · PR：{{ '允许' if project.allow_pr else '禁止' }}</p>
+            <form method="post" action="/admin/agent/projects/{{ project.id }}/delete" data-confirm="确定从 FDEX 配置中删除这个项目吗？"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger-outline" type="submit">删除项目配置</button></form>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
 </section>
 
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>安全边界</h2><p>总开关只决定 Runtime 是否可执行，不会放宽 Phase 3 的工具限制</p></div></div>
+    <div class="panel-header"><div><h2>隔离与权限边界</h2><p>owner → project → task 三层路径隔离</p></div></div>
     <div class="content-grid equal">
-        <div><strong>允许</strong><p class="muted">独立 worktree 中读取、修改、测试并提交代码。</p></div>
-        <div><strong>仍然禁止</strong><p class="muted">直接写 main、自动 push/merge、读取任意服务器路径或绕过 Agent Token。</p></div>
+        <div><strong>项目级隔离</strong><p class="muted">不同项目不会共用 repository/worktree。任务只能访问自己的 worktree，相对路径逃逸会被拒绝。</p></div>
+        <div><strong>GitHub 写权限</strong><p class="muted">默认关闭。只有项目显式允许后，Agent 才能 push 自己生成的 <code>fdex-agent/*</code> 分支并创建 PR；仍不能直接修改 main。</p></div>
     </div>
+    <p class="path-note">当前客户端部署使用默认 owner <code>{{ owner_id }}</code>。底层存储已按 owner 分层；未来接入多 FDEX 登录账号时可直接映射到不同 owner scope。</p>
 </section>
 {% endblock %}
