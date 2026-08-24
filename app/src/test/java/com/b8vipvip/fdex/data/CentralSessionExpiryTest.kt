@@ -12,6 +12,7 @@ class CentralSessionExpiryTest {
     fun refreshWindowStartsFiveMinutesBeforeExpiry() {
         assertFalse(sessionExpiresWithin("2026-08-24T12:10:01Z", 300, now))
         assertTrue(sessionExpiresWithin("2026-08-24T12:05:00Z", 300, now))
+        assertTrue(sessionExpiresWithin("2026-08-24T12:05:00+00:00", 300, now))
     }
 
     @Test
