@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,7 +34,6 @@ import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.data.ClientPreferences
 import com.b8vipvip.fdex.data.LegacyDataMigration
-import com.b8vipvip.fdex.data.LegacyMigrationStatus
 import com.b8vipvip.fdex.network.CentralAuthApi
 import com.b8vipvip.fdex.network.CentralAuthResult
 import com.b8vipvip.fdex.network.CentralDeviceSessionDto
@@ -99,14 +99,14 @@ internal fun CenterSecurityScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text("隐私与长期记忆", fontWeight = FontWeight.Bold)
-                    PreferenceToggle(
+                    CenterPreferenceToggle(
                         title = "自动整理聊天到本机知识库",
                         description = "关闭后不再自动回填或新增聊天知识；已有知识仍可手动查看和检索。",
                         checked = autoArchive,
                     ) {
                         autoArchive = it; prefs.setAutoArchiveKnowledge(it); onChanged()
                     }
-                    PreferenceToggle(
+                    CenterPreferenceToggle(
                         title = "启用 MemPalace / Letta 长期记忆",
                         description = "关闭后新对话不会进行跨会话远程召回或写入。远程 namespace 已绑定当前中心 user_id。",
                         checked = remoteMemory,
@@ -203,7 +203,7 @@ internal fun CenterSecurityScreen(
         if (securityEvents.isEmpty()) {
             item { Card(Modifier.fillMaxWidth()) { Text("暂时没有安全事件", modifier = Modifier.padding(14.dp), color = Muted) } }
         } else {
-            items(securityEvents.take(12), key = { "event-${it.createdAt}-${it.event}-${it.clientIp}" }) { event ->
+            items(securityEvents.take(12)) { event ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(securityEventLabel(event.event), fontWeight = FontWeight.SemiBold)
@@ -276,6 +276,26 @@ internal fun CenterSecurityScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CenterPreferenceToggle(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(description, color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
