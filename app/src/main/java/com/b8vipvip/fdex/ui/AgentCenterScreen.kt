@@ -63,7 +63,7 @@ internal fun AgentCenterScreen(
 
     suspend fun reloadProjects() {
         if (accessToken.isBlank()) return
-        when (val result = AgentApi.listProjects(accessToken)) {
+        when (val result = AgentApi.listProjects(context)) {
             is AgentApiResult.Success -> projects = result.value
             is AgentApiResult.Failure -> snackbar.showSnackbar(result.message)
         }
@@ -157,13 +157,13 @@ internal fun AgentCenterScreen(
                         onClick = {
                             loading = true
                             scope.launch {
-                                when (val connection = AgentApi.saveGitHubConnection(accessToken, githubToken.trim())) {
+                                when (val connection = AgentApi.saveGitHubConnection(context, githubToken.trim())) {
                                     is AgentApiResult.Failure -> snackbar.showSnackbar(connection.message)
                                     is AgentApiResult.Success -> {
                                         val repoName = repository.trim()
                                         when (
                                             val saved = AgentApi.saveProject(
-                                                accessToken = accessToken,
+                                                context = context,
                                                 connectionId = connection.value.id,
                                                 repository = repoName,
                                                 name = projectName.trim().ifBlank { repoName.substringAfterLast('/') },

@@ -1,5 +1,6 @@
 package com.b8vipvip.fdex.network
 
+import android.content.Context
 import com.b8vipvip.fdex.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,58 +31,91 @@ sealed interface AgentApiResult<out T> {
     data class Failure(val message: String) : AgentApiResult<Nothing>
 }
 
+private data class AgentHttpResponse(val code: Int, val body: String) {
+    val successful: Boolean get() = code in 200..299
+}
+
 object AgentApi {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.MINUTES).callTimeout(0, TimeUnit.SECONDS).build()
 
-    suspend fun saveGitHubConnection(accessToken: String, token: String, name: String = "GitHub"): AgentApiResult<AgentGitHubConnectionDto> = withContext(Dispatchers.IO) {
-        try {
+    suspend fun saveGitHubConnection(context: Context, token: String, name: String = "GitHub"): AgentApiResult<AgentGitHubConnectionDto> {
+        return try {
             val payload = JSONObject().put("name", name).put("token", token)
-            client.newCall(authRequest("POST", "/api/agent/github/connections", accessToken, payload)).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "GitHub 连接 HTTP ${response.code}"))
-                val json = JSONObject(body)
-                AgentApiResult.Success(AgentGitHubConnectionDto(json.optInt("id"), json.optString("name", "GitHub"), json.optString("login")))
-            }
-        } catch (error: Exception) { AgentApiResult.Failure(error.message ?: "无法保存 GitHub 连接") }
+            val response = executeAuthenticated(context, "POST", "/api/agent/github/connections", payload)
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "GitHub 连接 HTTP ${response.code}"))
+            val json = JSONObject(response.body)
+            AgentApiResult.Success(AgentGitHubConnectionDto(json.optInt("id"), json.optString("name", "GitHub"), json.optString("login")))
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法保存 GitHub 连接")
+        }
     }
 
     suspend fun saveProject(
-        accessToken: String, connectionId: Int, repository: String, name: String, baseBranch: String = "main",
+        context: Context, connectionId: Int, repository: String, name: String, baseBranch: String = "main",
         allowPush: Boolean = true, allowPr: Boolean = true, allowNetwork: Boolean = false,
         sandboxMemoryMb: Int = 2048, sandboxCpuPercent: Int = 150,
-    ): AgentApiResult<AgentProjectDto> = withContext(Dispatchers.IO) {
-        try {
+    ): AgentApiResult<AgentProjectDto> {
+        return try {
             val payload = JSONObject().put("connection_id", connectionId).put("repo_full_name", repository).put("name", name)
                 .put("base_branch", baseBranch).put("allow_push", allowPush).put("allow_pr", allowPr)
                 .put("allow_network", allowNetwork).put("sandbox_memory_mb", sandboxMemoryMb).put("sandbox_cpu_percent", sandboxCpuPercent)
-            client.newCall(authRequest("POST", "/api/agent/projects", accessToken, payload)).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "Agent 项目保存 HTTP ${response.code}"))
-                AgentApiResult.Success(parseProject(JSONObject(body)))
-            }
-        } catch (error: Exception) { AgentApiResult.Failure(error.message ?: "无法保存 Agent 项目") }
+            val response = executeAuthenticated(context, "POST", "/api/agent/projects", payload)
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "Agent 项目保存 HTTP ${response.code}"))
+            AgentApiResult.Success(parseProject(JSONObject(response.body)))
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法保存 Agent 项目")
+        }
     }
 
-    suspend fun listProjects(accessToken: String): AgentApiResult<List<AgentProjectDto>> = withContext(Dispatchers.IO) {
-        try {
-            client.newCall(authRequest("GET", "/api/agent/projects", accessToken)).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "Agent 项目列表 HTTP ${response.code}"))
-                val array = JSONObject(body).optJSONArray("projects")
-                AgentApiResult.Success(buildList { if (array != null) for (index in 0 until array.length()) array.optJSONObject(index)?.let { add(parseProject(it)) } })
-            }
-        } catch (error: Exception) { AgentApiResult.Failure(error.message ?: "无法读取 Agent 项目") }
+    suspend fun listProjects(context: Context): AgentApiResult<List<AgentProjectDto>> {
+        return try {
+            val response = executeAuthenticated(context, "GET", "/api/agent/projects")
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "Agent 项目列表 HTTP ${response.code}"))
+            val array = JSONObject(response.body).optJSONArray("projects")
+            AgentApiResult.Success(buildList { if (array != null) for (index in 0 until array.length()) array.optJSONObject(index)?.let { add(parseProject(it)) } })
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法读取 Agent 项目")
+        }
     }
 
-    suspend fun createTask(accessToken: String, prompt: String, projectId: Int?): AgentApiResult<AgentTaskDto> {
-        val payload = JSONObject().put("prompt", prompt); if (projectId != null) payload.put("project_id", projectId)
-        return taskRequest("POST", "/api/agent/tasks", accessToken, payload)
+    suspend fun createTask(context: Context, prompt: String, projectId: Int?): AgentApiResult<AgentTaskDto> {
+        val payload = JSONObject().put("prompt", prompt)
+        if (projectId != null) payload.put("project_id", projectId)
+        return taskRequest(context, "POST", "/api/agent/tasks", payload)
     }
-    suspend fun getTask(accessToken: String, taskId: String): AgentApiResult<AgentTaskDto> = taskRequest("GET", "/api/agent/tasks/$taskId", accessToken)
-    suspend fun runTask(accessToken: String, taskId: String): AgentApiResult<AgentTaskDto> = taskRequest("POST", "/api/agent/tasks/$taskId/run", accessToken, JSONObject())
+
+    suspend fun getTask(context: Context, taskId: String): AgentApiResult<AgentTaskDto> =
+        taskRequest(context, "GET", "/api/agent/tasks/$taskId")
+
+    suspend fun runTask(context: Context, taskId: String): AgentApiResult<AgentTaskDto> =
+        taskRequest(context, "POST", "/api/agent/tasks/$taskId/run", JSONObject())
+
+    private suspend fun executeAuthenticated(
+        context: Context,
+        method: String,
+        path: String,
+        payload: JSONObject? = null,
+    ): AgentHttpResponse = withContext(Dispatchers.IO) {
+        val initialToken = CentralSessionManager.ensureAccess(context).orEmpty()
+        if (initialToken.isBlank()) return@withContext AgentHttpResponse(401, "{\"detail\":\"FDEX 登录状态已失效，请重新登录\"}")
+        var response = executeOnce(method, path, initialToken, payload)
+        if (response.code == 401) {
+            val refreshed = CentralSessionManager.refreshAfterUnauthorized(context, initialToken).orEmpty()
+            if (refreshed.isNotBlank() && refreshed != initialToken) {
+                response = executeOnce(method, path, refreshed, payload)
+            }
+        }
+        response
+    }
+
+    private fun executeOnce(method: String, path: String, accessToken: String, payload: JSONObject?): AgentHttpResponse {
+        client.newCall(authRequest(method, path, accessToken, payload)).execute().use { response ->
+            return AgentHttpResponse(response.code, response.body?.string().orEmpty())
+        }
+    }
 
     private fun authRequest(method: String, path: String, accessToken: String, payload: JSONObject? = null): Request {
         val builder = Request.Builder().url("${BuildConfig.SERVER_BASE_URL}$path").header("Accept", "application/json")
@@ -90,14 +124,14 @@ object AgentApi {
         return builder.build()
     }
 
-    private suspend fun taskRequest(method: String, path: String, accessToken: String, payload: JSONObject? = null): AgentApiResult<AgentTaskDto> = withContext(Dispatchers.IO) {
-        try {
-            client.newCall(authRequest(method, path, accessToken, payload)).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "Agent 服务返回 HTTP ${response.code}"))
-                AgentApiResult.Success(parseTask(JSONObject(body)))
-            }
-        } catch (error: Exception) { AgentApiResult.Failure(error.message ?: "无法连接 FDEX Agent 服务") }
+    private suspend fun taskRequest(context: Context, method: String, path: String, payload: JSONObject? = null): AgentApiResult<AgentTaskDto> {
+        return try {
+            val response = executeAuthenticated(context, method, path, payload)
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "Agent 服务返回 HTTP ${response.code}"))
+            AgentApiResult.Success(parseTask(JSONObject(response.body)))
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法连接 FDEX Agent 服务")
+        }
     }
 
     private fun parseProject(item: JSONObject): AgentProjectDto = AgentProjectDto(
@@ -124,6 +158,7 @@ object AgentApi {
     }
 
     private fun extractError(body: String, fallback: String): String = runCatching {
-        val detail = JSONObject(body).opt("detail"); when (detail) { is String -> detail; null -> ""; else -> detail.toString() }
+        val detail = JSONObject(body).opt("detail")
+        when (detail) { is String -> detail; null -> ""; else -> detail.toString() }
     }.getOrNull().orEmpty().ifBlank { fallback }
 }

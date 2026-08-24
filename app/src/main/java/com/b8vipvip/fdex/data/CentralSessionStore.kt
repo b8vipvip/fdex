@@ -2,6 +2,9 @@ package com.b8vipvip.fdex.data
 
 import android.content.Context
 import com.b8vipvip.fdex.network.CentralSessionDto
+import java.time.Duration
+import java.time.Instant
+import java.time.OffsetDateTime
 
 /** Stores only FDEX Center session material. Passwords are never persisted on Android. */
 class CentralSessionStore(context: Context) {
@@ -11,9 +14,17 @@ class CentralSessionStore(context: Context) {
     fun userId(): String = prefs.getString(KEY_USER_ID, "").orEmpty()
     fun accessToken(): String = prefs.getString(KEY_ACCESS_TOKEN, "").orEmpty()
     fun refreshToken(): String = prefs.getString(KEY_REFRESH_TOKEN, "").orEmpty()
+    fun accessExpiresAt(): String = prefs.getString(KEY_ACCESS_EXPIRES, "").orEmpty()
+    fun refreshExpiresAt(): String = prefs.getString(KEY_REFRESH_EXPIRES, "").orEmpty()
     fun email(): String = prefs.getString(KEY_EMAIL, "").orEmpty()
     fun name(): String = prefs.getString(KEY_NAME, "").orEmpty()
     fun companyName(): String = prefs.getString(KEY_COMPANY, "").orEmpty()
+
+    fun accessExpiresWithin(seconds: Long, now: Instant = Instant.now()): Boolean =
+        sessionExpiresWithin(accessExpiresAt(), seconds, now)
+
+    fun accessExpired(now: Instant = Instant.now()): Boolean =
+        accessExpiresAt().takeIf { it.isNotBlank() }?.let { sessionExpiresWithin(it, 0, now) } ?: false
 
     fun save(session: CentralSessionDto) {
         prefs.edit()
@@ -41,4 +52,12 @@ class CentralSessionStore(context: Context) {
         private const val KEY_ACCESS_EXPIRES = "access_expires_at"
         private const val KEY_REFRESH_EXPIRES = "refresh_expires_at"
     }
+}
+
+internal fun sessionExpiresWithin(value: String, seconds: Long, now: Instant = Instant.now()): Boolean {
+    val clean = value.trim()
+    val expiry = runCatching { Instant.parse(clean) }.getOrNull()
+        ?: runCatching { OffsetDateTime.parse(clean).toInstant() }.getOrNull()
+        ?: return false
+    return !expiry.isAfter(now.plus(Duration.ofSeconds(seconds.coerceAtLeast(0))))
 }
