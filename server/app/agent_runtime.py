@@ -43,10 +43,11 @@ class AgentRuntimeError(RuntimeError):
 
 
 class FdexAgentRuntime:
-    """Minimal server-side execution runtime for future Codex-compatible agents.
+    """Server-side execution boundary for Codex-style FDEX agents.
 
-    Phase 1 deliberately exposes only a tiny allowlist of deterministic repository
-    inspection commands. Arbitrary shell execution and GitHub writes are not enabled.
+    The model never receives arbitrary shell access. Every requested action is
+    validated against this runtime allowlist before a subprocess is started.
+    Phase 2 keeps the allowlist read-only while adding an autonomous model loop.
     """
 
     _ALLOWED_COMMANDS: dict[str, tuple[str, ...]] = {
@@ -65,12 +66,17 @@ class FdexAgentRuntime:
         self._tasks: dict[str, AgentTask] = {}
         self._lock = asyncio.Lock()
 
+    @property
+    def allowed_tools(self) -> tuple[str, ...]:
+        return tuple(sorted(self._ALLOWED_COMMANDS))
+
     def capabilities(self) -> dict[str, object]:
         return {
             "enabled": self.enabled,
-            "runtime": "fdex-agent-runtime-v1",
+            "runtime": "fdex-agent-runtime-v2",
             "workspace": str(self.workspace),
-            "tools": sorted(self._ALLOWED_COMMANDS),
+            "tools": list(self.allowed_tools),
+            "autonomous_loop": True,
             "arbitrary_shell": False,
             "github_write": False,
         }
@@ -92,7 +98,7 @@ class FdexAgentRuntime:
         async with self._lock:
             return self._tasks.get(task_id)
 
-    async def run_inspection(self, task_id: str, tool: str) -> AgentTask:
+    async def execute_tool(self, task_id: str, tool: str, *, terminal: bool = False) -> str:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
@@ -109,11 +115,38 @@ class FdexAgentRuntime:
             task.status = "failed"
             task.error = str(exc)
             task.emit("tool.failed", task.error)
-            return task
+            raise AgentRuntimeError(task.error) from exc
 
-        task.status = "succeeded"
-        task.result = output
+        if terminal:
+            task.status = "succeeded"
+            task.result = output
         task.emit("tool.completed", f"Completed {tool}")
+        return output
+
+    async def run_inspection(self, task_id: str, tool: str) -> AgentTask:
+        await self.execute_tool(task_id, tool, terminal=True)
+        task = await self.get_task(task_id)
+        if task is None:  # Defensive: execute_tool already validates this.
+            raise AgentRuntimeError("task not found")
+        return task
+
+    async def complete_task(self, task_id: str, result: str) -> AgentTask:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise AgentRuntimeError("task not found")
+        task.status = "succeeded"
+        task.result = result.strip()
+        task.error = ""
+        task.emit("task.completed", "Agent task completed")
+        return task
+
+    async def fail_task(self, task_id: str, error: str) -> AgentTask:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise AgentRuntimeError("task not found")
+        task.status = "failed"
+        task.error = error.strip()[:2000]
+        task.emit("task.failed", task.error)
         return task
 
     def _run_command(self, argv: tuple[str, ...]) -> str:
