@@ -72,6 +72,13 @@ object LegacyDataMigration {
         state.legacyRecords
     }
 
+    fun deleteCurrentAccountDatabase(context: Context): Boolean {
+        val app = context.applicationContext
+        val userId = CentralSessionStore(app).userId().trim()
+        if (userId.isBlank()) return false
+        return app.deleteDatabase(scopedDatabaseName(userId))
+    }
+
     private fun countCurrent(context: Context, userId: String): Int {
         val file = context.getDatabasePath(scopedDatabaseName(userId))
         return if (file.exists()) countRecords(file.absolutePath) else 0
