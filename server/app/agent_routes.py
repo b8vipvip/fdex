@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.agent_loop import FdexAgentLoop
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
 from app.config import get_settings
 
@@ -55,6 +56,22 @@ async def create_task(request: AgentTaskCreateRequest) -> dict[str, object]:
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str) -> dict[str, object]:
     task = await agent_runtime().get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return _task_payload(task)
+
+
+@router.post("/tasks/{task_id}/run")
+async def run_agent(task_id: str) -> dict[str, object]:
+    runtime = agent_runtime()
+    task = await runtime.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    try:
+        await FdexAgentLoop(runtime).run(task_id)
+    except AgentRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    task = await runtime.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     return _task_payload(task)
