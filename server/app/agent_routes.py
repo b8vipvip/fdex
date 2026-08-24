@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.agent_access import agent_token_valid
 from app.agent_loop import FdexAgentLoop
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
 from app.config import get_settings
@@ -20,6 +21,15 @@ class AgentTaskCreateRequest(BaseModel):
 class AgentToolRunRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=64)
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+def _require_agent_access(request: Request) -> None:
+    configured = settings.fdex_agent_access_token
+    if not configured.strip():
+        raise HTTPException(status_code=503, detail="FDEX Agent access token is not configured")
+    provided = request.headers.get("X-FDEX-Agent-Token", "")
+    if not agent_token_valid(configured, provided):
+        raise HTTPException(status_code=401, detail="invalid FDEX Agent token")
 
 
 def _task_payload(task: AgentTask) -> dict[str, object]:
@@ -47,21 +57,24 @@ def _task_payload(task: AgentTask) -> dict[str, object]:
 
 
 @router.get("/capabilities")
-def capabilities() -> dict[str, object]:
+def capabilities(request: Request) -> dict[str, object]:
+    _require_agent_access(request)
     return agent_runtime().capabilities()
 
 
 @router.post("/tasks")
-async def create_task(request: AgentTaskCreateRequest) -> dict[str, object]:
+async def create_task(request_body: AgentTaskCreateRequest, request: Request) -> dict[str, object]:
+    _require_agent_access(request)
     try:
-        task = await agent_runtime().create_task(request.prompt)
+        task = await agent_runtime().create_task(request_body.prompt)
     except AgentRuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _task_payload(task)
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: str) -> dict[str, object]:
+async def get_task(task_id: str, request: Request) -> dict[str, object]:
+    _require_agent_access(request)
     task = await agent_runtime().get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
@@ -69,7 +82,8 @@ async def get_task(task_id: str) -> dict[str, object]:
 
 
 @router.post("/tasks/{task_id}/run")
-async def run_agent(task_id: str) -> dict[str, object]:
+async def run_agent(task_id: str, request: Request) -> dict[str, object]:
+    _require_agent_access(request)
     runtime = agent_runtime()
     task = await runtime.get_task(task_id)
     if task is None:
@@ -85,9 +99,10 @@ async def run_agent(task_id: str) -> dict[str, object]:
 
 
 @router.post("/tasks/{task_id}/tools/run")
-async def run_tool(task_id: str, request: AgentToolRunRequest) -> dict[str, object]:
+async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Request) -> dict[str, object]:
+    _require_agent_access(request)
     try:
-        task = await agent_runtime().run_inspection(task_id, request.tool, request.args)
+        task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
     except AgentRuntimeError as exc:
         message = str(exc)
         status_code = 404 if message == "task not found" else 400

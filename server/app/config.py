@@ -30,7 +30,10 @@ class Settings(BaseSettings):
 
     # FDEX Agent Runtime. Disabled by default until an administrator intentionally
     # provisions a server-side workspace. Android never receives shell credentials.
+    # A dedicated access token is required whenever the runtime is enabled; never
+    # reuse GitHub, admin, or AI provider credentials for this purpose.
     fdex_agent_enabled: bool = False
+    fdex_agent_access_token: str = ""
     fdex_agent_workspace: str = "/opt/fdex"
     fdex_agent_worktree_root: str = str(SERVER_DIR / "data" / "agent-worktrees")
     fdex_agent_command_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)

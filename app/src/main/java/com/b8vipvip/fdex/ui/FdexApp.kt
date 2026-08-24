@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.b8vipvip.fdex.BuildConfig
+import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.ClientPreferences
 import com.b8vipvip.fdex.network.ServerApi
@@ -95,6 +96,7 @@ fun FdexApp() {
     val context = LocalContext.current
     val repo = remember { AppRepository(context) }
     val clientPreferences = remember { ClientPreferences(context) }
+    val agentPreferences = remember { AgentEmployeePreferences(context) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var revision by remember { mutableIntStateOf(0) }
@@ -162,7 +164,10 @@ fun FdexApp() {
         Route.Work -> "知识库"
         Route.Discover -> "发现"
         Route.Me -> "我的"
-        is Route.EmployeeChat -> repo.employee(current.id)?.name ?: "聊天"
+        is Route.EmployeeChat -> {
+            val name = repo.employee(current.id)?.name ?: "聊天"
+            if (agentPreferences.isCodingAgent(current.id)) "💻 $name" else name
+        }
         Route.Employees -> "AI 员工管理"
         Route.AddEmployee -> "添加员工"
         is Route.EditEmployee -> "编辑员工"
@@ -204,6 +209,28 @@ fun FdexApp() {
                                             onClick = {
                                                 employeeMenu = false
                                                 go(Route.EditEmployee(current.id))
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    if (agentPreferences.isCodingAgent(current.id)) {
+                                                        "切换为普通 AI 员工"
+                                                    } else {
+                                                        "设为 Coding Agent"
+                                                    },
+                                                )
+                                            },
+                                            onClick = {
+                                                val enabled = !agentPreferences.isCodingAgent(current.id)
+                                                agentPreferences.setCodingAgent(current.id, enabled)
+                                                employeeMenu = false
+                                                touch()
+                                                scope.launch {
+                                                    snackbar.showSnackbar(
+                                                        if (enabled) "已切换为 Coding Agent" else "已切换为普通 AI 员工",
+                                                    )
+                                                }
                                             },
                                         )
                                         DropdownMenuItem(
@@ -279,7 +306,13 @@ fun FdexApp() {
                     onContact = { go(Route.Contact) },
                     onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
                 )
-                is Route.EmployeeChat -> StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
+                is Route.EmployeeChat -> {
+                    if (agentPreferences.isCodingAgent(current.id)) {
+                        CodingAgentChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
+                    } else {
+                        StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
+                    }
+                }
                 Route.Employees -> EmployeeManageScreen(
                     repo,
                     revision,

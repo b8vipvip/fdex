@@ -35,7 +35,7 @@ elif [[ ! -f "${APP_DIR}/server/.env" ]]; then
   echo "已创建 ${APP_DIR}/server/.env。"
 fi
 
-# Initialize secure dashboard credentials without overwriting existing values.
+# Initialize secure dashboard/runtime credentials without overwriting existing values.
 GENERATED_ADMIN_PASSWORD="$(python3 - "${APP_DIR}/server/.env" <<'PY'
 from __future__ import annotations
 
@@ -77,6 +77,18 @@ if not values.get("ADMIN_LOG_LINES", "").strip():
     updates["ADMIN_LOG_LINES"] = "300"
 if not values.get("RELEASE_CACHE_DIR", "").strip():
     updates["RELEASE_CACHE_DIR"] = "/opt/fdex/server/data/releases"
+
+# Coding Agent is opt-in, but its secret is provisioned ahead of activation so
+# enabling the runtime never leaves /api/agent unprotected.
+if not values.get("FDEX_AGENT_ENABLED", "").strip():
+    updates["FDEX_AGENT_ENABLED"] = "false"
+if len(values.get("FDEX_AGENT_ACCESS_TOKEN", "")) < 32:
+    updates["FDEX_AGENT_ACCESS_TOKEN"] = secrets.token_urlsafe(48)
+if not values.get("FDEX_AGENT_WORKSPACE", "").strip():
+    updates["FDEX_AGENT_WORKSPACE"] = "/opt/fdex"
+if not values.get("FDEX_AGENT_WORKTREE_ROOT", "").strip():
+    updates["FDEX_AGENT_WORKTREE_ROOT"] = "/opt/fdex/server/data/agent-worktrees"
+
 if not values.get("FDEX_MEMORY_ENABLED", "").strip():
     updates["FDEX_MEMORY_ENABLED"] = "true"
 if not values.get("FDEX_MEMORY_MANAGED_STACK", "").strip():
@@ -217,6 +229,7 @@ for _ in {1..30}; do
       echo "首次生成的管理员密码：${GENERATED_ADMIN_PASSWORD}"
       echo "请立即登录后台并修改密码；该密码只在本次终端输出。"
     fi
+    echo "Coding Agent 默认保持关闭；启用前请设置 FDEX_AGENT_ENABLED=true，并将 server/.env 中的 FDEX_AGENT_ACCESS_TOKEN 填入 Android Coding Agent 页面。"
     exit 0
   fi
   sleep 1
