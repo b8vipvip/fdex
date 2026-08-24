@@ -60,6 +60,7 @@ class FdexAgentRuntime:
         "list_files",
         "read_file",
         "write_file",
+        "replace_text",
         "run_tests",
         "git_commit",
     )
@@ -68,7 +69,6 @@ class FdexAgentRuntime:
         "android_unit": (("gradle", "--no-daemon", ":app:testDebugUnitTest"), "."),
         "android_debug": (("gradle", "--no-daemon", ":app:assembleDebug"), "."),
     }
-    _DENIED_PATH_PARTS = {".git", ".gradle", "build", "server/data"}
 
     def __init__(self, workspace: Path | None = None, worktree_root: Path | None = None) -> None:
         settings = get_settings()
@@ -211,9 +211,11 @@ class FdexAgentRuntime:
         if tool == "list_files":
             return self._list_files(worktree, str(args.get("path") or "."))
         if tool == "read_file":
-            return self._read_file(worktree, str(args.get("path") or ""))
+            return self._read_file(worktree, str(args.get("path") or ""), args)
         if tool == "write_file":
             return self._write_file(task, worktree, str(args.get("path") or ""), args.get("content"))
+        if tool == "replace_text":
+            return self._replace_text(task, worktree, args)
         if tool == "run_tests":
             return self._run_tests(worktree, str(args.get("suite") or ""))
         if tool == "git_commit":
@@ -264,7 +266,7 @@ class FdexAgentRuntime:
                     return "\n".join(rows)
         return "\n".join(rows) or "(no files)"
 
-    def _read_file(self, worktree: Path, relative: str) -> str:
+    def _read_file(self, worktree: Path, relative: str, args: dict[str, Any]) -> str:
         path = self._safe_path(worktree, relative)
         if not path.is_file():
             raise AgentRuntimeError("file not found")
@@ -275,9 +277,15 @@ class FdexAgentRuntime:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise AgentRuntimeError("only UTF-8 text files can be read") from exc
-        if len(text) > self.max_file_chars:
-            return text[: self.max_file_chars] + "\n... file truncated ..."
-        return text
+        lines = text.splitlines(keepends=True)
+        start = max(1, int(args.get("start_line") or 1))
+        end = min(len(lines), int(args.get("end_line") or min(len(lines), start + 399)))
+        if end < start:
+            raise AgentRuntimeError("end_line must be >= start_line")
+        selected = "".join(lines[start - 1 : end])
+        if len(selected) > self.max_file_chars:
+            selected = selected[: self.max_file_chars] + "\n... file truncated ..."
+        return f"{relative} lines {start}-{end}/{len(lines)}\n{selected}"
 
     def _write_file(self, task: AgentTask, worktree: Path, relative: str, content: Any) -> str:
         if not isinstance(content, str):
@@ -294,6 +302,30 @@ class FdexAgentRuntime:
         task.emit("file.written", f"Updated {rel}")
         return f"updated {rel} ({len(content)} chars)"
 
+    def _replace_text(self, task: AgentTask, worktree: Path, args: dict[str, Any]) -> str:
+        relative = str(args.get("path") or "")
+        old = args.get("old")
+        new = args.get("new")
+        if not isinstance(old, str) or not old:
+            raise AgentRuntimeError("replace_text old text is required")
+        if not isinstance(new, str):
+            raise AgentRuntimeError("replace_text new text must be text")
+        path = self._safe_path(worktree, relative)
+        if not path.is_file():
+            raise AgentRuntimeError("file not found")
+        text = path.read_text(encoding="utf-8")
+        matches = text.count(old)
+        if matches != 1:
+            raise AgentRuntimeError(f"replace_text requires exactly one match; found {matches}")
+        updated = text.replace(old, new, 1)
+        if len(updated) > self.max_file_chars:
+            raise AgentRuntimeError("updated file exceeds limit")
+        path.write_text(updated, encoding="utf-8")
+        rel = path.relative_to(worktree.resolve()).as_posix()
+        task.changed_files.add(rel)
+        task.emit("file.written", f"Updated {rel}")
+        return f"replaced one occurrence in {rel}"
+
     def _run_tests(self, worktree: Path, suite: str) -> str:
         if suite not in self._TEST_SUITES:
             raise AgentRuntimeError(f"unknown test suite: {suite or '<empty>'}")
@@ -301,7 +333,13 @@ class FdexAgentRuntime:
         cwd = worktree if relative_cwd == "." else (worktree / relative_cwd)
         if not cwd.is_dir():
             raise AgentRuntimeError(f"test working directory not found: {relative_cwd}")
-        return self._run_command(argv, cwd=cwd, timeout=self.build_timeout_seconds)
+        return self._run_command(
+            argv,
+            cwd=cwd,
+            timeout=self.build_timeout_seconds,
+            check=False,
+            include_exit_code=True,
+        )
 
     def _git_commit(self, task: AgentTask, worktree: Path, message: str) -> str:
         if not task.changed_files:
@@ -324,6 +362,8 @@ class FdexAgentRuntime:
         *,
         cwd: Path,
         timeout: float | None = None,
+        check: bool = True,
+        include_exit_code: bool = False,
     ) -> str:
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -346,11 +386,13 @@ class FdexAgentRuntime:
         output = completed.stdout or ""
         if len(output) > self.max_output_chars:
             output = output[: self.max_output_chars] + "\n... output truncated ..."
-        if completed.returncode != 0:
+        if check and completed.returncode != 0:
             command = " ".join(shlex.quote(part) for part in argv)
             raise AgentRuntimeError(
                 f"command failed ({completed.returncode}): {command}\n{output}".strip()
             )
+        if include_exit_code:
+            return f"exit_code={completed.returncode}\n{output}".strip()
         return output.strip()
 
 
