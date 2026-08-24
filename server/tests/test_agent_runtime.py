@@ -25,7 +25,9 @@ def test_capabilities_do_not_expose_arbitrary_shell(tmp_path: Path) -> None:
     assert caps["direct_main_write"] is False
     assert caps["github_connector"] is True
     assert caps["ai_source"] == "shared_provider_pool"
-    assert caps["owner_project_task_isolation"] is True
+    assert caps["account_project_task_isolation"] is True
+    assert caps["ephemeral_execution_sandbox"] == "systemd"
+    assert caps["sandbox_max_concurrent"] >= 1
     assert "git_status" in caps["tools"]
 
 
