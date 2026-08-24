@@ -20,6 +20,10 @@ _RUNTIME = fresh_settings()
 _DATA_DIR = Path(_RUNTIME.app_dir) / "server" / "data"
 DB_PATH = _DATA_DIR / "fdex-accounts.db"
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_SCRYPT_N = 2**15
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_MAXMEM = 64 * 1024 * 1024
 
 
 def _now() -> datetime:
@@ -36,8 +40,21 @@ def _hash_token(value: str) -> str:
 
 def _password_hash(password: str) -> str:
     salt = secrets.token_bytes(16)
-    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**15, r=8, p=1, dklen=32)
-    return "scrypt$32768$8$1$" + base64.urlsafe_b64encode(salt).decode("ascii") + "$" + base64.urlsafe_b64encode(derived).decode("ascii")
+    derived = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=32,
+        maxmem=_SCRYPT_MAXMEM,
+    )
+    return (
+        f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}$"
+        + base64.urlsafe_b64encode(salt).decode("ascii")
+        + "$"
+        + base64.urlsafe_b64encode(derived).decode("ascii")
+    )
 
 
 def _password_verify(record: str, password: str) -> bool:
@@ -47,7 +64,15 @@ def _password_verify(record: str, password: str) -> bool:
             return False
         salt = base64.urlsafe_b64decode(salt64.encode("ascii"))
         expected = base64.urlsafe_b64decode(hash64.encode("ascii"))
-        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=int(n), r=int(r), p=int(p), dklen=len(expected))
+        actual = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=salt,
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(expected),
+            maxmem=_SCRYPT_MAXMEM,
+        )
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
@@ -181,7 +206,8 @@ class CentralAuthStore:
 
     def refresh(self, refresh_token: str) -> dict[str, object]:
         clean = (refresh_token or "").strip()
-        now_dt = _now(); now = _iso(now_dt)
+        now_dt = _now()
+        now = _iso(now_dt)
         with self.db() as conn:
             row = conn.execute(
                 "SELECT s.*,u.enabled FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.refresh_hash=? AND s.revoked_at='' AND s.refresh_expires_at>?",
@@ -190,7 +216,8 @@ class CentralAuthStore:
         if row is None or not bool(row["enabled"]):
             raise ValueError("登录状态已失效，请重新登录")
         settings = fresh_settings()
-        access = secrets.token_urlsafe(48); refresh = secrets.token_urlsafe(64)
+        access = secrets.token_urlsafe(48)
+        refresh = secrets.token_urlsafe(64)
         access_exp = now_dt + timedelta(minutes=settings.fdex_auth_access_minutes)
         refresh_exp = now_dt + timedelta(days=settings.fdex_auth_refresh_days)
         with self.db() as conn:
@@ -214,7 +241,15 @@ class CentralAuthStore:
 
     @staticmethod
     def _public_user(row: dict[str, object], *, session_id: str = "") -> dict[str, object]:
-        data = {"id": str(row["id"]), "email": str(row["email"]), "name": str(row["name"]), "company_name": str(row.get("company_name") or ""), "enabled": bool(row["enabled"]), "created_at": str(row["created_at"]), "last_login_at": str(row.get("last_login_at") or "")}
+        data = {
+            "id": str(row["id"]),
+            "email": str(row["email"]),
+            "name": str(row["name"]),
+            "company_name": str(row.get("company_name") or ""),
+            "enabled": bool(row["enabled"]),
+            "created_at": str(row["created_at"]),
+            "last_login_at": str(row.get("last_login_at") or ""),
+        }
         if session_id:
             data["session_id"] = session_id
         return data
@@ -222,4 +257,6 @@ class CentralAuthStore:
 
 @lru_cache(maxsize=1)
 def central_auth_store() -> CentralAuthStore:
-    store = CentralAuthStore(); store.init(); return store
+    store = CentralAuthStore()
+    store.init()
+    return store
