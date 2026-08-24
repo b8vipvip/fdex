@@ -78,6 +78,23 @@ def _user_agent(request: Request) -> str:
     return request.headers.get("user-agent", "")[:300]
 
 
+def _expand_reset_code(email: str, code: str) -> str:
+    raw = (code or "").strip()
+    if not (len(raw) == 6 and raw.isdigit()):
+        return raw
+    store = central_auth_store()
+    try:
+        normalized = store.normalize_email(email)
+    except ValueError:
+        return raw
+    with store.db() as conn:
+        row = conn.execute(
+            "SELECT id FROM password_reset_codes WHERE email=? AND used_at='' ORDER BY created_at DESC LIMIT 1",
+            (normalized,),
+        ).fetchone()
+    return f"{row['id']}.{raw}" if row is not None else raw
+
+
 @router.post("/register")
 def register(body: RegisterRequest, request: Request) -> dict[str, object]:
     if not settings.fdex_auth_registration_enabled:
@@ -185,9 +202,10 @@ def request_password_reset(body: ResetRequest, request: Request) -> dict[str, ob
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if reset is not None:
-        user, code = reset
+        user, internal_code = reset
+        visible_code = internal_code.rsplit(".", 1)[-1]
         try:
-            send_password_reset_code(str(user["email"]), code, settings=cfg)
+            send_password_reset_code(str(user["email"]), visible_code, settings=cfg)
         except AuthEmailUnavailable as exc:
             raise HTTPException(status_code=503, detail="验证码邮件发送失败，请稍后重试") from exc
     return {"ok": True, "message": "如果该邮箱已注册，验证码邮件将很快送达"}
@@ -198,7 +216,7 @@ def confirm_password_reset(body: ResetConfirmRequest, request: Request) -> dict[
     try:
         central_auth_store().confirm_password_reset(
             body.email,
-            body.code,
+            _expand_reset_code(body.email, body.code),
             body.new_password,
             client_ip=_client_ip(request),
         )
