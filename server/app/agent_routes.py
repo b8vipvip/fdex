@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,7 @@ class AgentTaskCreateRequest(BaseModel):
 
 class AgentToolRunRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=64)
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 def _task_payload(task: AgentTask) -> dict[str, object]:
@@ -26,6 +29,10 @@ def _task_payload(task: AgentTask) -> dict[str, object]:
         "status": task.status,
         "result": task.result,
         "error": task.error,
+        "branch": task.branch,
+        "worktree": task.worktree,
+        "commit_sha": task.commit_sha,
+        "changed_files": sorted(task.changed_files),
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "events": [
@@ -80,7 +87,7 @@ async def run_agent(task_id: str) -> dict[str, object]:
 @router.post("/tasks/{task_id}/tools/run")
 async def run_tool(task_id: str, request: AgentToolRunRequest) -> dict[str, object]:
     try:
-        task = await agent_runtime().run_inspection(task_id, request.tool)
+        task = await agent_runtime().run_inspection(task_id, request.tool, request.args)
     except AgentRuntimeError as exc:
         message = str(exc)
         status_code = 404 if message == "task not found" else 400

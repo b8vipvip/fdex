@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from app.agent_runtime import AgentRuntimeError, FdexAgentRuntime
 from app.config import get_settings
@@ -12,19 +12,33 @@ from app.multimodal_service import route_text
 ModelCall = Callable[[str, str, int], Awaitable[str]]
 
 _AGENT_SYSTEM = """You are the decision engine for FDEX Agent Runtime.
-You do not have direct shell access. You may only request one tool from the exact allowlist provided by FDEX.
+You do not have direct shell access, network access, push, merge, or main-branch write access.
+You may request exactly one tool from the allowlist and must supply only that tool's documented JSON arguments.
 Return exactly one JSON object and no markdown.
 Allowed response forms:
-{"action":"tool","tool":"<allowed tool>","summary":"short public progress summary"}
+{"action":"tool","tool":"<allowed tool>","args":{},"summary":"short public progress summary"}
 {"action":"final","answer":"concise final answer to the user","summary":"short public completion summary"}
-Never invent tool output. Never request commands, arguments, file paths, shell, network calls, git writes, or any tool not listed.
+Never invent tool output. Use read/list tools before editing when needed. After edits, inspect the diff and run the relevant test suite. Commit only after the requested work is validated when possible.
 The summary must be safe to show to the user and must not contain hidden chain-of-thought."""
+
+_TOOL_GUIDE = """TOOL ARGUMENTS:
+git_status: {}
+git_diff: {}
+git_log: {}
+list_files: {"path":"relative/directory"} (path may be ".")
+read_file: {"path":"relative/file","start_line":1,"end_line":400}
+write_file: {"path":"relative/file","content":"complete UTF-8 text"}
+replace_text: {"path":"relative/file","old":"exact unique text","new":"replacement text"}
+run_tests: {"suite":"server|android_unit|android_debug"}
+git_commit: {"message":"short commit subject"}
+Paths must be relative to the task worktree. Protected paths and path traversal are rejected by the runtime."""
 
 
 @dataclass(slots=True)
 class AgentDecision:
     action: str
     tool: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
     answer: str = ""
     summary: str = ""
 
@@ -74,7 +88,13 @@ def parse_decision(text: str, allowed_tools: tuple[str, ...]) -> AgentDecision:
         tool = str(data.get("tool") or "").strip()
         if tool not in allowed_tools:
             raise AgentDecisionError(f"agent requested disallowed tool: {tool or '<empty>'}")
-        return AgentDecision(action="tool", tool=tool, summary=summary)
+        args = data.get("args") or {}
+        if not isinstance(args, dict):
+            raise AgentDecisionError("agent tool args must be a JSON object")
+        encoded = json.dumps(args, ensure_ascii=False)
+        if len(encoded) > 250000:
+            raise AgentDecisionError("agent tool args exceed limit")
+        return AgentDecision(action="tool", tool=tool, args=args, summary=summary)
     raise AgentDecisionError(f"unsupported agent action: {action or '<empty>'}")
 
 
@@ -100,7 +120,7 @@ class FdexAgentLoop:
             raise AgentRuntimeError(f"task cannot run from status: {task.status}")
 
         task.status = "running"
-        task.emit("agent.started", "Autonomous agent loop started")
+        task.emit("agent.started", "Autonomous coding agent loop started")
         transcript: list[str] = []
         try:
             for step in range(1, self.max_steps + 1):
@@ -115,9 +135,19 @@ class FdexAgentLoop:
                     await self.runtime.complete_task(task_id, decision.answer)
                     return
 
-                output = await self.runtime.execute_tool(task_id, decision.tool, terminal=False)
+                output = await self.runtime.execute_tool(
+                    task_id,
+                    decision.tool,
+                    args=decision.args,
+                    terminal=False,
+                )
                 transcript.append(
-                    f"STEP {step}\nTOOL: {decision.tool}\nOBSERVATION:\n{output or '(no output)'}"
+                    "STEP {step}\nTOOL: {tool}\nARGS: {args}\nOBSERVATION:\n{output}".format(
+                        step=step,
+                        tool=decision.tool,
+                        args=json.dumps(decision.args, ensure_ascii=False, separators=(",", ":")),
+                        output=output or "(no output)",
+                    )
                 )
 
             raise AgentRuntimeError(f"agent exceeded maximum steps ({self.max_steps})")
@@ -130,7 +160,8 @@ class FdexAgentLoop:
         return (
             f"USER TASK:\n{user_prompt}\n\n"
             f"ALLOWED TOOLS:\n{tools}\n\n"
+            f"{_TOOL_GUIDE}\n\n"
             f"TOOL OBSERVATIONS SO FAR:\n{observations}\n\n"
             f"STEP: {step}/{self.max_steps}\n"
-            "Choose the next allowed tool only if another observation is necessary; otherwise return final."
+            "Choose one next tool if work remains; otherwise return final."
         )
