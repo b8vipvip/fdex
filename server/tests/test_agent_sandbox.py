@@ -47,3 +47,27 @@ def test_network_can_be_explicitly_enabled_per_project(tmp_path: Path) -> None:
         limits=SandboxLimits(memory_mb=3072, cpu_percent=200, pids_max=512, allow_network=True),
     )
     assert "PrivateNetwork=yes" not in " ".join(command)
+
+
+def test_runtime_account_database_directory_is_inaccessible_to_builds(tmp_path: Path) -> None:
+    sandbox = SystemdExecutionSandbox()
+    sandbox.app_dir = (tmp_path / "app").resolve()
+    runtime_data = sandbox.app_dir / "server" / "data"
+    runtime_data.mkdir(parents=True)
+    (runtime_data / "fdex-accounts.db").write_text("hashed-account-state", encoding="utf-8")
+    (sandbox.app_dir / "server" / ".env").write_text("SECRET=value", encoding="utf-8")
+
+    sandbox.sandbox_root = (tmp_path / "sandboxes").resolve()
+    worktree = sandbox.sandbox_root / "owners" / "usr_alpha" / "projects" / "3" / "worktrees" / "task-c"
+    worktree.mkdir(parents=True)
+    command = sandbox.build_systemd_command(
+        owner_id="usr_alpha",
+        task_id="task-c",
+        worktree=worktree,
+        cwd=worktree,
+        argv=("python", "-m", "pytest"),
+        limits=SandboxLimits(memory_mb=1024, cpu_percent=100, pids_max=128, allow_network=False),
+    )
+    joined = " ".join(command)
+    assert f"InaccessiblePaths={runtime_data}" in joined
+    assert f"InaccessiblePaths={sandbox.app_dir / 'server' / '.env'}" in joined

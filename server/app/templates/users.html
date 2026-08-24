@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}FDEX 用户管理 · FDEX{% endblock %}
+{% block heading %}FDEX 用户管理{% endblock %}
+{% block subheading %}统一查看中心账号、设备会话、GitHub / Coding Agent 资源并执行账号控制{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+    <article class="stat-card"><div class="stat-icon">◎</div><div><span>用户总数</span><strong>{{ user_stats.total }}</strong><small>中心 user_id</small></div></article>
+    <article class="stat-card"><div class="stat-icon success">●</div><div><span>正常用户</span><strong>{{ user_stats.enabled }}</strong><small>允许登录与调用</small></div></article>
+    <article class="stat-card"><div class="stat-icon warning">×</div><div><span>已禁用</span><strong>{{ user_stats.disabled }}</strong><small>现有会话已撤销</small></div></article>
+    <article class="stat-card"><div class="stat-icon">▣</div><div><span>活跃设备会话</span><strong>{{ user_stats.active_sessions }}</strong><small>Refresh 会话仍有效</small></div></article>
+</div>
+
+<section class="panel form-section">
+    <div class="panel-header">
+        <div>
+            <h2>中心账号</h2>
+            <p>这里的 user_id 是普通 AI、文件/视觉、实时语音、长期记忆、GitHub、Coding Agent 与账号沙箱的统一所有者身份。</p>
+        </div>
+        <span class="badge success">服务端强制隔离</span>
+    </div>
+    {% if users %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+            <tr><th>用户</th><th>状态</th><th>注册 / 最近登录</th><th>设备会话</th><th>GitHub / Agent</th><th>沙箱占用</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+            {% for item in users %}
+            <tr>
+                <td>
+                    <strong>{{ item.name }}</strong>
+                    <div class="tiny-line">{{ item.email }}</div>
+                    <div class="tiny-line"><code>{{ item.id }}</code></div>
+                    {% if item.company_name %}<div class="tiny-line">{{ item.company_name }}</div>{% endif %}
+                </td>
+                <td><span class="badge {{ 'success' if item.enabled else 'error' }}">{{ '正常' if item.enabled else '已禁用' }}</span></td>
+                <td>
+                    <div class="tiny-line">注册：{{ item.created_at[:19].replace('T',' ') if item.created_at else '-' }}</div>
+                    <div class="tiny-line">登录：{{ item.last_login_at[:19].replace('T',' ') if item.last_login_at else '-' }}</div>
+                </td>
+                <td>
+                    <strong>{{ item.active_session_count }}</strong> 活跃 / {{ item.session_count }} 总计
+                    {% if item.latest_session_at %}<div class="tiny-line">最近：{{ item.latest_session_at[:19].replace('T',' ') }}</div>{% endif %}
+                </td>
+                <td>
+                    <div>GitHub：{{ item.github_count }}</div>
+                    <div class="tiny-line">Agent 项目：{{ item.project_count }}</div>
+                </td>
+                <td><strong>{{ item.sandbox_size }}</strong></td>
+                <td>
+                    <div class="provider-actions">
+                        <a class="button secondary small" href="/admin/users?user={{ item.id }}">查看资源</a>
+                        <form method="post" action="/admin/users/{{ item.id }}/revoke-sessions" data-confirm="注销 {{ item.email }} 的全部登录设备？正在使用的客户端会在下一次鉴权或刷新时失效。">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button class="button secondary small" type="submit">注销全部设备</button>
+                        </form>
+                        {% if item.enabled %}
+                        <form method="post" action="/admin/users/{{ item.id }}/status" data-confirm="禁用 {{ item.email }}？系统会同时撤销该用户全部现有会话。">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="enabled" value="false">
+                            <button class="button danger-outline small" type="submit">禁用</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="/admin/users/{{ item.id }}/status">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="enabled" value="true">
+                            <button class="button primary small" type="submit">恢复</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="empty-text">还没有 FDEX 中心用户。Android 客户端完成首次注册后会自动出现在这里。</p>
+    {% endif %}
+</section>
+
+{% if selected_user %}
+<section class="panel form-section" id="user-detail">
+    <div class="panel-header">
+        <div>
+            <h2>{{ selected_user.name }} · 账号资源</h2>
+            <p>{{ selected_user.email }} · <code>{{ selected_user.id }}</code></p>
+        </div>
+        <span class="badge {{ 'success' if selected_user.enabled else 'error' }}">{{ '正常' if selected_user.enabled else '已禁用' }}</span>
+    </div>
+    <div class="stat-grid compact-stats">
+        <article class="stat-card"><div class="stat-icon">GH</div><div><span>GitHub 连接</span><strong>{{ selected_user.github_count }}</strong><small>仅该 user_id 可用</small></div></article>
+        <article class="stat-card"><div class="stat-icon">⌘</div><div><span>Agent 项目</span><strong>{{ selected_user.project_count }}</strong><small>项目与任务隔离</small></div></article>
+        <article class="stat-card"><div class="stat-icon">▤</div><div><span>沙箱磁盘</span><strong>{{ selected_user.sandbox_size }}</strong><small>owners/{{ selected_user.id }}</small></div></article>
+        <article class="stat-card"><div class="stat-icon">▣</div><div><span>历史会话</span><strong>{{ sessions|length }}</strong><small>不展示任何 Token 明文</small></div></article>
+    </div>
+
+    <div class="panel-header"><div><h3>设备与 Session</h3><p>服务端只保存 Access/Refresh Token 的哈希；此页只显示会话元数据。</p></div></div>
+    {% if sessions %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead><tr><th>Session</th><th>设备</th><th>状态</th><th>创建</th><th>最近刷新</th><th>Refresh 到期</th></tr></thead>
+            <tbody>
+            {% for session in sessions %}
+            <tr>
+                <td><code>{{ session.id }}</code></td>
+                <td>{{ session.device_name or '-' }}</td>
+                <td>
+                    <span class="badge {{ 'success' if session.active else 'warning' }}">{{ '有效' if session.active else '已失效' }}</span>
+                    {% if session.revoked_at %}<div class="tiny-line">撤销：{{ session.revoked_at[:19].replace('T',' ') }}</div>{% endif %}
+                </td>
+                <td>{{ session.created_at[:19].replace('T',' ') if session.created_at else '-' }}</td>
+                <td>{{ session.updated_at[:19].replace('T',' ') if session.updated_at else '-' }}</td>
+                <td>{{ session.refresh_expires_at[:19].replace('T',' ') if session.refresh_expires_at else '-' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="empty-text">该账号暂无设备会话。</p>
+    {% endif %}
+</section>
+{% endif %}
+{% endblock %}

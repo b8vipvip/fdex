@@ -56,15 +56,12 @@ class SystemdExecutionSandbox:
 
     def _hidden_paths(self, owner_id: str, worktree: Path) -> list[Path]:
         hidden: list[Path] = []
-        # FDEX credentials and state must never be visible to repository build scripts.
+        # FDEX runtime credentials and databases must never be visible to repository build
+        # scripts. Hiding the whole runtime data directory also covers SQLite WAL/SHM files,
+        # including the center account DB with password/session hashes.
         for relative in (
             "server/.env",
-            "server/data/ai-providers.db",
-            "server/data/ai-providers.key",
-            "server/data/agent-projects.db",
-            "server/data/agent-projects.key",
-            "server/data/agent-accounts.db",
-            "server/data/memory",
+            "server/data",
         ):
             path = (self.app_dir / relative).resolve()
             if path.exists():
