@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 import sqlite3
@@ -30,7 +31,7 @@ def _now() -> str:
 
 def _safe_scope(value: str) -> str:
     clean = (value or "").strip()
-    if not _SAFE_SCOPE.fullmatch(clean):
+    if not _SAFE_SCOPE.fullmatch(clean) or clean in {".", ".."}:
         raise ValueError("owner scope is invalid")
     return clean
 
@@ -41,12 +42,15 @@ def _safe_repo(value: str) -> str:
         clean = clean.removeprefix("https://github.com/")
     if not _SAFE_REPO.fullmatch(clean):
         raise ValueError("GitHub repository must use owner/name")
+    owner, repo = clean.split("/", 1)
+    if owner in {".", ".."} or repo in {".", ".."}:
+        raise ValueError("GitHub repository is invalid")
     return clean
 
 
 def _safe_branch(value: str) -> str:
     clean = (value or "main").strip()
-    if not _SAFE_BRANCH.fullmatch(clean) or ".." in clean or clean.startswith("/"):
+    if not _SAFE_BRANCH.fullmatch(clean) or ".." in clean or clean.startswith("/") or clean.endswith("/"):
         raise ValueError("base branch is invalid")
     return clean
 
@@ -129,35 +133,42 @@ class AgentProjectStore:
             except OSError:
                 pass
             os.replace(tmp, self.key_path)
+        try:
+            os.chmod(self.key_path, 0o600)
+        except OSError:
+            pass
         self._fernet = Fernet(key)
         return self._fernet
 
     def encrypt(self, value: str) -> str:
-        return self._cipher().encrypt(value.encode()).decode() if value else ""
+        return self._cipher().encrypt(value.encode("utf-8")).decode("ascii") if value else ""
 
     def decrypt(self, value: str) -> str:
         if not value:
             return ""
         try:
-            return self._cipher().decrypt(value.encode()).decode()
+            return self._cipher().decrypt(value.encode("ascii")).decode("utf-8")
         except InvalidToken as exc:
             raise RuntimeError("GitHub connector secret cannot be decrypted") from exc
 
     def list_connections(self, owner_id: str) -> list[dict[str, Any]]:
-        self.init(); owner_id = _safe_scope(owner_id)
+        self.init()
+        owner_id = _safe_scope(owner_id)
         with self.db() as conn:
             rows = conn.execute("SELECT * FROM github_connections WHERE owner_id=? ORDER BY id", (owner_id,)).fetchall()
         return [self._connection_row(row) for row in rows]
 
     def _connection_row(self, row: sqlite3.Row, *, secret: bool = False) -> dict[str, Any]:
-        data = dict(row); cipher = data.pop("token_cipher")
+        data = dict(row)
+        cipher = data.pop("token_cipher")
         data["token_configured"] = bool(cipher)
         if secret:
             data["token"] = self.decrypt(cipher)
         return data
 
     def get_connection(self, owner_id: str, connection_id: int, *, secret: bool = False) -> dict[str, Any]:
-        self.init(); owner_id = _safe_scope(owner_id)
+        self.init()
+        owner_id = _safe_scope(owner_id)
         with self.db() as conn:
             row = conn.execute("SELECT * FROM github_connections WHERE id=? AND owner_id=?", (connection_id, owner_id)).fetchone()
         if row is None:
@@ -165,7 +176,9 @@ class AgentProjectStore:
         return self._connection_row(row, secret=secret)
 
     def save_connection(self, owner_id: str, name: str, token: str, connection_id: int | None = None) -> dict[str, Any]:
-        self.init(); owner_id = _safe_scope(owner_id); name = (name or "GitHub").strip()[:80]
+        self.init()
+        owner_id = _safe_scope(owner_id)
+        name = (name or "GitHub").strip()[:80]
         token = (token or "").strip()
         if connection_id:
             old = self.get_connection(owner_id, connection_id, secret=True)
@@ -179,23 +192,33 @@ class AgentProjectStore:
         now = _now()
         with self.db() as conn:
             if connection_id:
-                conn.execute("UPDATE github_connections SET name=?,login=?,token_cipher=?,updated_at=? WHERE id=? AND owner_id=?", (name, login, self.encrypt(token), now, connection_id, owner_id))
+                conn.execute(
+                    "UPDATE github_connections SET name=?,login=?,token_cipher=?,updated_at=? WHERE id=? AND owner_id=?",
+                    (name, login, self.encrypt(token), now, connection_id, owner_id),
+                )
                 cid = connection_id
             else:
-                cur = conn.execute("INSERT INTO github_connections(owner_id,name,login,token_cipher,created_at,updated_at) VALUES(?,?,?,?,?,?)", (owner_id, name, login, self.encrypt(token), now, now))
+                cur = conn.execute(
+                    "INSERT INTO github_connections(owner_id,name,login,token_cipher,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                    (owner_id, name, login, self.encrypt(token), now, now),
+                )
                 cid = int(cur.lastrowid)
         return self.get_connection(owner_id, cid)
 
     def delete_connection(self, owner_id: str, connection_id: int) -> None:
         self.get_connection(owner_id, connection_id)
         with self.db() as conn:
-            used = conn.execute("SELECT COUNT(*) FROM agent_projects WHERE owner_id=? AND connection_id=?", (owner_id, connection_id)).fetchone()[0]
+            used = conn.execute(
+                "SELECT COUNT(*) FROM agent_projects WHERE owner_id=? AND connection_id=?",
+                (owner_id, connection_id),
+            ).fetchone()[0]
             if used:
                 raise ValueError("GitHub connection is still used by a project")
             conn.execute("DELETE FROM github_connections WHERE id=? AND owner_id=?", (connection_id, owner_id))
 
     def list_projects(self, owner_id: str, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-        self.init(); owner_id = _safe_scope(owner_id)
+        self.init()
+        owner_id = _safe_scope(owner_id)
         sql = "SELECT * FROM agent_projects WHERE owner_id=?" + (" AND enabled=1" if enabled_only else "") + " ORDER BY name,id"
         with self.db() as conn:
             rows = conn.execute(sql, (owner_id,)).fetchall()
@@ -209,25 +232,51 @@ class AgentProjectStore:
         return data
 
     def get_project(self, owner_id: str, project_id: int) -> dict[str, Any]:
-        self.init(); owner_id = _safe_scope(owner_id)
+        self.init()
+        owner_id = _safe_scope(owner_id)
         with self.db() as conn:
             row = conn.execute("SELECT * FROM agent_projects WHERE id=? AND owner_id=?", (project_id, owner_id)).fetchone()
         if row is None:
             raise KeyError("Agent project not found")
         return self._project_row(row)
 
-    def save_project(self, owner_id: str, *, name: str, repo_full_name: str, base_branch: str = "main", connection_id: int | None = None, allow_push: bool = False, allow_pr: bool = False, enabled: bool = True, project_id: int | None = None) -> dict[str, Any]:
-        self.init(); owner_id = _safe_scope(owner_id); repo = _safe_repo(repo_full_name); branch = _safe_branch(base_branch)
+    def save_project(
+        self,
+        owner_id: str,
+        *,
+        name: str,
+        repo_full_name: str,
+        base_branch: str = "main",
+        connection_id: int | None = None,
+        allow_push: bool = False,
+        allow_pr: bool = False,
+        enabled: bool = True,
+        project_id: int | None = None,
+    ) -> dict[str, Any]:
+        self.init()
+        owner_id = _safe_scope(owner_id)
+        repo = _safe_repo(repo_full_name)
+        branch = _safe_branch(base_branch)
         name = (name or repo.split("/")[-1]).strip()[:100]
+        if not name:
+            raise ValueError("project name is required")
         if connection_id is not None:
             self.get_connection(owner_id, connection_id)
+        # Creating a PR necessarily requires first pushing the generated Agent branch.
+        allow_push = bool(allow_push or allow_pr)
         now = _now()
         with self.db() as conn:
             if project_id:
-                conn.execute("UPDATE agent_projects SET name=?,repo_full_name=?,base_branch=?,connection_id=?,enabled=?,allow_push=?,allow_pr=?,updated_at=? WHERE id=? AND owner_id=?", (name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, project_id, owner_id))
+                conn.execute(
+                    "UPDATE agent_projects SET name=?,repo_full_name=?,base_branch=?,connection_id=?,enabled=?,allow_push=?,allow_pr=?,updated_at=? WHERE id=? AND owner_id=?",
+                    (name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, project_id, owner_id),
+                )
                 pid = project_id
             else:
-                cur = conn.execute("INSERT INTO agent_projects(owner_id,name,repo_full_name,base_branch,connection_id,enabled,allow_push,allow_pr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (owner_id, name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, now))
+                cur = conn.execute(
+                    "INSERT INTO agent_projects(owner_id,name,repo_full_name,base_branch,connection_id,enabled,allow_push,allow_pr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (owner_id, name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, now),
+                )
                 pid = int(cur.lastrowid)
         return self.get_project(owner_id, pid)
 
@@ -239,7 +288,9 @@ class AgentProjectStore:
     def project_paths(self, owner_id: str, project_id: int) -> tuple[Path, Path]:
         owner_id = _safe_scope(owner_id)
         root = Path(fresh_settings().fdex_agent_sandbox_root).expanduser().resolve()
-        project_root = root / "owners" / owner_id / "projects" / str(int(project_id))
+        project_root = (root / "owners" / owner_id / "projects" / str(int(project_id))).resolve()
+        if root not in project_root.parents:
+            raise ValueError("project sandbox escaped sandbox root")
         return (project_root / "repository").resolve(), (project_root / "worktrees").resolve()
 
     def prepare_repository(self, owner_id: str, project_id: int) -> tuple[dict[str, Any], Path, Path]:
@@ -254,13 +305,17 @@ class AgentProjectStore:
             repo_path.parent.mkdir(parents=True, exist_ok=True)
             self._git(("git", "clone", "--no-tags", clone_url, str(repo_path)), cwd=repo_path.parent, env=env, timeout=300)
         else:
-            self._git(("git", "fetch", "origin", project["base_branch"], "--prune"), cwd=repo_path, env=env, timeout=180)
+            self._git(("git", "fetch", "origin", "--prune"), cwd=repo_path, env=env, timeout=180)
+        # Verify the configured base branch exists before a task creates a worktree from it.
+        self._git(("git", "rev-parse", "--verify", f"origin/{project['base_branch']}"), cwd=repo_path, env=env, timeout=30)
         return project, repo_path, worktrees
 
     def push_branch(self, owner_id: str, project_id: int, repo_path: Path, branch: str) -> str:
         project = self.get_project(owner_id, project_id)
         if not project["allow_push"]:
             raise ValueError("Git push is disabled for this project")
+        if not branch.startswith("fdex-agent/"):
+            raise ValueError("only generated fdex-agent branches may be pushed")
         env = self._git_env(owner_id, project.get("connection_id"), required=True)
         return self._git(("git", "push", "-u", "origin", branch), cwd=repo_path, env=env, timeout=180)
 
@@ -268,12 +323,24 @@ class AgentProjectStore:
         project = self.get_project(owner_id, project_id)
         if not project["allow_pr"]:
             raise ValueError("Pull request creation is disabled for this project")
+        if not head.startswith("fdex-agent/"):
+            raise ValueError("only generated fdex-agent branches may create pull requests")
         connection_id = project.get("connection_id")
         if not connection_id:
             raise ValueError("GitHub connection is required")
         token = str(self.get_connection(owner_id, int(connection_id), secret=True)["token"])
-        payload = {"title": (title or "FDEX Agent changes")[:240], "head": head, "base": project["base_branch"], "body": body[:60000]}
-        result = self._github_json(token, f"https://api.github.com/repos/{project['repo_full_name']}/pulls", method="POST", payload=payload)
+        payload = {
+            "title": (title or "FDEX Agent changes")[:240],
+            "head": head,
+            "base": project["base_branch"],
+            "body": body[:60000],
+        }
+        result = self._github_json(
+            token,
+            f"https://api.github.com/repos/{project['repo_full_name']}/pulls",
+            method="POST",
+            payload=payload,
+        )
         url = str(result.get("html_url") or "")
         if not url:
             raise RuntimeError("GitHub did not return a pull request URL")
@@ -281,9 +348,18 @@ class AgentProjectStore:
 
     def _git_env(self, owner_id: str, connection_id: Any, *, required: bool = False) -> dict[str, str]:
         env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
         if connection_id:
             token = str(self.get_connection(owner_id, int(connection_id), secret=True)["token"])
-            env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: bearer {token}"})
+            basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+            # Keep credentials out of argv and persisted Git config; child process gets them only via env.
+            env.update(
+                {
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.extraHeader",
+                    "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
+                }
+            )
         elif required:
             raise ValueError("GitHub connection is required")
         return env
@@ -298,7 +374,12 @@ class AgentProjectStore:
 
     @staticmethod
     def _github_json(token: str, url: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "fdex-agent"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "fdex-agent",
+        }
         with httpx.Client(timeout=20, follow_redirects=True) as client:
             response = client.request(method, url, headers=headers, json=payload)
         if response.status_code >= 400:
@@ -311,4 +392,6 @@ class AgentProjectStore:
 
 @lru_cache(maxsize=1)
 def agent_project_store() -> AgentProjectStore:
-    store = AgentProjectStore(); store.init(); return store
+    store = AgentProjectStore()
+    store.init()
+    return store
