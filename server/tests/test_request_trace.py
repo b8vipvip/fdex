@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import app.center_auth_middleware as center_auth_module
 import app.client_ai as client_ai_module
 from app.main import app
 from app.request_trace import normalize_request_id
@@ -28,10 +29,20 @@ def test_stream_preserves_request_id_and_emits_server_received_status(monkeypatc
     }
     monkeypatch.setattr(client_ai_module, "_providers", lambda: [fake_provider])
 
+    class FakeAuthStore:
+        def authenticate_access(self, token: str):
+            return {"id": "usr_trace_test", "email": "trace@example.com"} if token == "trace-test-token" else None
+
+    monkeypatch.setattr(center_auth_module, "central_auth_store", lambda: FakeAuthStore())
+
     client = TestClient(app, base_url="http://testserver")
     response = client.post(
         "/api/client/ai/stream",
-        headers={"X-FDEX-Request-ID": "attachment-case-123", "X-FDEX-Request-Mode": "stream"},
+        headers={
+            "Authorization": "Bearer trace-test-token",
+            "X-FDEX-Request-ID": "attachment-case-123",
+            "X-FDEX-Request-Mode": "stream",
+        },
         json={"prompt": "测试附件链路"},
     )
 
