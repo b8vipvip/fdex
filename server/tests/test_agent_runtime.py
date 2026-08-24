@@ -22,7 +22,10 @@ def test_capabilities_do_not_expose_arbitrary_shell(tmp_path: Path) -> None:
     runtime = FdexAgentRuntime(workspace=tmp_path)
     caps = runtime.capabilities()
     assert caps["arbitrary_shell"] is False
-    assert caps["github_write"] is False
+    assert caps["direct_main_write"] is False
+    assert caps["github_connector"] is True
+    assert caps["ai_source"] == "shared_provider_pool"
+    assert caps["owner_project_task_isolation"] is True
     assert "git_status" in caps["tools"]
 
 
