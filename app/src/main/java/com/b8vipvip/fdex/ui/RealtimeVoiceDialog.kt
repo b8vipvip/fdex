@@ -45,7 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.b8vipvip.fdex.data.CentralSessionStore
+import com.b8vipvip.fdex.network.CentralSessionManager
 import com.b8vipvip.fdex.network.RealtimeVoiceEvent
 import com.b8vipvip.fdex.network.RealtimeVoiceSession
 
@@ -61,10 +61,9 @@ internal fun RealtimeVoiceBar(
     onAssistantReply: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val sessions = remember { CentralSessionStore(context) }
-    val accessToken = sessions.accessToken()
-    val authenticatedMemoryControl = remember(accessToken, memoryControl) {
-        buildRealtimeSessionControl(accessToken, memoryControl)
+    var resolvedAccessToken by remember { mutableStateOf<String?>(null) }
+    val authenticatedMemoryControl = remember(resolvedAccessToken, memoryControl) {
+        resolvedAccessToken?.takeIf { it.isNotBlank() }?.let { buildRealtimeSessionControl(it, memoryControl) }
     }
     var permissionGranted by remember {
         mutableStateOf(
@@ -80,18 +79,30 @@ internal fun RealtimeVoiceBar(
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionGranted = granted
-        status = if (granted) "正在连接实时语音…" else "需要麦克风权限才能实时语音"
+        status = if (granted) "正在验证 FDEX 登录状态…" else "需要麦克风权限才能实时语音"
     }
 
     LaunchedEffect(Unit) {
         if (!permissionGranted) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    DisposableEffect(permissionGranted, system, authenticatedMemoryControl, accessToken) {
+    LaunchedEffect(permissionGranted) {
+        if (!permissionGranted) {
+            resolvedAccessToken = null
+            return@LaunchedEffect
+        }
+        status = "正在验证 FDEX 登录状态…"
+        val token = CentralSessionManager.ensureAccess(context).orEmpty()
+        resolvedAccessToken = token
+        status = if (token.isBlank()) "FDEX 登录状态已失效，请重新登录" else "正在连接实时语音…"
+    }
+
+    DisposableEffect(permissionGranted, system, authenticatedMemoryControl, resolvedAccessToken) {
         var created: RealtimeVoiceSession? = null
-        if (permissionGranted && accessToken.isBlank()) {
+        val accessToken = resolvedAccessToken
+        if (permissionGranted && accessToken != null && accessToken.isBlank()) {
             status = "FDEX 登录状态已失效，请重新登录"
-        } else if (permissionGranted) {
+        } else if (permissionGranted && !accessToken.isNullOrBlank() && authenticatedMemoryControl != null) {
             created = RealtimeVoiceSession(context, system, authenticatedMemoryControl) { event ->
                 when (event) {
                     is RealtimeVoiceEvent.Status -> status = event.value
