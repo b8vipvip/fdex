@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.agent_access import agent_token_valid
@@ -17,7 +17,6 @@ router = APIRouter(prefix=f"{settings.api_prefix}/agent", tags=["agent"])
 
 class AgentTaskCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
-    owner_id: str | None = Field(default=None, max_length=80)
     project_id: int | None = Field(default=None, ge=1)
 
 
@@ -33,6 +32,12 @@ def _require_agent_access(request: Request) -> None:
     provided = request.headers.get("X-FDEX-Agent-Token", "")
     if not agent_token_valid(configured, provided):
         raise HTTPException(status_code=401, detail="invalid FDEX Agent token")
+
+
+def _owner_id() -> str:
+    # Current FDEX deployment is single-account. Never trust a client-supplied owner id;
+    # future multi-account auth must resolve this scope from the authenticated server session.
+    return settings.fdex_agent_default_owner.strip() or "local"
 
 
 def _task_payload(task: AgentTask) -> dict[str, object]:
@@ -66,8 +71,9 @@ def capabilities(request: Request) -> dict[str, object]:
 
 
 @router.get("/projects")
-def projects(request: Request, owner_id: str = Query(default="local", max_length=80)) -> dict[str, object]:
+def projects(request: Request) -> dict[str, object]:
     _require_agent_access(request)
+    owner_id = _owner_id()
     try:
         items = agent_project_store().list_projects(owner_id, enabled_only=True)
     except ValueError as exc:
@@ -89,7 +95,7 @@ def projects(request: Request, owner_id: str = Query(default="local", max_length
 async def create_task(request_body: AgentTaskCreateRequest, request: Request) -> dict[str, object]:
     _require_agent_access(request)
     try:
-        task = await agent_runtime().create_task(request_body.prompt, owner_id=request_body.owner_id, project_id=request_body.project_id)
+        task = await agent_runtime().create_task(request_body.prompt, owner_id=_owner_id(), project_id=request_body.project_id)
     except AgentRuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _task_payload(task)
@@ -99,7 +105,7 @@ async def create_task(request_body: AgentTaskCreateRequest, request: Request) ->
 async def get_task(task_id: str, request: Request) -> dict[str, object]:
     _require_agent_access(request)
     task = await agent_runtime().get_task(task_id)
-    if task is None:
+    if task is None or task.owner_id != _owner_id():
         raise HTTPException(status_code=404, detail="task not found")
     return _task_payload(task)
 
@@ -109,7 +115,7 @@ async def run_agent(task_id: str, request: Request) -> dict[str, object]:
     _require_agent_access(request)
     runtime = agent_runtime()
     task = await runtime.get_task(task_id)
-    if task is None:
+    if task is None or task.owner_id != _owner_id():
         raise HTTPException(status_code=404, detail="task not found")
     try:
         await FdexAgentLoop(runtime).run(task_id)
@@ -124,6 +130,9 @@ async def run_agent(task_id: str, request: Request) -> dict[str, object]:
 @router.post("/tasks/{task_id}/tools/run")
 async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Request) -> dict[str, object]:
     _require_agent_access(request)
+    task = await agent_runtime().get_task(task_id)
+    if task is None or task.owner_id != _owner_id():
+        raise HTTPException(status_code=404, detail="task not found")
     try:
         task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
     except AgentRuntimeError as exc:
