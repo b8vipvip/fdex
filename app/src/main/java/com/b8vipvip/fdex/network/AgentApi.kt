@@ -55,10 +55,10 @@ object AgentApi {
         .callTimeout(0, TimeUnit.SECONDS)
         .build()
 
-    suspend fun listProjects(token: String, ownerId: String = "local"): AgentApiResult<List<AgentProjectDto>> = withContext(Dispatchers.IO) {
+    suspend fun listProjects(token: String): AgentApiResult<List<AgentProjectDto>> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
-                .url("${BuildConfig.SERVER_BASE_URL}/api/agent/projects?owner_id=$ownerId")
+                .url("${BuildConfig.SERVER_BASE_URL}/api/agent/projects")
                 .header("Accept", "application/json")
                 .header("X-FDEX-Agent-Token", token.trim())
                 .get()
@@ -89,8 +89,8 @@ object AgentApi {
         }
     }
 
-    suspend fun createTask(token: String, prompt: String, projectId: Int?, ownerId: String = "local"): AgentApiResult<AgentTaskDto> {
-        val payload = JSONObject().put("prompt", prompt).put("owner_id", ownerId)
+    suspend fun createTask(token: String, prompt: String, projectId: Int?): AgentApiResult<AgentTaskDto> {
+        val payload = JSONObject().put("prompt", prompt)
         if (projectId != null) payload.put("project_id", projectId)
         return taskRequest("POST", "/api/agent/tasks", token, payload)
     }
