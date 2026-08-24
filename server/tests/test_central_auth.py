@@ -52,3 +52,40 @@ def test_tokens_are_hashed_in_database(tmp_path: Path) -> None:
     assert session["refresh_token"] not in str(row["refresh_hash"])
     assert "password-123" not in password
     assert password.startswith("scrypt$")
+
+
+def test_user_admin_can_list_revoke_disable_and_restore(tmp_path: Path) -> None:
+    store = CentralAuthStore(tmp_path / "accounts.db")
+    first = store.register(name="Admin Target", email="target@example.com", password="password-123", device_name="phone")
+    user_id = str(first["user"]["id"])
+    second = store.login(email="target@example.com", password="password-123", device_name="tablet")
+
+    users = store.list_users()
+    assert len(users) == 1
+    assert users[0]["id"] == user_id
+    assert users[0]["session_count"] == 2
+    assert users[0]["active_session_count"] == 2
+    assert store.user_stats() == {"total": 1, "enabled": 1, "disabled": 0, "active_sessions": 2}
+
+    sessions = store.list_sessions(user_id)
+    assert {session["device_name"] for session in sessions} == {"phone", "tablet"}
+    assert all("access_hash" not in session and "refresh_hash" not in session for session in sessions)
+    assert all(session["active"] for session in sessions)
+
+    assert store.revoke_user_sessions(user_id) == 2
+    assert store.authenticate_access(first["access_token"]) is None
+    assert store.authenticate_access(second["access_token"]) is None
+    assert store.list_users()[0]["active_session_count"] == 0
+
+    third = store.login(email="target@example.com", password="password-123", device_name="phone-again")
+    assert store.authenticate_access(third["access_token"])["id"] == user_id
+    disabled = store.set_user_enabled(user_id, False)
+    assert disabled["enabled"] is False
+    assert store.authenticate_access(third["access_token"]) is None
+    with pytest.raises(ValueError, match="邮箱或密码错误"):
+        store.login(email="target@example.com", password="password-123", device_name="blocked")
+
+    restored = store.set_user_enabled(user_id, True)
+    assert restored["enabled"] is True
+    fresh = store.login(email="target@example.com", password="password-123", device_name="restored")
+    assert store.authenticate_access(fresh["access_token"])["id"] == user_id
