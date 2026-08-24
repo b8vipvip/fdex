@@ -3,8 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.central_auth import central_auth_store
-from app.config import get_settings
+from app.account_cleanup import purge_owned_agent_resources
+from app.auth_email import AuthEmailUnavailable, send_password_reset_code
+from app.central_auth import AuthRateLimitError, central_auth_store
+from app.config import fresh_settings, get_settings
 
 settings = get_settings()
 router = APIRouter(prefix=f"{settings.api_prefix}/auth", tags=["auth"])
@@ -28,6 +30,26 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=32, max_length=512)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class ResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class ResetConfirmRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(min_length=6, max_length=80)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    confirmation: str = Field(min_length=1, max_length=80)
+
+
 def bearer_token(request: Request) -> str:
     header = request.headers.get("Authorization", "").strip()
     scheme, _, value = header.partition(" ")
@@ -43,8 +65,21 @@ def require_user(request: Request) -> dict[str, object]:
     return user
 
 
+def _client_ip(request: Request) -> str:
+    direct = request.client.host if request.client else ""
+    if direct in {"127.0.0.1", "::1"}:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        if forwarded:
+            return forwarded[:64]
+    return direct[:64]
+
+
+def _user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "")[:300]
+
+
 @router.post("/register")
-def register(body: RegisterRequest) -> dict[str, object]:
+def register(body: RegisterRequest, request: Request) -> dict[str, object]:
     if not settings.fdex_auth_registration_enabled:
         raise HTTPException(status_code=403, detail="FDEX registration is disabled")
     try:
@@ -54,23 +89,41 @@ def register(body: RegisterRequest) -> dict[str, object]:
             password=body.password,
             company_name=body.company_name,
             device_name=body.device_name,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/login")
-def login(body: LoginRequest) -> dict[str, object]:
+def login(body: LoginRequest, request: Request) -> dict[str, object]:
     try:
-        return central_auth_store().login(email=body.email, password=body.password, device_name=body.device_name)
+        return central_auth_store().login(
+            email=body.email,
+            password=body.password,
+            device_name=body.device_name,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except AuthRateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @router.post("/refresh")
-def refresh(body: RefreshRequest) -> dict[str, object]:
+def refresh(body: RefreshRequest, request: Request) -> dict[str, object]:
     try:
-        return central_auth_store().refresh(body.refresh_token)
+        return central_auth_store().refresh(
+            body.refresh_token,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -78,6 +131,105 @@ def refresh(body: RefreshRequest) -> dict[str, object]:
 @router.get("/me")
 def me(request: Request) -> dict[str, object]:
     return require_user(request)
+
+
+@router.get("/sessions")
+def sessions(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    current = str(user.get("session_id") or "")
+    items = central_auth_store().list_sessions(str(user["id"]))
+    for item in items:
+        item["current"] = item.get("id") == current
+    return {"sessions": items}
+
+
+@router.post("/sessions/{session_id}/revoke")
+def revoke_session(session_id: str, request: Request) -> dict[str, object]:
+    user = require_user(request)
+    if not session_id.startswith("ses_"):
+        raise HTTPException(status_code=400, detail="Invalid FDEX session id")
+    if not central_auth_store().revoke_session(str(user["id"]), session_id):
+        raise HTTPException(status_code=404, detail="Session not found or already revoked")
+    return {"ok": True, "current_session_revoked": session_id == str(user.get("session_id") or "")}
+
+
+@router.post("/logout-all")
+def logout_all(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    revoked = central_auth_store().revoke_user_sessions(str(user["id"]))
+    return {"ok": True, "revoked": revoked}
+
+
+@router.post("/password/change")
+def change_password(body: ChangePasswordRequest, request: Request) -> dict[str, object]:
+    user = require_user(request)
+    try:
+        revoked = central_auth_store().change_password(
+            str(user["id"]),
+            body.current_password,
+            body.new_password,
+            current_session_id=str(user.get("session_id") or ""),
+        )
+        return {"ok": True, "other_sessions_revoked": revoked}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/password/reset/request")
+def request_password_reset(body: ResetRequest, request: Request) -> dict[str, object]:
+    cfg = fresh_settings()
+    if not cfg.smtp_ready:
+        raise HTTPException(status_code=503, detail="FDEX 邮件服务尚未配置，请联系管理员")
+    try:
+        reset = central_auth_store().create_password_reset_code(body.email, client_ip=_client_ip(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if reset is not None:
+        user, code = reset
+        try:
+            send_password_reset_code(str(user["email"]), code, settings=cfg)
+        except AuthEmailUnavailable as exc:
+            raise HTTPException(status_code=503, detail="验证码邮件发送失败，请稍后重试") from exc
+    return {"ok": True, "message": "如果该邮箱已注册，验证码邮件将很快送达"}
+
+
+@router.post("/password/reset/confirm")
+def confirm_password_reset(body: ResetConfirmRequest, request: Request) -> dict[str, object]:
+    try:
+        central_auth_store().confirm_password_reset(
+            body.email,
+            body.code,
+            body.new_password,
+            client_ip=_client_ip(request),
+        )
+        return {"ok": True, "message": "密码已重置，请重新登录"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/security-events")
+def security_events(request: Request, limit: int = 30) -> dict[str, object]:
+    user = require_user(request)
+    return {"events": central_auth_store().security_events(str(user["id"]), limit=limit)}
+
+
+@router.post("/account/delete")
+def delete_account(body: DeleteAccountRequest, request: Request) -> dict[str, object]:
+    user = require_user(request)
+    if body.confirmation.strip() != "DELETE MY FDEX":
+        raise HTTPException(status_code=400, detail="请输入 DELETE MY FDEX 确认注销")
+    store = central_auth_store()
+    user_id = str(user["id"])
+    if not store.verify_password(user_id, body.password):
+        raise HTTPException(status_code=400, detail="密码错误，无法注销账号")
+    try:
+        cleanup = purge_owned_agent_resources(user_id)
+        deleted = store.delete_account(user_id, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="账号资源清理失败，账号尚未注销") from exc
+    return {"ok": True, "deleted_user_id": str(deleted["id"]), "agent_cleanup": cleanup}
 
 
 @router.post("/logout")
