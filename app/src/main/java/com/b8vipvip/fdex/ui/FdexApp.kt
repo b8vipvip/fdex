@@ -53,6 +53,7 @@ internal sealed interface Route {
     data object Work : Route
     data object Discover : Route
     data object Me : Route
+    data object AgentCenter : Route
     data class EmployeeChat(val id: Long) : Route
     data object Employees : Route
     data object AddEmployee : Route
@@ -94,7 +95,6 @@ fun FdexApp() {
     val context = LocalContext.current
     val sessions = remember { CentralSessionStore(context) }
     var identityRevision by remember { mutableIntStateOf(0) }
-    // Recreate repository after login/logout so FdexLocalDatabase resolves the new user-scoped DB file.
     val repo = remember(identityRevision) { AppRepository(context) }
     val clientPreferences = remember { ClientPreferences(context) }
     val agentPreferences = remember { AgentEmployeePreferences(context) }
@@ -144,7 +144,7 @@ fun FdexApp() {
 
     val title = when (val current = route) {
         Route.Login -> "登录"; Route.Register -> "注册"; Route.Messages -> "消息"; Route.Work -> "知识库"
-        Route.Discover -> "发现"; Route.Me -> "我的"
+        Route.Discover -> "发现"; Route.Me -> "我的"; Route.AgentCenter -> "Coding Agent / GitHub"
         is Route.EmployeeChat -> repo.employee(current.id)?.name?.let { if (agentPreferences.isCodingAgent(current.id)) "💻 $it" else it } ?: "聊天"
         Route.Employees -> "AI 员工管理"; Route.AddEmployee -> "添加员工"; is Route.EditEmployee -> "编辑员工"
         Route.NewProject -> "新增工作"; is Route.ProjectDetail -> repo.project(current.id)?.title ?: "工作详情"
@@ -163,7 +163,10 @@ fun FdexApp() {
                     navigationIcon = { if (!mainTab) TextButton(onClick = { back() }) { Text("‹", fontSize = 30.sp) } },
                     actions = {
                         when (val current = route) {
-                            Route.Messages -> TextButton(onClick = { go(Route.NewGroup) }) { Text("＋", fontSize = 26.sp) }
+                            Route.Messages -> {
+                                TextButton(onClick = { go(Route.AgentCenter) }) { Text("💻", fontSize = 20.sp) }
+                                TextButton(onClick = { go(Route.NewGroup) }) { Text("＋", fontSize = 26.sp) }
+                            }
                             is Route.EmployeeChat -> Box {
                                 TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
                                 DropdownMenu(expanded = employeeMenu, onDismissRequest = { employeeMenu = false }) {
@@ -176,6 +179,7 @@ fun FdexApp() {
                                             scope.launch { snackbar.showSnackbar(if (enabled) "已切换为 Coding Agent" else "已切换为普通 AI 员工") }
                                         },
                                     )
+                                    DropdownMenuItem(text = { Text("Coding Agent / GitHub 管理") }, onClick = { employeeMenu = false; go(Route.AgentCenter) })
                                     DropdownMenuItem(text = { Text("员工管理") }, onClick = { employeeMenu = false; go(Route.Employees) })
                                     DropdownMenuItem(text = { Text("清空聊天记录") }, onClick = { repo.clearMessages(current.id); employeeMenu = false; touch() })
                                 }
@@ -221,6 +225,7 @@ fun FdexApp() {
                         if (access.isNotBlank()) scope.launch { CentralAuthApi.logout(access) }
                     },
                 )
+                Route.AgentCenter -> AgentCenterScreen(repo, revision, onChanged = { touch() }, onOpenEmployee = { go(Route.EmployeeChat(it)) }, snackbar = snackbar)
                 is Route.EmployeeChat -> if (agentPreferences.isCodingAgent(current.id)) CodingAgentChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar) else StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Employees -> EmployeeManageScreen(repo, revision, onAdd = { go(Route.AddEmployee) }, onEdit = { go(Route.EditEmployee(it)) }, onChat = { go(Route.EmployeeChat(it)) }, onChanged = { touch() })
                 Route.AddEmployee -> AddEmployeeScreen(repo, snackbar) { touch(); back() }
