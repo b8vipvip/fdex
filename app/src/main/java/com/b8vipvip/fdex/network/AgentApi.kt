@@ -13,6 +13,17 @@ import java.util.concurrent.TimeUnit
 
 data class AgentEventDto(val type: String, val message: String, val createdAt: String)
 
+data class AgentAccountDto(
+    val ownerId: String,
+    val accountToken: String,
+)
+
+data class AgentGitHubConnectionDto(
+    val id: Int,
+    val name: String,
+    val login: String,
+)
+
 data class AgentProjectDto(
     val id: Int,
     val name: String,
@@ -20,6 +31,9 @@ data class AgentProjectDto(
     val baseBranch: String,
     val allowPush: Boolean,
     val allowPr: Boolean,
+    val allowNetwork: Boolean,
+    val sandboxMemoryMb: Int,
+    val sandboxCpuPercent: Int,
 )
 
 data class AgentTaskDto(
@@ -55,14 +69,96 @@ object AgentApi {
         .callTimeout(0, TimeUnit.SECONDS)
         .build()
 
-    suspend fun listProjects(token: String): AgentApiResult<List<AgentProjectDto>> = withContext(Dispatchers.IO) {
+    suspend fun enrollAccount(bootstrapToken: String, label: String = "Android FDEX"): AgentApiResult<AgentAccountDto> =
+        withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url("${BuildConfig.SERVER_BASE_URL}/api/agent/account/enroll")
+                    .header("Accept", "application/json")
+                    .header("X-FDEX-Agent-Token", bootstrapToken.trim())
+                    .post(JSONObject().put("label", label).toString().toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext AgentApiResult.Failure(extractError(body, "Agent 账号注册 HTTP ${response.code}"))
+                    }
+                    val json = JSONObject(body)
+                    val ownerId = json.optString("owner_id")
+                    val token = json.optString("account_token")
+                    if (ownerId.isBlank() || token.isBlank()) {
+                        return@withContext AgentApiResult.Failure("服务端未返回 Agent 账号凭据")
+                    }
+                    AgentApiResult.Success(AgentAccountDto(ownerId, token))
+                }
+            } catch (error: Exception) {
+                AgentApiResult.Failure(error.message ?: "无法注册 FDEX Agent 账号")
+            }
+        }
+
+    suspend fun saveGitHubConnection(accountToken: String, token: String, name: String = "GitHub"): AgentApiResult<AgentGitHubConnectionDto> =
+        withContext(Dispatchers.IO) {
+            try {
+                val payload = JSONObject().put("name", name).put("token", token)
+                val request = accountRequest("POST", "/api/agent/github/connections", accountToken, payload)
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext AgentApiResult.Failure(extractError(body, "GitHub 连接 HTTP ${response.code}"))
+                    }
+                    val json = JSONObject(body)
+                    AgentApiResult.Success(
+                        AgentGitHubConnectionDto(
+                            id = json.optInt("id"),
+                            name = json.optString("name", "GitHub"),
+                            login = json.optString("login"),
+                        ),
+                    )
+                }
+            } catch (error: Exception) {
+                AgentApiResult.Failure(error.message ?: "无法保存 GitHub 连接")
+            }
+        }
+
+    suspend fun saveProject(
+        accountToken: String,
+        connectionId: Int,
+        repository: String,
+        name: String,
+        baseBranch: String = "main",
+        allowPush: Boolean = true,
+        allowPr: Boolean = true,
+        allowNetwork: Boolean = false,
+        sandboxMemoryMb: Int = 2048,
+        sandboxCpuPercent: Int = 150,
+    ): AgentApiResult<AgentProjectDto> = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder()
-                .url("${BuildConfig.SERVER_BASE_URL}/api/agent/projects")
-                .header("Accept", "application/json")
-                .header("X-FDEX-Agent-Token", token.trim())
-                .get()
-                .build()
+            val payload = JSONObject()
+                .put("connection_id", connectionId)
+                .put("repo_full_name", repository)
+                .put("name", name)
+                .put("base_branch", baseBranch)
+                .put("allow_push", allowPush)
+                .put("allow_pr", allowPr)
+                .put("allow_network", allowNetwork)
+                .put("sandbox_memory_mb", sandboxMemoryMb)
+                .put("sandbox_cpu_percent", sandboxCpuPercent)
+            val request = accountRequest("POST", "/api/agent/projects", accountToken, payload)
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext AgentApiResult.Failure(extractError(body, "Agent 项目保存 HTTP ${response.code}"))
+                }
+                AgentApiResult.Success(parseProject(JSONObject(body)))
+            }
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法保存 Agent 项目")
+        }
+    }
+
+    suspend fun listProjects(accountToken: String): AgentApiResult<List<AgentProjectDto>> = withContext(Dispatchers.IO) {
+        try {
+            val request = accountRequest("GET", "/api/agent/projects", accountToken)
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "Agent 项目列表 HTTP ${response.code}"))
@@ -70,16 +166,7 @@ object AgentApi {
                 val items = buildList {
                     if (array != null) for (index in 0 until array.length()) {
                         val item = array.optJSONObject(index) ?: continue
-                        add(
-                            AgentProjectDto(
-                                id = item.optInt("id"),
-                                name = item.optString("name"),
-                                repository = item.optString("repository"),
-                                baseBranch = item.optString("base_branch", "main"),
-                                allowPush = item.optBoolean("allow_push"),
-                                allowPr = item.optBoolean("allow_pr"),
-                            ),
-                        )
+                        add(parseProject(item))
                     }
                 }
                 AgentApiResult.Success(items)
@@ -89,29 +176,33 @@ object AgentApi {
         }
     }
 
-    suspend fun createTask(token: String, prompt: String, projectId: Int?): AgentApiResult<AgentTaskDto> {
+    suspend fun createTask(accountToken: String, prompt: String, projectId: Int?): AgentApiResult<AgentTaskDto> {
         val payload = JSONObject().put("prompt", prompt)
         if (projectId != null) payload.put("project_id", projectId)
-        return taskRequest("POST", "/api/agent/tasks", token, payload)
+        return taskRequest("POST", "/api/agent/tasks", accountToken, payload)
     }
 
-    suspend fun getTask(token: String, taskId: String): AgentApiResult<AgentTaskDto> =
-        taskRequest("GET", "/api/agent/tasks/$taskId", token)
+    suspend fun getTask(accountToken: String, taskId: String): AgentApiResult<AgentTaskDto> =
+        taskRequest("GET", "/api/agent/tasks/$taskId", accountToken)
 
-    suspend fun runTask(token: String, taskId: String): AgentApiResult<AgentTaskDto> =
-        taskRequest("POST", "/api/agent/tasks/$taskId/run", token, JSONObject())
+    suspend fun runTask(accountToken: String, taskId: String): AgentApiResult<AgentTaskDto> =
+        taskRequest("POST", "/api/agent/tasks/$taskId/run", accountToken, JSONObject())
 
-    private suspend fun taskRequest(method: String, path: String, token: String, payload: JSONObject? = null): AgentApiResult<AgentTaskDto> = withContext(Dispatchers.IO) {
+    private fun accountRequest(method: String, path: String, accountToken: String, payload: JSONObject? = null): Request {
+        val builder = Request.Builder()
+            .url("${BuildConfig.SERVER_BASE_URL}$path")
+            .header("Accept", "application/json")
+            .header("X-FDEX-Account-Token", accountToken.trim())
+        when (method) {
+            "GET" -> builder.get()
+            else -> builder.post((payload ?: JSONObject()).toString().toRequestBody(jsonMediaType))
+        }
+        return builder.build()
+    }
+
+    private suspend fun taskRequest(method: String, path: String, accountToken: String, payload: JSONObject? = null): AgentApiResult<AgentTaskDto> = withContext(Dispatchers.IO) {
         try {
-            val builder = Request.Builder()
-                .url("${BuildConfig.SERVER_BASE_URL}$path")
-                .header("Accept", "application/json")
-                .header("X-FDEX-Agent-Token", token.trim())
-            when (method) {
-                "GET" -> builder.get()
-                else -> builder.post((payload ?: JSONObject()).toString().toRequestBody(jsonMediaType))
-            }
-            client.newCall(builder.build()).execute().use { response ->
+            client.newCall(accountRequest(method, path, accountToken, payload)).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) return@withContext AgentApiResult.Failure(extractError(body, "Agent 服务返回 HTTP ${response.code}"))
                 AgentApiResult.Success(parseTask(JSONObject(body)))
@@ -120,6 +211,18 @@ object AgentApi {
             AgentApiResult.Failure(error.message ?: "无法连接 FDEX Agent 服务")
         }
     }
+
+    private fun parseProject(item: JSONObject): AgentProjectDto = AgentProjectDto(
+        id = item.optInt("id"),
+        name = item.optString("name"),
+        repository = item.optString("repository"),
+        baseBranch = item.optString("base_branch", "main"),
+        allowPush = item.optBoolean("allow_push"),
+        allowPr = item.optBoolean("allow_pr"),
+        allowNetwork = item.optBoolean("allow_network"),
+        sandboxMemoryMb = item.optInt("sandbox_memory_mb", 2048),
+        sandboxCpuPercent = item.optInt("sandbox_cpu_percent", 150),
+    )
 
     internal fun parseTask(json: JSONObject): AgentTaskDto {
         val changed = json.optJSONArray("changed_files")

@@ -23,7 +23,7 @@ def test_projects_are_scoped_by_owner(tmp_path: Path, monkeypatch: pytest.Monkey
         store.get_project("account-a", project_b["id"])
 
 
-def test_project_paths_keep_owner_project_task_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_project_paths_keep_account_project_task_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = _store(tmp_path)
     monkeypatch.setenv("FDEX_AGENT_SANDBOX_ROOT", str(tmp_path / "sandboxes"))
     project = store.save_project("local", name="FDEX", repo_full_name="b8vipvip/fdex")
@@ -50,15 +50,29 @@ def test_github_token_is_encrypted_and_not_returned(tmp_path: Path, monkeypatch:
     assert secret["token"] == "ghp_super_secret_token"
 
 
-def test_project_remote_permissions_default_off_and_pr_requires_push(tmp_path: Path) -> None:
+def test_project_remote_permissions_and_sandbox_defaults(tmp_path: Path) -> None:
     store = _store(tmp_path)
     read_only = store.save_project("local", name="Read only", repo_full_name="octo/read-only")
     assert read_only["allow_push"] is False
     assert read_only["allow_pr"] is False
+    assert read_only["allow_network"] is False
+    assert read_only["sandbox_memory_mb"] == 2048
+    assert read_only["sandbox_cpu_percent"] == 150
 
-    pr_project = store.save_project("local", name="PR", repo_full_name="octo/pr", allow_pr=True)
+    pr_project = store.save_project(
+        "local",
+        name="PR",
+        repo_full_name="octo/pr",
+        allow_pr=True,
+        allow_network=True,
+        sandbox_memory_mb=3072,
+        sandbox_cpu_percent=200,
+    )
     assert pr_project["allow_pr"] is True
     assert pr_project["allow_push"] is True
+    assert pr_project["allow_network"] is True
+    assert pr_project["sandbox_memory_mb"] == 3072
+    assert pr_project["sandbox_cpu_percent"] == 200
 
 
 def test_owner_scope_rejects_path_escape(tmp_path: Path) -> None:

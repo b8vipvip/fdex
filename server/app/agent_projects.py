@@ -91,6 +91,9 @@ class AgentProjectStore:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     allow_push INTEGER NOT NULL DEFAULT 0,
                     allow_pr INTEGER NOT NULL DEFAULT 0,
+                    allow_network INTEGER NOT NULL DEFAULT 0,
+                    sandbox_memory_mb INTEGER NOT NULL DEFAULT 2048,
+                    sandbox_cpu_percent INTEGER NOT NULL DEFAULT 150,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(owner_id, repo_full_name),
@@ -99,10 +102,23 @@ class AgentProjectStore:
                 CREATE INDEX IF NOT EXISTS idx_agent_project_owner ON agent_projects(owner_id,enabled,id);
                 """
             )
+            self._ensure_project_columns(conn)
         try:
             os.chmod(self.db_path, 0o600)
         except OSError:
             pass
+
+    @staticmethod
+    def _ensure_project_columns(conn: sqlite3.Connection) -> None:
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(agent_projects)").fetchall()}
+        additions = {
+            "allow_network": "INTEGER NOT NULL DEFAULT 0",
+            "sandbox_memory_mb": "INTEGER NOT NULL DEFAULT 2048",
+            "sandbox_cpu_percent": "INTEGER NOT NULL DEFAULT 150",
+        }
+        for name, ddl in additions.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE agent_projects ADD COLUMN {name} {ddl}")
 
     @contextmanager
     def db(self) -> Iterator[sqlite3.Connection]:
@@ -227,7 +243,7 @@ class AgentProjectStore:
     @staticmethod
     def _project_row(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        for key in ("enabled", "allow_push", "allow_pr"):
+        for key in ("enabled", "allow_push", "allow_pr", "allow_network"):
             data[key] = bool(data[key])
         return data
 
@@ -250,6 +266,9 @@ class AgentProjectStore:
         connection_id: int | None = None,
         allow_push: bool = False,
         allow_pr: bool = False,
+        allow_network: bool = False,
+        sandbox_memory_mb: int = 2048,
+        sandbox_cpu_percent: int = 150,
         enabled: bool = True,
         project_id: int | None = None,
     ) -> dict[str, Any]:
@@ -262,20 +281,21 @@ class AgentProjectStore:
             raise ValueError("project name is required")
         if connection_id is not None:
             self.get_connection(owner_id, connection_id)
-        # Creating a PR necessarily requires first pushing the generated Agent branch.
         allow_push = bool(allow_push or allow_pr)
+        memory_mb = max(128, min(16384, int(sandbox_memory_mb or 2048)))
+        cpu_percent = max(10, min(800, int(sandbox_cpu_percent or 150)))
         now = _now()
         with self.db() as conn:
             if project_id:
                 conn.execute(
-                    "UPDATE agent_projects SET name=?,repo_full_name=?,base_branch=?,connection_id=?,enabled=?,allow_push=?,allow_pr=?,updated_at=? WHERE id=? AND owner_id=?",
-                    (name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, project_id, owner_id),
+                    "UPDATE agent_projects SET name=?,repo_full_name=?,base_branch=?,connection_id=?,enabled=?,allow_push=?,allow_pr=?,allow_network=?,sandbox_memory_mb=?,sandbox_cpu_percent=?,updated_at=? WHERE id=? AND owner_id=?",
+                    (name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), int(allow_network), memory_mb, cpu_percent, now, project_id, owner_id),
                 )
                 pid = project_id
             else:
                 cur = conn.execute(
-                    "INSERT INTO agent_projects(owner_id,name,repo_full_name,base_branch,connection_id,enabled,allow_push,allow_pr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (owner_id, name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), now, now),
+                    "INSERT INTO agent_projects(owner_id,name,repo_full_name,base_branch,connection_id,enabled,allow_push,allow_pr,allow_network,sandbox_memory_mb,sandbox_cpu_percent,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (owner_id, name, repo, branch, connection_id, int(enabled), int(allow_push), int(allow_pr), int(allow_network), memory_mb, cpu_percent, now, now),
                 )
                 pid = int(cur.lastrowid)
         return self.get_project(owner_id, pid)
@@ -285,12 +305,20 @@ class AgentProjectStore:
         with self.db() as conn:
             conn.execute("DELETE FROM agent_projects WHERE id=? AND owner_id=?", (project_id, owner_id))
 
-    def project_paths(self, owner_id: str, project_id: int) -> tuple[Path, Path]:
+    def owner_root(self, owner_id: str) -> Path:
         owner_id = _safe_scope(owner_id)
         root = Path(fresh_settings().fdex_agent_sandbox_root).expanduser().resolve()
-        project_root = (root / "owners" / owner_id / "projects" / str(int(project_id))).resolve()
-        if root not in project_root.parents:
-            raise ValueError("project sandbox escaped sandbox root")
+        owner_root = (root / "owners" / owner_id).resolve()
+        if root not in owner_root.parents:
+            raise ValueError("owner sandbox escaped sandbox root")
+        owner_root.mkdir(parents=True, exist_ok=True)
+        return owner_root
+
+    def project_paths(self, owner_id: str, project_id: int) -> tuple[Path, Path]:
+        owner_root = self.owner_root(owner_id)
+        project_root = (owner_root / "projects" / str(int(project_id))).resolve()
+        if owner_root not in project_root.parents:
+            raise ValueError("project sandbox escaped owner sandbox")
         return (project_root / "repository").resolve(), (project_root / "worktrees").resolve()
 
     def prepare_repository(self, owner_id: str, project_id: int) -> tuple[dict[str, Any], Path, Path]:
@@ -306,7 +334,6 @@ class AgentProjectStore:
             self._git(("git", "clone", "--no-tags", clone_url, str(repo_path)), cwd=repo_path.parent, env=env, timeout=300)
         else:
             self._git(("git", "fetch", "origin", "--prune"), cwd=repo_path, env=env, timeout=180)
-        # Verify the configured base branch exists before a task creates a worktree from it.
         self._git(("git", "rev-parse", "--verify", f"origin/{project['base_branch']}"), cwd=repo_path, env=env, timeout=30)
         return project, repo_path, worktrees
 
@@ -352,7 +379,6 @@ class AgentProjectStore:
         if connection_id:
             token = str(self.get_connection(owner_id, int(connection_id), secret=True)["token"])
             basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-            # Keep credentials out of argv and persisted Git config; child process gets them only via env.
             env.update(
                 {
                     "GIT_CONFIG_COUNT": "1",

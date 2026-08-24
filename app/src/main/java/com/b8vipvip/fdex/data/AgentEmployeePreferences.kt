@@ -2,7 +2,7 @@ package com.b8vipvip.fdex.data
 
 import android.content.Context
 
-/** Local-only Coding Agent UI state. GitHub and AI provider secrets stay on the FDEX server. */
+/** Local Coding Agent state. GitHub and AI provider secrets remain server-side. */
 class AgentEmployeePreferences(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -13,10 +13,26 @@ class AgentEmployeePreferences(context: Context) {
         prefs.edit().putBoolean(employeeKey(employeeId), enabled).apply()
     }
 
+    /** Legacy/global Agent bootstrap token. Used only to enroll an account credential. */
     fun accessToken(): String = prefs.getString(KEY_ACCESS_TOKEN, "").orEmpty()
 
     fun setAccessToken(value: String) {
         prefs.edit().putString(KEY_ACCESS_TOKEN, value.trim()).apply()
+    }
+
+    fun accountId(): String = prefs.getString(KEY_ACCOUNT_ID, "").orEmpty()
+
+    fun accountToken(): String = prefs.getString(KEY_ACCOUNT_TOKEN, "").orEmpty()
+
+    fun setAccountCredential(ownerId: String, token: String) {
+        prefs.edit()
+            .putString(KEY_ACCOUNT_ID, ownerId.trim())
+            .putString(KEY_ACCOUNT_TOKEN, token.trim())
+            .apply()
+    }
+
+    fun clearAccountCredential() {
+        prefs.edit().remove(KEY_ACCOUNT_ID).remove(KEY_ACCOUNT_TOKEN).apply()
     }
 
     fun projectId(employeeId: Long): Int? {
@@ -33,8 +49,10 @@ class AgentEmployeePreferences(context: Context) {
     private fun projectKey(employeeId: Long): String = "coding_agent_project_$employeeId"
 
     companion object {
-        // Keep the v1 storage name so existing employee flags and Agent token survive upgrades.
+        // Keep v1 storage so existing employee flags and bootstrap token survive upgrades.
         private const val PREFS_NAME = "fdex_agent_preferences_v1"
         private const val KEY_ACCESS_TOKEN = "agent_access_token"
+        private const val KEY_ACCOUNT_ID = "agent_account_id"
+        private const val KEY_ACCOUNT_TOKEN = "agent_account_token"
     }
 }
