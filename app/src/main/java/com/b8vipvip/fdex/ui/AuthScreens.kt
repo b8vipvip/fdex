@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,12 +39,73 @@ internal fun LoginScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var forgotMode by remember { mutableStateOf(false) }
+    var resetRequested by remember { mutableStateOf(false) }
+    var resetCode by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var resetMessage by remember { mutableStateOf("") }
+
+    if (forgotMode) {
+        AuthFrame("找回 FDEX 密码", "通过登录邮箱验证码重置中心账号密码") {
+            OutlinedTextField(email, { email = it }, label = { Text("登录邮箱") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
+            if (!resetRequested) {
+                Button(
+                    enabled = !busy && email.isNotBlank(),
+                    onClick = {
+                        busy = true; error = ""; resetMessage = ""
+                        scope.launch {
+                            when (val result = CentralAuthApi.requestPasswordReset(email)) {
+                                is CentralAuthResult.Success -> { resetRequested = true; resetMessage = result.value }
+                                is CentralAuthResult.Failure -> error = result.message
+                            }
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (busy) "发送中…" else "发送邮箱验证码") }
+            } else {
+                if (resetMessage.isNotBlank()) Text(resetMessage, color = Emerald)
+                OutlinedTextField(resetCode, { resetCode = it.trim() }, label = { Text("邮件验证码") }, modifier = Modifier.fillMaxWidth(), enabled = !busy, singleLine = true)
+                OutlinedTextField(newPassword, { newPassword = it }, label = { Text("新密码（至少 8 位）") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy)
+                OutlinedTextField(confirmPassword, { confirmPassword = it }, label = { Text("再次输入新密码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy)
+                Button(
+                    enabled = !busy && resetCode.isNotBlank() && newPassword.length >= 8 && newPassword == confirmPassword,
+                    onClick = {
+                        busy = true; error = ""
+                        scope.launch {
+                            when (val result = CentralAuthApi.confirmPasswordReset(email, resetCode, newPassword)) {
+                                is CentralAuthResult.Success -> {
+                                    resetMessage = result.value
+                                    password = ""; newPassword = ""; confirmPassword = ""; resetCode = ""
+                                    forgotMode = false; resetRequested = false
+                                }
+                                is CentralAuthResult.Failure -> error = result.message
+                            }
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (busy) "重置中…" else "验证并重置密码") }
+                OutlinedButton(
+                    onClick = { resetRequested = false; resetCode = ""; error = "" },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) { Text("重新发送验证码") }
+            }
+            if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { forgotMode = false; error = "" }, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("返回登录") }
+        }
+        return
+    }
+
     AuthFrame("登录 FDEX", "登录中心账号，进入你的 AI 虚拟公司") {
         OutlinedTextField(email, { email = it }, label = { Text("邮箱") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
         OutlinedTextField(password, { password = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy)
+        if (resetMessage.isNotBlank()) Text(resetMessage, color = Emerald)
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         Button(enabled = !busy && email.isNotBlank() && password.isNotBlank(), onClick = {
-            busy = true; error = ""
+            busy = true; error = ""; resetMessage = ""
             scope.launch {
                 when (val result = CentralAuthApi.login(email, password)) {
                     is CentralAuthResult.Success -> { sessions.save(result.value); password = ""; busy = false; onLogin() }
@@ -51,6 +113,7 @@ internal fun LoginScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
                 }
             }
         }, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "登录中…" else "登录") }
+        TextButton(onClick = { forgotMode = true; error = "" }, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("忘记密码？用邮箱验证码找回") }
         TextButton(onClick = onRegister, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("还没有 FDEX 账号？注册") }
         Text("账号身份保存在 FDEX 中心服务器；本机业务数据按 user_id 使用独立数据库空间。", style = MaterialTheme.typography.bodySmall, color = Muted)
     }
