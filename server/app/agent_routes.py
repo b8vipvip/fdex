@@ -10,6 +10,7 @@ from app.agent_accounts import agent_account_store
 from app.agent_loop import FdexAgentLoop
 from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
+from app.central_auth import central_auth_store
 from app.config import get_settings
 
 settings = get_settings()
@@ -60,72 +61,62 @@ def _require_bootstrap(request: Request) -> None:
 
 
 def _account_owner(request: Request) -> tuple[str, str]:
+    # Phase 7 canonical identity: an authenticated FDEX user owns GitHub connections,
+    # projects, tasks and sandbox paths. Client-supplied owner IDs are never trusted.
+    authorization = request.headers.get("Authorization", "").strip()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        user = central_auth_store().authenticate_access(token.strip())
+        if user is None:
+            raise HTTPException(status_code=401, detail="FDEX login has expired")
+        return str(user["id"]), "central"
+
+    # Phase 6 compatibility path. New clients should not need this account credential.
     account_token = request.headers.get("X-FDEX-Account-Token", "").strip()
     if account_token:
         account = agent_account_store().authenticate(account_token)
         if account is None:
-            raise HTTPException(status_code=401, detail="invalid FDEX account Agent token")
-        return str(account["owner_id"]), "account"
+            raise HTTPException(status_code=401, detail="invalid legacy Agent account token")
+        return str(account["owner_id"]), "agent-account-legacy"
 
-    # Backward-compatible transition for existing single-user installations. The global
-    # token can access only the configured legacy owner and cannot select another owner.
+    # Oldest single-user clients can still reach only the configured legacy owner.
     configured = settings.fdex_agent_access_token
     provided = request.headers.get("X-FDEX-Agent-Token", "")
     if configured.strip() and agent_token_valid(configured, provided):
-        return settings.fdex_agent_default_owner.strip() or "local", "legacy"
-    raise HTTPException(status_code=401, detail="FDEX account Agent token is required")
+        return settings.fdex_agent_default_owner.strip() or "local", "bootstrap-legacy"
+    raise HTTPException(status_code=401, detail="FDEX login is required")
 
 
 def _task_payload(task: AgentTask) -> dict[str, object]:
     return {
-        "id": task.id,
-        "prompt": task.prompt,
-        "owner_id": task.owner_id,
-        "project_id": task.project_id,
-        "project_name": task.project_name,
-        "repository": task.repository,
-        "base_branch": task.base_branch,
-        "status": task.status,
-        "result": task.result,
-        "error": task.error,
-        "branch": task.branch,
-        "worktree": task.worktree,
-        "commit_sha": task.commit_sha,
-        "pushed": task.pushed,
-        "pr_url": task.pr_url,
-        "changed_files": sorted(task.changed_files),
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
+        "id": task.id, "prompt": task.prompt, "owner_id": task.owner_id,
+        "project_id": task.project_id, "project_name": task.project_name,
+        "repository": task.repository, "base_branch": task.base_branch,
+        "status": task.status, "result": task.result, "error": task.error,
+        "branch": task.branch, "worktree": task.worktree, "commit_sha": task.commit_sha,
+        "pushed": task.pushed, "pr_url": task.pr_url,
+        "changed_files": sorted(task.changed_files), "created_at": task.created_at, "updated_at": task.updated_at,
         "events": [{"type": event.type, "message": event.message, "created_at": event.created_at} for event in task.events],
     }
 
 
 def _project_payload(item: dict[str, Any]) -> dict[str, object]:
     return {
-        "id": item["id"],
-        "name": item["name"],
-        "repository": item["repo_full_name"],
-        "base_branch": item["base_branch"],
-        "connection_id": item.get("connection_id"),
-        "allow_push": item["allow_push"],
-        "allow_pr": item["allow_pr"],
+        "id": item["id"], "name": item["name"], "repository": item["repo_full_name"],
+        "base_branch": item["base_branch"], "connection_id": item.get("connection_id"),
+        "allow_push": item["allow_push"], "allow_pr": item["allow_pr"],
         "allow_network": item.get("allow_network", False),
         "sandbox_memory_mb": item.get("sandbox_memory_mb", 2048),
-        "sandbox_cpu_percent": item.get("sandbox_cpu_percent", 150),
-        "enabled": item["enabled"],
+        "sandbox_cpu_percent": item.get("sandbox_cpu_percent", 150), "enabled": item["enabled"],
     }
 
 
-@router.post("/account/enroll")
+@router.post("/account/enroll", deprecated=True)
 def enroll_account(request_body: AgentEnrollRequest, request: Request) -> dict[str, object]:
     _require_bootstrap(request)
     account, token = agent_account_store().enroll(request_body.label)
-    return {
-        "owner_id": account["owner_id"],
-        "label": account["label"],
-        "account_token": token,
-        "ai_source": "shared_provider_pool",
-    }
+    return {"owner_id": account["owner_id"], "label": account["label"], "account_token": token,
+            "ai_source": "shared_provider_pool", "deprecated": True}
 
 
 @router.get("/account")
@@ -137,8 +128,7 @@ def current_account(request: Request) -> dict[str, object]:
 @router.get("/capabilities")
 def capabilities(request: Request) -> dict[str, object]:
     owner_id, mode = _account_owner(request)
-    payload = agent_runtime().capabilities()
-    return {**payload, "owner_id": owner_id, "auth_mode": mode}
+    return {**agent_runtime().capabilities(), "owner_id": owner_id, "auth_mode": mode}
 
 
 @router.get("/github/connections")
@@ -151,15 +141,9 @@ def github_connections(request: Request) -> dict[str, object]:
 def save_github_connection(request_body: GitHubConnectionRequest, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
     try:
-        connection = agent_project_store().save_connection(
-            owner_id,
-            request_body.name,
-            request_body.token,
-            request_body.connection_id,
-        )
+        return agent_project_store().save_connection(owner_id, request_body.name, request_body.token, request_body.connection_id)
     except (KeyError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return connection
 
 
 @router.delete("/github/connections/{connection_id}")
@@ -179,11 +163,7 @@ def projects(request: Request) -> dict[str, object]:
         items = agent_project_store().list_projects(owner_id, enabled_only=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "owner_id": owner_id,
-        "ai_source": "shared_provider_pool",
-        "projects": [_project_payload(item) for item in items],
-    }
+    return {"owner_id": owner_id, "ai_source": "shared_provider_pool", "projects": [_project_payload(item) for item in items]}
 
 
 @router.post("/projects")
@@ -191,17 +171,11 @@ def save_project(request_body: AgentProjectRequest, request: Request) -> dict[st
     owner_id, _ = _account_owner(request)
     try:
         project = agent_project_store().save_project(
-            owner_id,
-            name=request_body.name,
-            repo_full_name=request_body.repo_full_name,
-            base_branch=request_body.base_branch,
-            connection_id=request_body.connection_id,
-            allow_push=request_body.allow_push,
-            allow_pr=request_body.allow_pr,
-            allow_network=request_body.allow_network,
-            sandbox_memory_mb=request_body.sandbox_memory_mb,
-            sandbox_cpu_percent=request_body.sandbox_cpu_percent,
-            enabled=request_body.enabled,
+            owner_id, name=request_body.name, repo_full_name=request_body.repo_full_name,
+            base_branch=request_body.base_branch, connection_id=request_body.connection_id,
+            allow_push=request_body.allow_push, allow_pr=request_body.allow_pr,
+            allow_network=request_body.allow_network, sandbox_memory_mb=request_body.sandbox_memory_mb,
+            sandbox_cpu_percent=request_body.sandbox_cpu_percent, enabled=request_body.enabled,
             project_id=request_body.project_id,
         )
     except (KeyError, ValueError, RuntimeError) as exc:
@@ -241,8 +215,7 @@ async def get_task(task_id: str, request: Request) -> dict[str, object]:
 @router.post("/tasks/{task_id}/run")
 async def run_agent(task_id: str, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
-    runtime = agent_runtime()
-    task = await runtime.get_task(task_id)
+    runtime = agent_runtime(); task = await runtime.get_task(task_id)
     if task is None or task.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="task not found")
     try:
@@ -264,7 +237,5 @@ async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Req
     try:
         task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
     except AgentRuntimeError as exc:
-        message = str(exc)
-        status_code = 404 if message == "task not found" else 400
-        raise HTTPException(status_code=status_code, detail=message) from exc
+        message = str(exc); raise HTTPException(status_code=404 if message == "task not found" else 400, detail=message) from exc
     return _task_payload(task)
