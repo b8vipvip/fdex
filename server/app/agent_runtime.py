@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from app.agent_projects import agent_project_store
+from app.agent_sandbox import AgentSandboxError, SystemdExecutionSandbox
 from app.config import get_settings
 
 AgentTaskStatus = Literal["queued", "running", "succeeded", "failed"]
@@ -55,11 +56,12 @@ class AgentRuntimeError(RuntimeError):
 
 
 class FdexAgentRuntime:
-    """Scoped server-side Coding Agent runtime.
+    """Account/project/task scoped Coding Agent runtime.
 
-    Configured projects are isolated as owner/project/repository + per-task worktrees.
-    GitHub push/PR are capability-gated per project. Arbitrary shell and direct base-branch
-    writes remain unavailable. Coding Agent model calls are handled by the shared provider pool.
+    Configured projects live under an account-specific filesystem root and each task gets
+    a Git worktree. Build/test commands for configured projects run in an ephemeral systemd
+    sandbox with cgroup limits and filesystem/network isolation. No account keeps a resident
+    sandbox process, so idle accounts consume effectively no additional sandbox RAM.
     """
 
     _BASE_TOOLS = (
@@ -84,6 +86,7 @@ class FdexAgentRuntime:
         self.build_timeout_seconds = settings.fdex_agent_build_timeout_seconds
         self.max_output_chars = settings.fdex_agent_max_output_chars
         self.max_file_chars = settings.fdex_agent_max_file_chars
+        self.execution_sandbox = SystemdExecutionSandbox()
         self._tasks: dict[str, AgentTask] = {}
         self._lock = asyncio.Lock()
 
@@ -105,9 +108,10 @@ class FdexAgentRuntime:
         return tuple(tools)
 
     def capabilities(self) -> dict[str, object]:
+        settings = get_settings()
         return {
             "enabled": self.enabled,
-            "runtime": "fdex-agent-runtime-v5",
+            "runtime": "fdex-agent-runtime-v6",
             "ai_source": "shared_provider_pool",
             "default_owner": self.default_owner,
             "sandbox_root": str(self.sandbox_root),
@@ -115,8 +119,12 @@ class FdexAgentRuntime:
             "tools": list(self._BASE_TOOLS + self._REMOTE_TOOLS),
             "test_suites": sorted(self._TEST_SUITES),
             "autonomous_loop": True,
-            "owner_project_task_isolation": True,
+            "account_project_task_isolation": True,
             "isolated_worktrees": True,
+            "ephemeral_execution_sandbox": "systemd",
+            "sandbox_memory_mb": settings.fdex_agent_sandbox_memory_mb,
+            "sandbox_cpu_percent": settings.fdex_agent_sandbox_cpu_percent,
+            "sandbox_max_concurrent": settings.fdex_agent_sandbox_max_concurrent,
             "github_connector": True,
             "arbitrary_shell": False,
             "direct_main_write": False,
@@ -185,7 +193,9 @@ class FdexAgentRuntime:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
-        task.status = "succeeded"; task.result = result.strip(); task.error = ""
+        task.status = "succeeded"
+        task.result = result.strip()
+        task.error = ""
         task.emit("task.completed", "Agent task completed")
         return task
 
@@ -193,7 +203,8 @@ class FdexAgentRuntime:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
-        task.status = "failed"; task.error = error.strip()[:2000]
+        task.status = "failed"
+        task.error = error.strip()[:2000]
         task.emit("task.failed", task.error)
         return task
 
@@ -206,7 +217,9 @@ class FdexAgentRuntime:
             project, repo, worktrees = agent_project_store().prepare_repository(task.owner_id, task.project_id)
         except Exception as exc:
             raise AgentRuntimeError(str(exc)) from exc
-        task.project_name = str(project["name"]); task.repository = str(project["repo_full_name"]); task.base_branch = str(project["base_branch"])
+        task.project_name = str(project["name"])
+        task.repository = str(project["repo_full_name"])
+        task.base_branch = str(project["base_branch"])
         return repo, worktrees, f"origin/{task.base_branch}"
 
     def _ensure_worktree(self, task: AgentTask) -> Path:
@@ -223,26 +236,36 @@ class FdexAgentRuntime:
         if path.exists():
             raise AgentRuntimeError("agent worktree path already exists")
         self._run_command(("git", "worktree", "add", "-b", branch, str(path), base_ref), cwd=source)
-        task.branch = branch; task.worktree = str(path)
+        task.branch = branch
+        task.worktree = str(path)
         task.emit("workspace.ready", f"Prepared isolated worktree on {branch}")
         return path
 
     def _execute_tool_sync(self, task: AgentTask, worktree: Path, tool: str, args: dict[str, Any]) -> str:
-        if tool == "git_status": return self._run_command(("git", "status", "--short", "--branch"), cwd=worktree)
-        if tool == "git_diff": return self._run_command(("git", "diff", "--"), cwd=worktree)
-        if tool == "git_log": return self._run_command(("git", "log", "-5", "--oneline"), cwd=worktree)
-        if tool == "list_files": return self._list_files(worktree, str(args.get("path") or "."))
-        if tool == "read_file": return self._read_file(worktree, str(args.get("path") or ""), args)
-        if tool == "write_file": return self._write_file(task, worktree, str(args.get("path") or ""), args.get("content"))
-        if tool == "replace_text": return self._replace_text(task, worktree, args)
-        if tool == "run_tests": return self._run_tests(worktree, str(args.get("suite") or ""))
-        if tool == "git_commit": return self._git_commit(task, worktree, str(args.get("message") or ""))
+        if tool == "git_status":
+            return self._run_command(("git", "status", "--short", "--branch"), cwd=worktree)
+        if tool == "git_diff":
+            return self._run_command(("git", "diff", "--"), cwd=worktree)
+        if tool == "git_log":
+            return self._run_command(("git", "log", "-5", "--oneline"), cwd=worktree)
+        if tool == "list_files":
+            return self._list_files(worktree, str(args.get("path") or "."))
+        if tool == "read_file":
+            return self._read_file(worktree, str(args.get("path") or ""), args)
+        if tool == "write_file":
+            return self._write_file(task, worktree, str(args.get("path") or ""), args.get("content"))
+        if tool == "replace_text":
+            return self._replace_text(task, worktree, args)
+        if tool == "run_tests":
+            return self._run_tests(task, worktree, str(args.get("suite") or ""))
+        if tool == "git_commit":
+            return self._git_commit(task, worktree, str(args.get("message") or ""))
         if tool == "git_push":
             if task.project_id is None or not task.commit_sha:
                 raise AgentRuntimeError("configured project and commit are required before push")
-            source, _, _ = self._source_and_worktrees(task)
             output = agent_project_store().push_branch(task.owner_id, task.project_id, worktree, task.branch)
-            task.pushed = True; task.emit("git.pushed", f"Pushed {task.branch} to origin")
+            task.pushed = True
+            task.emit("git.pushed", f"Pushed {task.branch} to origin")
             return output or f"pushed {task.branch}"
         if tool == "github_create_pr":
             if task.project_id is None or not task.pushed:
@@ -250,97 +273,206 @@ class FdexAgentRuntime:
             title = " ".join(str(args.get("title") or "FDEX Agent changes").split())[:240]
             body = str(args.get("body") or "")
             url = agent_project_store().create_pr(task.owner_id, task.project_id, head=task.branch, title=title, body=body)
-            task.pr_url = url; task.emit("github.pr_created", f"Created pull request {url}")
+            task.pr_url = url
+            task.emit("github.pr_created", f"Created pull request {url}")
             return f"pull_request={url}"
         raise AgentRuntimeError(f"tool not allowed: {tool}")
 
     def _safe_path(self, worktree: Path, relative: str, *, allow_directory: bool = False) -> Path:
         clean = relative.strip().replace("\\", "/")
-        if not clean: raise AgentRuntimeError("path is required")
+        if not clean:
+            raise AgentRuntimeError("path is required")
         rel = Path(clean)
-        if rel.is_absolute() or ".." in rel.parts: raise AgentRuntimeError("path escapes agent worktree")
+        if rel.is_absolute() or ".." in rel.parts:
+            raise AgentRuntimeError("path escapes agent worktree")
         lowered = clean.lower().strip("/")
-        if lowered == ".env" or (lowered.startswith(".env.") and lowered != ".env.example"): raise AgentRuntimeError("path is protected")
-        if lowered == "server/data" or lowered.startswith("server/data/"): raise AgentRuntimeError("path is protected")
-        if any(part == ".git" for part in rel.parts): raise AgentRuntimeError("path is protected")
-        candidate = (worktree / rel).resolve(strict=False); root = worktree.resolve()
-        if candidate != root and root not in candidate.parents: raise AgentRuntimeError("path escapes agent worktree")
-        if not allow_directory and candidate == root: raise AgentRuntimeError("file path is required")
+        if lowered == ".env" or (lowered.startswith(".env.") and lowered != ".env.example"):
+            raise AgentRuntimeError("path is protected")
+        if lowered == "server/data" or lowered.startswith("server/data/"):
+            raise AgentRuntimeError("path is protected")
+        if any(part == ".git" for part in rel.parts):
+            raise AgentRuntimeError("path is protected")
+        candidate = (worktree / rel).resolve(strict=False)
+        root = worktree.resolve()
+        if candidate != root and root not in candidate.parents:
+            raise AgentRuntimeError("path escapes agent worktree")
+        if not allow_directory and candidate == root:
+            raise AgentRuntimeError("file path is required")
         return candidate
 
     def _list_files(self, worktree: Path, relative: str) -> str:
         base = self._safe_path(worktree, relative, allow_directory=True)
-        if not base.exists() or not base.is_dir(): raise AgentRuntimeError("directory not found")
-        root = worktree.resolve(); rows: list[str] = []
+        if not base.exists() or not base.is_dir():
+            raise AgentRuntimeError("directory not found")
+        root = worktree.resolve()
+        rows: list[str] = []
         for current, dirs, files in os.walk(base):
             dirs[:] = sorted(d for d in dirs if d not in {".git", ".gradle", "build", "data"})
             for name in sorted(files):
                 path = Path(current) / name
-                try: rel = path.relative_to(root).as_posix()
-                except ValueError: continue
+                try:
+                    rel = path.relative_to(root).as_posix()
+                except ValueError:
+                    continue
                 rows.append(rel)
-                if len(rows) >= 250: rows.append("... file list truncated ..."); return "\n".join(rows)
+                if len(rows) >= 250:
+                    rows.append("... file list truncated ...")
+                    return "\n".join(rows)
         return "\n".join(rows) or "(no files)"
 
     def _read_file(self, worktree: Path, relative: str, args: dict[str, Any]) -> str:
         path = self._safe_path(worktree, relative)
-        if not path.is_file(): raise AgentRuntimeError("file not found")
+        if not path.is_file():
+            raise AgentRuntimeError("file not found")
         raw = path.read_bytes()
-        if len(raw) > self.max_file_chars * 4: raise AgentRuntimeError("file is too large")
-        try: text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc: raise AgentRuntimeError("only UTF-8 text files can be read") from exc
-        lines = text.splitlines(keepends=True); start = max(1, int(args.get("start_line") or 1)); end = min(len(lines), int(args.get("end_line") or min(len(lines), start + 399)))
-        if end < start: raise AgentRuntimeError("end_line must be >= start_line")
+        if len(raw) > self.max_file_chars * 4:
+            raise AgentRuntimeError("file is too large")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AgentRuntimeError("only UTF-8 text files can be read") from exc
+        lines = text.splitlines(keepends=True)
+        start = max(1, int(args.get("start_line") or 1))
+        end = min(len(lines), int(args.get("end_line") or min(len(lines), start + 399)))
+        if end < start:
+            raise AgentRuntimeError("end_line must be >= start_line")
         selected = "".join(lines[start - 1:end])
-        if len(selected) > self.max_file_chars: selected = selected[:self.max_file_chars] + "\n... file truncated ..."
+        if len(selected) > self.max_file_chars:
+            selected = selected[:self.max_file_chars] + "\n... file truncated ..."
         return f"{relative} lines {start}-{end}/{len(lines)}\n{selected}"
 
     def _write_file(self, task: AgentTask, worktree: Path, relative: str, content: Any) -> str:
-        if not isinstance(content, str): raise AgentRuntimeError("write_file content must be text")
-        if len(content) > self.max_file_chars: raise AgentRuntimeError("write_file content exceeds limit")
+        if not isinstance(content, str):
+            raise AgentRuntimeError("write_file content must be text")
+        if len(content) > self.max_file_chars:
+            raise AgentRuntimeError("write_file content exceeds limit")
         path = self._safe_path(worktree, relative)
-        if path.exists() and not path.is_file(): raise AgentRuntimeError("write target is not a file")
-        path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content, encoding="utf-8")
-        rel = path.relative_to(worktree.resolve()).as_posix(); task.changed_files.add(rel); task.emit("file.written", f"Updated {rel}")
+        if path.exists() and not path.is_file():
+            raise AgentRuntimeError("write target is not a file")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        rel = path.relative_to(worktree.resolve()).as_posix()
+        task.changed_files.add(rel)
+        task.emit("file.written", f"Updated {rel}")
         return f"updated {rel} ({len(content)} chars)"
 
     def _replace_text(self, task: AgentTask, worktree: Path, args: dict[str, Any]) -> str:
-        relative = str(args.get("path") or ""); old = args.get("old"); new = args.get("new")
-        if not isinstance(old, str) or not old: raise AgentRuntimeError("replace_text old text is required")
-        if not isinstance(new, str): raise AgentRuntimeError("replace_text new text must be text")
+        relative = str(args.get("path") or "")
+        old = args.get("old")
+        new = args.get("new")
+        if not isinstance(old, str) or not old:
+            raise AgentRuntimeError("replace_text old text is required")
+        if not isinstance(new, str):
+            raise AgentRuntimeError("replace_text new text must be text")
         path = self._safe_path(worktree, relative)
-        if not path.is_file(): raise AgentRuntimeError("file not found")
-        text = path.read_text(encoding="utf-8"); matches = text.count(old)
-        if matches != 1: raise AgentRuntimeError(f"replace_text requires exactly one match; found {matches}")
+        if not path.is_file():
+            raise AgentRuntimeError("file not found")
+        text = path.read_text(encoding="utf-8")
+        matches = text.count(old)
+        if matches != 1:
+            raise AgentRuntimeError(f"replace_text requires exactly one match; found {matches}")
         updated = text.replace(old, new, 1)
-        if len(updated) > self.max_file_chars: raise AgentRuntimeError("updated file exceeds limit")
-        path.write_text(updated, encoding="utf-8"); rel = path.relative_to(worktree.resolve()).as_posix(); task.changed_files.add(rel); task.emit("file.written", f"Updated {rel}")
+        if len(updated) > self.max_file_chars:
+            raise AgentRuntimeError("updated file exceeds limit")
+        path.write_text(updated, encoding="utf-8")
+        rel = path.relative_to(worktree.resolve()).as_posix()
+        task.changed_files.add(rel)
+        task.emit("file.written", f"Updated {rel}")
         return f"replaced one occurrence in {rel}"
 
-    def _run_tests(self, worktree: Path, suite: str) -> str:
-        if suite not in self._TEST_SUITES: raise AgentRuntimeError(f"unknown test suite: {suite or '<empty>'}")
-        argv, relative_cwd = self._TEST_SUITES[suite]; cwd = worktree if relative_cwd == "." else worktree / relative_cwd
-        if not cwd.is_dir(): raise AgentRuntimeError(f"test working directory not found: {relative_cwd}")
-        return self._run_command(argv, cwd=cwd, timeout=self.build_timeout_seconds, check=False, include_exit_code=True)
+    def _run_tests(self, task: AgentTask, worktree: Path, suite: str) -> str:
+        if suite not in self._TEST_SUITES:
+            raise AgentRuntimeError(f"unknown test suite: {suite or '<empty>'}")
+        argv, relative_cwd = self._TEST_SUITES[suite]
+        cwd = worktree if relative_cwd == "." else worktree / relative_cwd
+        if not cwd.is_dir():
+            raise AgentRuntimeError(f"test working directory not found: {relative_cwd}")
+
+        # Preserve the legacy local FDEX development path for backwards compatibility.
+        # Every configured GitHub project must use the transient account sandbox.
+        if task.project_id is None:
+            return self._run_command(
+                argv,
+                cwd=cwd,
+                timeout=self.build_timeout_seconds,
+                check=False,
+                include_exit_code=True,
+            )
+
+        try:
+            project = agent_project_store().get_project(task.owner_id, task.project_id)
+            task.emit(
+                "sandbox.started",
+                f"Running {suite} in transient sandbox (MemoryMax={project['sandbox_memory_mb']}MB)",
+            )
+            return self.execution_sandbox.run(
+                owner_id=task.owner_id,
+                task_id=task.id,
+                worktree=worktree,
+                cwd=cwd,
+                argv=argv,
+                timeout=self.build_timeout_seconds,
+                max_output_chars=self.max_output_chars,
+                memory_mb=int(project["sandbox_memory_mb"]),
+                cpu_percent=int(project["sandbox_cpu_percent"]),
+                allow_network=bool(project["allow_network"]),
+            )
+        except (KeyError, ValueError, AgentSandboxError) as exc:
+            raise AgentRuntimeError(str(exc)) from exc
 
     def _git_commit(self, task: AgentTask, worktree: Path, message: str) -> str:
-        if not task.changed_files: raise AgentRuntimeError("no agent-written files to commit")
-        clean_message = " ".join(message.strip().split())[:120] or f"FDEX agent task {task.id[:12]}"; paths = sorted(task.changed_files)
+        if not task.changed_files:
+            raise AgentRuntimeError("no agent-written files to commit")
+        clean_message = " ".join(message.strip().split())[:120] or f"FDEX agent task {task.id[:12]}"
+        paths = sorted(task.changed_files)
         self._run_command(("git", "add", "--", *paths), cwd=worktree)
         staged = self._run_command(("git", "diff", "--cached", "--name-only"), cwd=worktree)
-        if not staged.strip(): raise AgentRuntimeError("no staged changes to commit")
-        self._run_command(("git", "-c", "user.name=FDEX Agent", "-c", "user.email=agent@fdex.local", "commit", "-m", clean_message), cwd=worktree)
-        sha = self._run_command(("git", "rev-parse", "HEAD"), cwd=worktree); task.commit_sha = sha.strip(); task.emit("git.committed", f"Created commit {task.commit_sha[:12]} on {task.branch}")
+        if not staged.strip():
+            raise AgentRuntimeError("no staged changes to commit")
+        self._run_command(
+            ("git", "-c", "user.name=FDEX Agent", "-c", "user.email=agent@fdex.local", "commit", "-m", clean_message),
+            cwd=worktree,
+        )
+        sha = self._run_command(("git", "rev-parse", "HEAD"), cwd=worktree)
+        task.commit_sha = sha.strip()
+        task.emit("git.committed", f"Created commit {task.commit_sha[:12]} on {task.branch}")
         return f"commit={task.commit_sha}\nbranch={task.branch}\nfiles=\n{staged}"
 
-    def _run_command(self, argv: tuple[str, ...], *, cwd: Path, timeout: float | None = None, check: bool = True, include_exit_code: bool = False) -> str:
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""), "LANG": os.environ.get("LANG", "C.UTF-8"), "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"), "GIT_TERMINAL_PROMPT": "0", "CI": "true"}
-        completed = subprocess.run(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout or self.timeout_seconds, check=False)
+    def _run_command(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout: float | None = None,
+        check: bool = True,
+        include_exit_code: bool = False,
+    ) -> str:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+            "GIT_TERMINAL_PROMPT": "0",
+            "CI": "true",
+        }
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout or self.timeout_seconds,
+            check=False,
+        )
         output = completed.stdout or ""
-        if len(output) > self.max_output_chars: output = output[:self.max_output_chars] + "\n... output truncated ..."
+        if len(output) > self.max_output_chars:
+            output = output[:self.max_output_chars] + "\n... output truncated ..."
         if check and completed.returncode != 0:
-            command = " ".join(shlex.quote(part) for part in argv); raise AgentRuntimeError(f"command failed ({completed.returncode}): {command}\n{output}".strip())
-        if include_exit_code: return f"exit_code={completed.returncode}\n{output}".strip()
+            command = " ".join(shlex.quote(part) for part in argv)
+            raise AgentRuntimeError(f"command failed ({completed.returncode}): {command}\n{output}".strip())
+        if include_exit_code:
+            return f"exit_code={completed.returncode}\n{output}".strip()
         return output.strip()
 
 
@@ -349,5 +481,6 @@ _runtime: FdexAgentRuntime | None = None
 
 def agent_runtime() -> FdexAgentRuntime:
     global _runtime
-    if _runtime is None: _runtime = FdexAgentRuntime()
+    if _runtime is None:
+        _runtime = FdexAgentRuntime()
     return _runtime
