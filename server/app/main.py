@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin_routes import router as admin_router
+from app.agent_routes import router as agent_router
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
@@ -116,6 +117,7 @@ app.include_router(realtime_diagnostic_admin_router)
 app.include_router(client_ai_router)
 app.include_router(realtime_voice_router)
 app.include_router(client_update_router)
+app.include_router(agent_router)
 
 
 @app.on_event("shutdown")
