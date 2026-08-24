@@ -2,6 +2,7 @@ package com.b8vipvip.fdex.network
 
 import android.content.Context
 import com.b8vipvip.fdex.BuildConfig
+import com.b8vipvip.fdex.data.CentralSessionStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -42,13 +43,6 @@ internal sealed interface SseLineResult {
 
 object ClientAiApi {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-
-    // Browser-backed vision/file requests may spend up to ~45 s only preparing an
-    // attachment in ChatGPT before inference begins. The server also has its own
-    // provider/keepalive budget, and reverse proxies are allowed to coalesce tiny SSE
-    // status frames. Therefore the Android idle timeout must be longer than a normal
-    // browser attachment-preparation window instead of assuming every heartbeat reaches
-    // the socket within 30 seconds.
     internal const val ATTACHMENT_STREAM_READ_TIMEOUT_SECONDS = 120L
 
     private val requestClient = OkHttpClient.Builder()
@@ -83,6 +77,7 @@ object ClientAiApi {
                 payload = payload,
                 requestId = requestId,
                 mode = "fallback",
+                context = context,
             )
             requestClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
@@ -114,48 +109,33 @@ object ClientAiApi {
         try {
             val parsedChat = parseChatContent(prompt)
             val attachments = parsedChat.attachments
-            if (attachments.isNotEmpty()) {
-                emit(AiStreamEvent.Status("正在读取附件并生成请求数据… 请求 ${requestId.take(8)}"))
-            }
+            if (attachments.isNotEmpty()) emit(AiStreamEvent.Status("正在读取附件并生成请求数据… 请求 ${requestId.take(8)}"))
             val payload = buildPayload(system, prompt, maxTokens, context)
-            if (attachments.isNotEmpty()) {
-                emit(AiStreamEvent.Status("附件已准备，正在上传到 FDEX 服务端… 请求 ${requestId.take(8)}"))
-            }
+            if (attachments.isNotEmpty()) emit(AiStreamEvent.Status("附件已准备，正在上传到 FDEX 服务端… 请求 ${requestId.take(8)}"))
             val request = buildRequest(
                 path = "/api/client/ai/stream",
                 accept = "text/event-stream",
                 payload = payload,
                 requestId = requestId,
                 mode = "stream",
+                context = context,
             )
             val hasAudioAttachment = attachments.any {
                 it.kind == ChatAttachmentKind.AUDIO || it.mimeType.startsWith("audio/", ignoreCase = true)
             }
-            val client = if (attachments.isNotEmpty() && !hasAudioAttachment) {
-                attachmentStreamClient
-            } else {
-                streamClient
-            }
+            val client = if (attachments.isNotEmpty() && !hasAudioAttachment) attachmentStreamClient else streamClient
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
-                    emit(
-                        AiStreamEvent.Failure(
-                            withRequestId(extractError(body, "服务端返回 HTTP ${response.code}"), requestId),
-                        ),
-                    )
+                    emit(AiStreamEvent.Failure(withRequestId(extractError(body, "服务端返回 HTTP ${response.code}"), requestId)))
                     return@flow
                 }
-
                 val responseBody = response.body
                 if (responseBody == null) {
                     emit(AiStreamEvent.Failure(withRequestId("服务端没有返回流式响应正文", requestId)))
                     return@flow
                 }
-
-                // Use Okio's source directly. The explicit FDEX `done` event is definitive, so
-                // do not wait for a trailing [DONE] marker or socket EOF once it has arrived.
                 val source = responseBody.source()
                 var resultSeen = false
                 while (true) {
@@ -163,46 +143,23 @@ object ClientAiApi {
                     when (val parsed = parseSseLine(line)) {
                         null -> Unit
                         SseLineResult.DoneMarker -> {
-                            if (resultSeen) {
-                                emit(AiStreamEvent.Done(model = "", latencyMs = 0))
-                            } else {
-                                emit(
-                                    AiStreamEvent.Failure(
-                                        withRequestId("流式连接已结束，但没有收到正文或媒体结果", requestId),
-                                    ),
-                                )
-                            }
+                            if (resultSeen) emit(AiStreamEvent.Done(model = "", latencyMs = 0))
+                            else emit(AiStreamEvent.Failure(withRequestId("流式连接已结束，但没有收到正文或媒体结果", requestId)))
                             return@flow
                         }
                         is SseLineResult.Event -> {
                             val event = parsed.event
                             if (event is AiStreamEvent.Content || event is AiStreamEvent.Media) {
-                                if (!resultSeen) {
-                                    // The previous provider status (for example “正在分析 1 幅图片”)
-                                    // must not remain visible once real answer data reaches Android.
-                                    emit(AiStreamEvent.Status(""))
-                                }
+                                if (!resultSeen) emit(AiStreamEvent.Status(""))
                                 resultSeen = true
                             }
                             emit(event)
-                            if (event is AiStreamEvent.Done || event is AiStreamEvent.Failure) {
-                                return@flow
-                            }
+                            if (event is AiStreamEvent.Done || event is AiStreamEvent.Failure) return@flow
                         }
                     }
                 }
-
-                if (resultSeen) {
-                    // A reverse proxy may drop only the final marker while all content arrived.
-                    // Clean EOF after result data is success, not an endlessly-busy UI state.
-                    emit(AiStreamEvent.Done(model = "", latencyMs = 0))
-                } else {
-                    emit(
-                        AiStreamEvent.Failure(
-                            withRequestId("流式连接提前结束，未收到正文或媒体结果", requestId),
-                        ),
-                    )
-                }
+                if (resultSeen) emit(AiStreamEvent.Done(model = "", latencyMs = 0))
+                else emit(AiStreamEvent.Failure(withRequestId("流式连接提前结束，未收到正文或媒体结果", requestId)))
             }
         } catch (error: Exception) {
             emit(AiStreamEvent.Failure(withRequestId(error.message ?: "AI 流式连接失败", requestId)))
@@ -249,9 +206,7 @@ object ClientAiApi {
     private fun parseMediaArray(array: JSONArray?): List<AiMediaResult> {
         if (array == null) return emptyList()
         return buildList {
-            for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.let(::parseMedia)?.let(::add)
-            }
+            for (index in 0 until array.length()) array.optJSONObject(index)?.let(::parseMedia)?.let(::add)
         }
     }
 
@@ -261,9 +216,10 @@ object ClientAiApi {
         payload: JSONObject,
         requestId: String,
         mode: String,
+        context: Context?,
     ): Request {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
-        return Request.Builder()
+        val builder = Request.Builder()
             .url("${BuildConfig.SERVER_BASE_URL}$path")
             .post(bytes.toRequestBody(jsonMediaType))
             .header("Accept", accept)
@@ -272,7 +228,15 @@ object ClientAiApi {
             .header("X-FDEX-Request-ID", requestId)
             .header("X-FDEX-Request-Mode", mode)
             .header("X-FDEX-Payload-Bytes", bytes.size.toString())
-            .build()
+        if (context != null) {
+            val session = CentralSessionStore(context)
+            val token = session.accessToken().trim()
+            if (token.isNotBlank()) {
+                builder.header("Authorization", "Bearer $token")
+                builder.header("X-FDEX-User-ID", session.userId())
+            }
+        }
+        return builder.build()
     }
 
     private fun buildPayload(
@@ -285,35 +249,19 @@ object ClientAiApi {
         val payload = JSONObject()
             .put("prompt", prepared.prompt)
             .put("max_tokens", maxTokens.coerceIn(32, 4000))
-
         if (!system.isNullOrBlank()) payload.put("system", system)
         if (prepared.images.isNotEmpty()) {
-            payload.put(
-                "images",
-                JSONArray().apply {
-                    prepared.images.forEach { image ->
-                        put(JSONObject().put("url", image.url).put("detail", image.detail))
-                    }
-                },
-            )
+            payload.put("images", JSONArray().apply {
+                prepared.images.forEach { image -> put(JSONObject().put("url", image.url).put("detail", image.detail)) }
+            })
         }
-        prepared.audio?.let { audio ->
-            payload.put("audio", JSONObject().put("data", audio.data).put("format", audio.format))
-        }
+        prepared.audio?.let { audio -> payload.put("audio", JSONObject().put("data", audio.data).put("format", audio.format)) }
         if (prepared.documents.isNotEmpty()) {
-            payload.put(
-                "documents",
-                JSONArray().apply {
-                    prepared.documents.forEach { document ->
-                        put(
-                            JSONObject()
-                                .put("name", document.name)
-                                .put("mime_type", document.mimeType)
-                                .put("data", document.data),
-                        )
-                    }
-                },
-            )
+            payload.put("documents", JSONArray().apply {
+                prepared.documents.forEach { document ->
+                    put(JSONObject().put("name", document.name).put("mime_type", document.mimeType).put("data", document.data))
+                }
+            })
         }
         return payload
     }
@@ -321,11 +269,7 @@ object ClientAiApi {
     private fun extractError(body: String, fallback: String): String =
         runCatching {
             val detail = JSONObject(body).opt("detail")
-            when (detail) {
-                is String -> detail
-                null -> ""
-                else -> detail.toString()
-            }
+            when (detail) { is String -> detail; null -> ""; else -> detail.toString() }
         }.getOrNull().orEmpty().ifBlank { fallback }
 
     private fun withRequestId(message: String, requestId: String): String {
