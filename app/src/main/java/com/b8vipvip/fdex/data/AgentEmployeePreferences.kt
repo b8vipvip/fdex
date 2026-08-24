@@ -2,7 +2,7 @@ package com.b8vipvip.fdex.data
 
 import android.content.Context
 
-/** Local-only selection and credential state for Coding Agent employees. */
+/** Local-only Coding Agent UI state. GitHub and AI provider secrets stay on the FDEX server. */
 class AgentEmployeePreferences(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -19,10 +19,21 @@ class AgentEmployeePreferences(context: Context) {
         prefs.edit().putString(KEY_ACCESS_TOKEN, value.trim()).apply()
     }
 
+    fun projectId(employeeId: Long): Int? {
+        val value = prefs.getInt(projectKey(employeeId), 0)
+        return value.takeIf { it > 0 }
+    }
+
+    fun setProjectId(employeeId: Long, projectId: Int?) {
+        if (projectId == null) prefs.edit().remove(projectKey(employeeId)).apply()
+        else prefs.edit().putInt(projectKey(employeeId), projectId).apply()
+    }
+
     private fun employeeKey(employeeId: Long): String = "coding_agent_employee_$employeeId"
+    private fun projectKey(employeeId: Long): String = "coding_agent_project_$employeeId"
 
     companion object {
-        private const val PREFS_NAME = "fdex_agent_preferences_v1"
+        private const val PREFS_NAME = "fdex_agent_preferences_v2"
         private const val KEY_ACCESS_TOKEN = "agent_access_token"
     }
 }
