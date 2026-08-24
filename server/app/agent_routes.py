@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.agent_access import agent_token_valid
 from app.agent_loop import FdexAgentLoop
+from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
 from app.config import get_settings
 
@@ -16,6 +17,8 @@ router = APIRouter(prefix=f"{settings.api_prefix}/agent", tags=["agent"])
 
 class AgentTaskCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
+    owner_id: str | None = Field(default=None, max_length=80)
+    project_id: int | None = Field(default=None, ge=1)
 
 
 class AgentToolRunRequest(BaseModel):
@@ -36,23 +39,23 @@ def _task_payload(task: AgentTask) -> dict[str, object]:
     return {
         "id": task.id,
         "prompt": task.prompt,
+        "owner_id": task.owner_id,
+        "project_id": task.project_id,
+        "project_name": task.project_name,
+        "repository": task.repository,
+        "base_branch": task.base_branch,
         "status": task.status,
         "result": task.result,
         "error": task.error,
         "branch": task.branch,
         "worktree": task.worktree,
         "commit_sha": task.commit_sha,
+        "pushed": task.pushed,
+        "pr_url": task.pr_url,
         "changed_files": sorted(task.changed_files),
         "created_at": task.created_at,
         "updated_at": task.updated_at,
-        "events": [
-            {
-                "type": event.type,
-                "message": event.message,
-                "created_at": event.created_at,
-            }
-            for event in task.events
-        ],
+        "events": [{"type": event.type, "message": event.message, "created_at": event.created_at} for event in task.events],
     }
 
 
@@ -62,11 +65,31 @@ def capabilities(request: Request) -> dict[str, object]:
     return agent_runtime().capabilities()
 
 
+@router.get("/projects")
+def projects(request: Request, owner_id: str = Query(default="local", max_length=80)) -> dict[str, object]:
+    _require_agent_access(request)
+    try:
+        items = agent_project_store().list_projects(owner_id, enabled_only=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "owner_id": owner_id,
+        "ai_source": "shared_provider_pool",
+        "projects": [
+            {
+                "id": item["id"], "name": item["name"], "repository": item["repo_full_name"],
+                "base_branch": item["base_branch"], "allow_push": item["allow_push"], "allow_pr": item["allow_pr"],
+            }
+            for item in items
+        ],
+    }
+
+
 @router.post("/tasks")
 async def create_task(request_body: AgentTaskCreateRequest, request: Request) -> dict[str, object]:
     _require_agent_access(request)
     try:
-        task = await agent_runtime().create_task(request_body.prompt)
+        task = await agent_runtime().create_task(request_body.prompt, owner_id=request_body.owner_id, project_id=request_body.project_id)
     except AgentRuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _task_payload(task)
@@ -104,7 +127,6 @@ async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Req
     try:
         task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
     except AgentRuntimeError as exc:
-        message = str(exc)
-        status_code = 404 if message == "task not found" else 400
+        message = str(exc); status_code = 404 if message == "task not found" else 400
         raise HTTPException(status_code=status_code, detail=message) from exc
     return _task_payload(task)
