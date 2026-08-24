@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.central_auth import CentralAuthStore
+from app.central_auth import AuthRateLimitError, CentralAuthStore
 
 
 def test_register_login_refresh_and_revoke(tmp_path: Path) -> None:
@@ -89,3 +89,65 @@ def test_user_admin_can_list_revoke_disable_and_restore(tmp_path: Path) -> None:
     assert restored["enabled"] is True
     fresh = store.login(email="target@example.com", password="password-123", device_name="restored")
     assert store.authenticate_access(fresh["access_token"])["id"] == user_id
+
+
+def test_change_password_keeps_current_session_and_revokes_other_devices(tmp_path: Path) -> None:
+    store = CentralAuthStore(tmp_path / "accounts.db")
+    phone = store.register(name="A", email="a@example.com", password="password-123", device_name="phone")
+    tablet = store.login(email="a@example.com", password="password-123", device_name="tablet")
+    user_id = str(phone["user"]["id"])
+
+    revoked = store.change_password(
+        user_id,
+        "password-123",
+        "new-password-456",
+        current_session_id=str(phone["session_id"]),
+    )
+    assert revoked == 1
+    assert store.authenticate_access(phone["access_token"])["id"] == user_id
+    assert store.authenticate_access(tablet["access_token"]) is None
+    with pytest.raises(ValueError, match="邮箱或密码错误"):
+        store.login(email="a@example.com", password="password-123", device_name="old-password")
+    assert store.login(email="a@example.com", password="new-password-456", device_name="new-password")["user"]["id"] == user_id
+
+
+def test_password_reset_code_rotates_password_and_all_sessions(tmp_path: Path) -> None:
+    store = CentralAuthStore(tmp_path / "accounts.db")
+    original = store.register(name="A", email="a@example.com", password="password-123", device_name="phone")
+    store.login(email="a@example.com", password="password-123", device_name="tablet")
+    reset = store.create_password_reset_code("a@example.com", client_ip="1.2.3.4")
+    assert reset is not None
+    _, code = reset
+
+    store.confirm_password_reset("a@example.com", code, "reset-password-789", client_ip="1.2.3.4")
+    assert store.authenticate_access(original["access_token"]) is None
+    with pytest.raises(ValueError, match="邮箱或密码错误"):
+        store.login(email="a@example.com", password="password-123", device_name="old")
+    assert store.login(email="a@example.com", password="reset-password-789", device_name="new")["user"]["email"] == "a@example.com"
+    with pytest.raises(ValueError, match="验证码错误或已过期"):
+        store.confirm_password_reset("a@example.com", code, "another-password-000")
+
+
+def test_repeated_login_failures_are_rate_limited_and_audited(tmp_path: Path) -> None:
+    store = CentralAuthStore(tmp_path / "accounts.db")
+    registered = store.register(name="A", email="a@example.com", password="password-123", device_name="phone")
+    user_id = str(registered["user"]["id"])
+    for _ in range(4):
+        with pytest.raises(ValueError, match="邮箱或密码错误"):
+            store.login(email="a@example.com", password="wrong-password", device_name="attacker", client_ip="9.9.9.9")
+    with pytest.raises(AuthRateLimitError):
+        store.login(email="a@example.com", password="wrong-password", device_name="attacker", client_ip="9.9.9.9")
+    assert store.login_retry_after("a@example.com", "9.9.9.9") > 0
+    events = store.security_events(user_id)
+    assert any(event["event"] == "login_failed" for event in events)
+
+
+def test_account_delete_removes_identity_and_allows_clean_reregistration(tmp_path: Path) -> None:
+    store = CentralAuthStore(tmp_path / "accounts.db")
+    session = store.register(name="A", email="a@example.com", password="password-123", device_name="phone")
+    user_id = str(session["user"]["id"])
+    deleted = store.delete_account(user_id, "password-123")
+    assert deleted["email"] == "a@example.com"
+    assert store.authenticate_access(session["access_token"]) is None
+    replacement = store.register(name="A2", email="a@example.com", password="password-456", device_name="new-phone")
+    assert replacement["user"]["id"] != user_id
