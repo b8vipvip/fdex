@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     fdex_port: int = Field(default=18080, ge=1, le=65535)
     fdex_workers: int = Field(default=2, ge=1, le=16)
 
+    # Central FDEX account/session service. Opaque access + rotating refresh tokens are
+    # hashed server-side; account user_id becomes the canonical owner scope.
+    fdex_auth_registration_enabled: bool = True
+    fdex_auth_access_minutes: int = Field(default=60, ge=5, le=1440)
+    fdex_auth_refresh_days: int = Field(default=30, ge=1, le=365)
+
     # Legacy one-provider fields are retained only for migration. Runtime AI traffic,
     # including Coding Agent, is routed through the encrypted provider pool.
     ai_provider: str = "openai_compatible"
@@ -30,12 +36,10 @@ class Settings(BaseSettings):
 
     # Coding Agent uses the shared provider pool. No Agent-specific AI endpoint/key/model exists.
     fdex_agent_enabled: bool = True
-    # Bootstrap/enrollment secret only. Normal Phase 6 calls use per-account opaque tokens.
+    # Bootstrap/enrollment secret retained only for migration from pre-central-auth clients.
     fdex_agent_access_token: str = ""
-    # Legacy local-project source used only when a task is created without a configured project.
     fdex_agent_workspace: str = "/opt/fdex"
     fdex_agent_worktree_root: str = str(SERVER_DIR / "data" / "agent-worktrees")
-    # GitHub projects are isolated owner -> project -> repository/worktrees under this root.
     fdex_agent_sandbox_root: str = str(SERVER_DIR / "data" / "agent-sandboxes")
     fdex_agent_default_owner: str = "local"
     fdex_agent_command_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
@@ -44,7 +48,6 @@ class Settings(BaseSettings):
     fdex_agent_max_file_chars: int = Field(default=200000, ge=1000, le=1000000)
     fdex_agent_max_steps: int = Field(default=10, ge=1, le=30)
     fdex_agent_model_max_tokens: int = Field(default=1600, ge=128, le=4000)
-    # Transient systemd execution sandbox. Limits are ceilings, not reserved RAM/CPU.
     fdex_agent_sandbox_memory_mb: int = Field(default=2048, ge=128, le=16384)
     fdex_agent_sandbox_cpu_percent: int = Field(default=150, ge=10, le=800)
     fdex_agent_sandbox_pids_max: int = Field(default=512, ge=32, le=4096)

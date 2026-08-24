@@ -34,7 +34,9 @@ import androidx.compose.ui.unit.sp
 import com.b8vipvip.fdex.BuildConfig
 import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
+import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.data.ClientPreferences
+import com.b8vipvip.fdex.network.CentralAuthApi
 import com.b8vipvip.fdex.network.ServerApi
 import com.b8vipvip.fdex.network.ServerCheckResult
 import com.b8vipvip.fdex.update.ApkUpdater
@@ -48,7 +50,6 @@ internal sealed interface Route {
     data object Login : Route
     data object Register : Route
     data object Messages : Route
-    // Internal route name is kept for navigation compatibility; the visible product surface is now Knowledge.
     data object Work : Route
     data object Discover : Route
     data object Me : Route
@@ -84,23 +85,23 @@ internal fun clientHomeRoute(value: String): Route = when (value) {
     else -> Route.Messages
 }
 
-internal fun shouldHandleSystemBack(
-    route: Route,
-    hasHistory: Boolean,
-    overlayOpen: Boolean,
-): Boolean = overlayOpen || (route != Route.Login && (hasHistory || route != Route.Messages))
+internal fun shouldHandleSystemBack(route: Route, hasHistory: Boolean, overlayOpen: Boolean): Boolean =
+    overlayOpen || (route != Route.Login && (hasHistory || route != Route.Messages))
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FdexApp() {
     val context = LocalContext.current
-    val repo = remember { AppRepository(context) }
+    val sessions = remember { CentralSessionStore(context) }
+    var identityRevision by remember { mutableIntStateOf(0) }
+    // Recreate repository after login/logout so FdexLocalDatabase resolves the new user-scoped DB file.
+    val repo = remember(identityRevision) { AppRepository(context) }
     val clientPreferences = remember { ClientPreferences(context) }
     val agentPreferences = remember { AgentEmployeePreferences(context) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var revision by remember { mutableIntStateOf(0) }
-    var route by remember { mutableStateOf<Route>(if (repo.isLoggedIn()) clientHomeRoute(clientPreferences.defaultHome()) else Route.Login) }
+    var route by remember { mutableStateOf<Route>(if (sessions.isLoggedIn()) clientHomeRoute(clientPreferences.defaultHome()) else Route.Login) }
     val history = remember { mutableStateListOf<Route>() }
     var availableRelease by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateChecking by remember { mutableStateOf(false) }
@@ -108,18 +109,14 @@ fun FdexApp() {
     var employeeMenu by remember { mutableStateOf(false) }
 
     fun touch() { revision++ }
+    fun reloadIdentity() { identityRevision++; revision++ }
     fun go(next: Route, keepCurrent: Boolean = true) {
         if (keepCurrent && route != next) history.add(route)
-        employeeMenu = false
-        route = next
+        employeeMenu = false; route = next
     }
     fun back() {
         employeeMenu = false
-        route = if (history.isNotEmpty()) {
-            history.removeAt(history.lastIndex)
-        } else {
-            fallbackBackTarget(route)
-        }
+        route = if (history.isNotEmpty()) history.removeAt(history.lastIndex) else fallbackBackTarget(route)
     }
     suspend fun checkUpdate(manual: Boolean) {
         if (updateChecking) return
@@ -129,8 +126,7 @@ fun FdexApp() {
             UpdateCheckResult.UpToDate -> if (manual) snackbar.showSnackbar("当前已是最新版本")
             is UpdateCheckResult.Failed -> if (manual) snackbar.showSnackbar(result.message)
         }
-        UpdatePreferences.recordCheck(context)
-        updateChecking = false
+        UpdatePreferences.recordCheck(context); updateChecking = false
     }
 
     LaunchedEffect(Unit) {
@@ -142,47 +138,20 @@ fun FdexApp() {
     }
 
     val mainTab = route == Route.Messages || route == Route.Work || route == Route.Discover || route == Route.Me
-
-    BackHandler(
-        enabled = shouldHandleSystemBack(
-            route = route,
-            hasHistory = history.isNotEmpty(),
-            overlayOpen = employeeMenu,
-        ),
-    ) {
-        if (employeeMenu) {
-            employeeMenu = false
-        } else {
-            back()
-        }
+    BackHandler(enabled = shouldHandleSystemBack(route, history.isNotEmpty(), employeeMenu)) {
+        if (employeeMenu) employeeMenu = false else back()
     }
 
     val title = when (val current = route) {
-        Route.Login -> "登录"
-        Route.Register -> "注册"
-        Route.Messages -> "消息"
-        Route.Work -> "知识库"
-        Route.Discover -> "发现"
-        Route.Me -> "我的"
-        is Route.EmployeeChat -> {
-            val name = repo.employee(current.id)?.name ?: "聊天"
-            if (agentPreferences.isCodingAgent(current.id)) "💻 $name" else name
-        }
-        Route.Employees -> "AI 员工管理"
-        Route.AddEmployee -> "添加员工"
-        is Route.EditEmployee -> "编辑员工"
-        Route.NewProject -> "新增工作"
-        is Route.ProjectDetail -> repo.project(current.id)?.title ?: "工作详情"
-        Route.NewGroup -> "创建工作群"
-        is Route.GroupChat -> repo.group(current.id)?.name ?: "工作群"
-        Route.Account -> "账号信息"
-        Route.PrivacySecurity -> "隐私与安全"
-        Route.Settings -> "设置"
-        Route.Deleted -> "最近删除"
-        Route.Update -> "检查更新"
-        Route.Guide -> "使用说明"
-        Route.PrivacyPolicy -> "隐私说明"
-        Route.Contact -> "联系我们"
+        Route.Login -> "登录"; Route.Register -> "注册"; Route.Messages -> "消息"; Route.Work -> "知识库"
+        Route.Discover -> "发现"; Route.Me -> "我的"
+        is Route.EmployeeChat -> repo.employee(current.id)?.name?.let { if (agentPreferences.isCodingAgent(current.id)) "💻 $it" else it } ?: "聊天"
+        Route.Employees -> "AI 员工管理"; Route.AddEmployee -> "添加员工"; is Route.EditEmployee -> "编辑员工"
+        Route.NewProject -> "新增工作"; is Route.ProjectDetail -> repo.project(current.id)?.title ?: "工作详情"
+        Route.NewGroup -> "创建工作群"; is Route.GroupChat -> repo.group(current.id)?.name ?: "工作群"
+        Route.Account -> "账号信息"; Route.PrivacySecurity -> "隐私与安全"; Route.Settings -> "设置"
+        Route.Deleted -> "最近删除"; Route.Update -> "检查更新"; Route.Guide -> "使用说明"
+        Route.PrivacyPolicy -> "隐私说明"; Route.Contact -> "联系我们"
     }
 
     Scaffold(
@@ -191,64 +160,24 @@ fun FdexApp() {
             if (route != Route.Login && route != Route.Register) {
                 TopAppBar(
                     title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = {
-                        if (!mainTab) TextButton(onClick = { back() }) { Text("‹", fontSize = 30.sp) }
-                    },
+                    navigationIcon = { if (!mainTab) TextButton(onClick = { back() }) { Text("‹", fontSize = 30.sp) } },
                     actions = {
                         when (val current = route) {
                             Route.Messages -> TextButton(onClick = { go(Route.NewGroup) }) { Text("＋", fontSize = 26.sp) }
-                            is Route.EmployeeChat -> {
-                                Box {
-                                    TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
-                                    DropdownMenu(
-                                        expanded = employeeMenu,
-                                        onDismissRequest = { employeeMenu = false },
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("编辑员工") },
-                                            onClick = {
-                                                employeeMenu = false
-                                                go(Route.EditEmployee(current.id))
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    if (agentPreferences.isCodingAgent(current.id)) {
-                                                        "切换为普通 AI 员工"
-                                                    } else {
-                                                        "设为 Coding Agent"
-                                                    },
-                                                )
-                                            },
-                                            onClick = {
-                                                val enabled = !agentPreferences.isCodingAgent(current.id)
-                                                agentPreferences.setCodingAgent(current.id, enabled)
-                                                employeeMenu = false
-                                                touch()
-                                                scope.launch {
-                                                    snackbar.showSnackbar(
-                                                        if (enabled) "已切换为 Coding Agent" else "已切换为普通 AI 员工",
-                                                    )
-                                                }
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("员工管理") },
-                                            onClick = {
-                                                employeeMenu = false
-                                                go(Route.Employees)
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("清空聊天记录") },
-                                            onClick = {
-                                                repo.clearMessages(current.id)
-                                                employeeMenu = false
-                                                touch()
-                                            },
-                                        )
-                                    }
+                            is Route.EmployeeChat -> Box {
+                                TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
+                                DropdownMenu(expanded = employeeMenu, onDismissRequest = { employeeMenu = false }) {
+                                    DropdownMenuItem(text = { Text("编辑员工") }, onClick = { employeeMenu = false; go(Route.EditEmployee(current.id)) })
+                                    DropdownMenuItem(
+                                        text = { Text(if (agentPreferences.isCodingAgent(current.id)) "切换为普通 AI 员工" else "设为 Coding Agent") },
+                                        onClick = {
+                                            val enabled = !agentPreferences.isCodingAgent(current.id)
+                                            agentPreferences.setCodingAgent(current.id, enabled); employeeMenu = false; touch()
+                                            scope.launch { snackbar.showSnackbar(if (enabled) "已切换为 Coding Agent" else "已切换为普通 AI 员工") }
+                                        },
+                                    )
+                                    DropdownMenuItem(text = { Text("员工管理") }, onClick = { employeeMenu = false; go(Route.Employees) })
+                                    DropdownMenuItem(text = { Text("清空聊天记录") }, onClick = { repo.clearMessages(current.id); employeeMenu = false; touch() })
                                 }
                             }
                             else -> Unit
@@ -259,68 +188,41 @@ fun FdexApp() {
         },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            if (mainTab) {
-                NavigationBar(modifier = Modifier.navigationBarsPadding()) {
-                    listOf(
-                        Triple<Route, String, String>(Route.Messages, "💬", "消息"),
-                        Triple<Route, String, String>(Route.Work, "📚", "知识库"),
-                        Triple<Route, String, String>(Route.Discover, "🧭", "发现"),
-                        Triple<Route, String, String>(Route.Me, "👤", "我的"),
-                    ).forEach { (target, icon, label) ->
-                        NavigationBarItem(
-                            selected = route == target,
-                            onClick = { history.clear(); employeeMenu = false; route = target },
-                            icon = { Text(icon, fontSize = 20.sp) },
-                            label = { Text(label) },
-                        )
-                    }
+            if (mainTab) NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+                listOf(
+                    Triple<Route, String, String>(Route.Messages, "💬", "消息"), Triple<Route, String, String>(Route.Work, "📚", "知识库"),
+                    Triple<Route, String, String>(Route.Discover, "🧭", "发现"), Triple<Route, String, String>(Route.Me, "👤", "我的"),
+                ).forEach { (target, icon, label) ->
+                    NavigationBarItem(selected = route == target, onClick = { history.clear(); employeeMenu = false; route = target }, icon = { Text(icon, fontSize = 20.sp) }, label = { Text(label) })
                 }
             }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val current = route) {
-                Route.Login -> LoginScreen(repo, onLogin = { touch(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) }, onRegister = { route = Route.Register })
-                Route.Register -> RegisterScreen(repo, onDone = { touch(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) }, onLogin = { route = Route.Login })
-                Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
-                Route.Work -> KnowledgeScreen(
-                    repo = repo,
-                    revision = revision,
-                    onOpenProject = { go(Route.ProjectDetail(it)) },
-                    onNewProject = { go(Route.NewProject) },
-                    onChanged = { touch() },
-                    snackbar = snackbar,
+                Route.Login -> LoginScreen(
+                    onLogin = { reloadIdentity(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) },
+                    onRegister = { route = Route.Register },
                 )
+                Route.Register -> RegisterScreen(
+                    onDone = { reloadIdentity(); history.clear(); route = clientHomeRoute(clientPreferences.defaultHome()) },
+                    onLogin = { route = Route.Login },
+                )
+                Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
+                Route.Work -> KnowledgeScreen(repo = repo, revision = revision, onOpenProject = { go(Route.ProjectDetail(it)) }, onNewProject = { go(Route.NewProject) }, onChanged = { touch() }, snackbar = snackbar)
                 Route.Discover -> DiscoverScreen()
                 Route.Me -> MeScreen(
-                    repo,
-                    revision,
-                    onAccount = { go(Route.Account) },
-                    onPrivacy = { go(Route.PrivacySecurity) },
-                    onEmployees = { go(Route.Employees) },
-                    onDeleted = { go(Route.Deleted) },
-                    onSettings = { go(Route.Settings) },
-                    onUpdate = { go(Route.Update) },
-                    onGuide = { go(Route.Guide) },
-                    onPrivacyPolicy = { go(Route.PrivacyPolicy) },
-                    onContact = { go(Route.Contact) },
-                    onLogout = { repo.logout(); history.clear(); route = Route.Login; touch() },
+                    repo, revision, onAccount = { go(Route.Account) }, onPrivacy = { go(Route.PrivacySecurity) }, onEmployees = { go(Route.Employees) },
+                    onDeleted = { go(Route.Deleted) }, onSettings = { go(Route.Settings) }, onUpdate = { go(Route.Update) }, onGuide = { go(Route.Guide) },
+                    onPrivacyPolicy = { go(Route.PrivacyPolicy) }, onContact = { go(Route.Contact) },
+                    onLogout = {
+                        val access = sessions.accessToken()
+                        sessions.clear(); agentPreferences.clearAccountCredential(); history.clear(); route = Route.Login; reloadIdentity()
+                        if (access.isNotBlank()) scope.launch { CentralAuthApi.logout(access) }
+                    },
                 )
-                is Route.EmployeeChat -> {
-                    if (agentPreferences.isCodingAgent(current.id)) {
-                        CodingAgentChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
-                    } else {
-                        StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
-                    }
-                }
-                Route.Employees -> EmployeeManageScreen(
-                    repo,
-                    revision,
-                    onAdd = { go(Route.AddEmployee) },
-                    onEdit = { go(Route.EditEmployee(it)) },
-                    onChat = { go(Route.EmployeeChat(it)) },
-                    onChanged = { touch() },
-                )
+                is Route.EmployeeChat -> if (agentPreferences.isCodingAgent(current.id)) CodingAgentChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar) else StreamingEmployeeChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
+                Route.Employees -> EmployeeManageScreen(repo, revision, onAdd = { go(Route.AddEmployee) }, onEdit = { go(Route.EditEmployee(it)) }, onChat = { go(Route.EmployeeChat(it)) }, onChanged = { touch() })
                 Route.AddEmployee -> AddEmployeeScreen(repo, snackbar) { touch(); back() }
                 is Route.EditEmployee -> EditEmployeeScreen(repo, current.id, snackbar) { touch(); back() }
                 Route.NewProject -> NewProjectScreen(repo) { id -> touch(); go(Route.ProjectDetail(id), keepCurrent = false) }
@@ -332,24 +234,16 @@ fun FdexApp() {
                 Route.Settings -> SettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
                 Route.Update -> UpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
-                Route.Guide -> UsageGuideScreen()
-                Route.PrivacyPolicy -> PrivacyPolicyScreen()
-                Route.Contact -> ContactScreen()
+                Route.Guide -> UsageGuideScreen(); Route.PrivacyPolicy -> PrivacyPolicyScreen(); Route.Contact -> ContactScreen()
             }
         }
     }
 
     availableRelease?.let { release ->
         AlertDialog(
-            onDismissRequest = { availableRelease = null },
-            title = { Text("发现新版本 ${release.normalizedVersion}") },
+            onDismissRequest = { availableRelease = null }, title = { Text("发现新版本 ${release.normalizedVersion}") },
             text = { Text(release.body.ifBlank { "FDEX 服务端已同步新版本。" }.take(800)) },
-            confirmButton = {
-                Button(onClick = {
-                    ApkUpdater.downloadAndInstall(context, release)
-                    availableRelease = null
-                }) { Text("立即更新") }
-            },
+            confirmButton = { Button(onClick = { ApkUpdater.downloadAndInstall(context, release); availableRelease = null }) { Text("立即更新") } },
             dismissButton = { TextButton(onClick = { availableRelease = null }) { Text("稍后") } },
         )
     }
