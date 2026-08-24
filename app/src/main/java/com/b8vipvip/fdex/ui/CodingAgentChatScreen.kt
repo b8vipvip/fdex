@@ -75,7 +75,7 @@ internal fun CodingAgentChatScreen(
 
     suspend fun reloadProjects() {
         if (accessToken.isBlank()) return
-        when (val result = AgentApi.listProjects(accessToken)) {
+        when (val result = AgentApi.listProjects(context)) {
             is AgentApiResult.Success -> {
                 projects = result.value
                 if (selectedProjectId == null || projects.none { it.id == selectedProjectId }) {
@@ -151,13 +151,13 @@ internal fun CodingAgentChatScreen(
                                 onClick = {
                                     setupBusy = true
                                     scope.launch {
-                                        when (val connection = AgentApi.saveGitHubConnection(accessToken, githubToken)) {
+                                        when (val connection = AgentApi.saveGitHubConnection(context, githubToken)) {
                                             is AgentApiResult.Failure -> snackbar.showSnackbar(connection.message)
                                             is AgentApiResult.Success -> {
                                                 val memory = memoryMb.toIntOrNull()?.coerceIn(128, 16384) ?: 2048
                                                 val shortName = repositoryName.substringAfterLast('/').ifBlank { "GitHub Project" }
                                                 when (val saved = AgentApi.saveProject(
-                                                    accessToken = accessToken,
+                                                    context = context,
                                                     connectionId = connection.value.id,
                                                     repository = repositoryName.trim(),
                                                     name = projectName.trim().ifBlank { shortName },
@@ -223,14 +223,14 @@ internal fun CodingAgentChatScreen(
                     }
                     text = ""; repo.addMessage(employeeId, "user", prompt); onChanged(); busy = true; liveTask = null
                     scope.launch {
-                        when (val created = AgentApi.createTask(accessToken, prompt, selectedProjectId)) {
+                        when (val created = AgentApi.createTask(context, prompt, selectedProjectId)) {
                             is AgentApiResult.Failure -> { busy = false; snackbar.showSnackbar(created.message) }
                             is AgentApiResult.Success -> {
                                 liveTask = created.value
-                                val runner = async { AgentApi.runTask(accessToken, created.value.id) }
+                                val runner = async { AgentApi.runTask(context, created.value.id) }
                                 while (runner.isActive) {
                                     delay(1000)
-                                    when (val polled = AgentApi.getTask(accessToken, created.value.id)) {
+                                    when (val polled = AgentApi.getTask(context, created.value.id)) {
                                         is AgentApiResult.Success -> liveTask = polled.value
                                         is AgentApiResult.Failure -> Unit
                                     }
