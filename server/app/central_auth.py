@@ -232,7 +232,95 @@ class CentralAuthStore:
         with self.db() as conn:
             conn.execute("UPDATE user_sessions SET revoked_at=?,updated_at=? WHERE access_hash=? AND revoked_at=''", (now, now, _hash_token((access_token or "").strip())))
 
+    def revoke_user_sessions(self, user_id: str) -> int:
+        self.init()
+        self.get_user(user_id)
+        now = _iso(_now())
+        with self.db() as conn:
+            cursor = conn.execute(
+                "UPDATE user_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''",
+                (now, now, user_id),
+            )
+            return int(cursor.rowcount or 0)
+
+    def set_user_enabled(self, user_id: str, enabled: bool) -> dict[str, object]:
+        self.init()
+        now = _iso(_now())
+        with self.db() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET enabled=?,updated_at=? WHERE id=?",
+                (1 if enabled else 0, now, user_id),
+            )
+            if not cursor.rowcount:
+                raise KeyError("FDEX user not found")
+            if not enabled:
+                conn.execute(
+                    "UPDATE user_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''",
+                    (now, now, user_id),
+                )
+        return self.get_user(user_id)
+
+    def list_sessions(self, user_id: str) -> list[dict[str, object]]:
+        self.init()
+        self.get_user(user_id)
+        now = _iso(_now())
+        with self.db() as conn:
+            rows = conn.execute(
+                "SELECT id,device_name,created_at,updated_at,access_expires_at,refresh_expires_at,revoked_at FROM user_sessions WHERE user_id=? ORDER BY updated_at DESC,id DESC",
+                (user_id,),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "device_name": str(row["device_name"] or ""),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+                "access_expires_at": str(row["access_expires_at"] or ""),
+                "refresh_expires_at": str(row["refresh_expires_at"] or ""),
+                "revoked_at": str(row["revoked_at"] or ""),
+                "active": not bool(row["revoked_at"]) and str(row["refresh_expires_at"] or "") > now,
+            }
+            for row in rows
+        ]
+
+    def list_users(self) -> list[dict[str, object]]:
+        self.init()
+        now = _iso(_now())
+        with self.db() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.*,
+                    COUNT(s.id) AS session_count,
+                    COALESCE(SUM(CASE WHEN s.revoked_at='' AND s.refresh_expires_at>? THEN 1 ELSE 0 END),0) AS active_session_count,
+                    COALESCE(MAX(s.updated_at),'') AS latest_session_at
+                FROM users u
+                LEFT JOIN user_sessions s ON s.user_id=u.id
+                GROUP BY u.id
+                ORDER BY u.created_at DESC,u.id DESC
+                """,
+                (now,),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            item = self._public_user(dict(row))
+            item["session_count"] = int(row["session_count"] or 0)
+            item["active_session_count"] = int(row["active_session_count"] or 0)
+            item["latest_session_at"] = str(row["latest_session_at"] or "")
+            result.append(item)
+        return result
+
+    def user_stats(self) -> dict[str, int]:
+        users = self.list_users()
+        return {
+            "total": len(users),
+            "enabled": sum(1 for user in users if bool(user.get("enabled"))),
+            "disabled": sum(1 for user in users if not bool(user.get("enabled"))),
+            "active_sessions": sum(int(user.get("active_session_count") or 0) for user in users),
+        }
+
     def get_user(self, user_id: str) -> dict[str, object]:
+        self.init()
         with self.db() as conn:
             row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
