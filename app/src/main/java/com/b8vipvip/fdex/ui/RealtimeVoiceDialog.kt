@@ -2,6 +2,7 @@ package com.b8vipvip.fdex.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.network.RealtimeVoiceEvent
 import com.b8vipvip.fdex.network.RealtimeVoiceSession
 
@@ -59,6 +61,11 @@ internal fun RealtimeVoiceBar(
     onAssistantReply: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val sessions = remember { CentralSessionStore(context) }
+    val accessToken = sessions.accessToken()
+    val authenticatedMemoryControl = remember(accessToken, memoryControl) {
+        buildRealtimeSessionControl(accessToken, memoryControl)
+    }
     var permissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -80,10 +87,12 @@ internal fun RealtimeVoiceBar(
         if (!permissionGranted) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    DisposableEffect(permissionGranted, system, memoryControl) {
+    DisposableEffect(permissionGranted, system, authenticatedMemoryControl, accessToken) {
         var created: RealtimeVoiceSession? = null
-        if (permissionGranted) {
-            created = RealtimeVoiceSession(context, system, memoryControl) { event ->
+        if (permissionGranted && accessToken.isBlank()) {
+            status = "FDEX 登录状态已失效，请重新登录"
+        } else if (permissionGranted) {
+            created = RealtimeVoiceSession(context, system, authenticatedMemoryControl) { event ->
                 when (event) {
                     is RealtimeVoiceEvent.Status -> status = event.value
                     is RealtimeVoiceEvent.Ready -> {
@@ -193,6 +202,18 @@ internal fun RealtimeVoiceBar(
             }
         }
     }
+}
+
+internal fun buildRealtimeSessionControl(accessToken: String, memoryControl: String?): String? {
+    val token = accessToken.trim()
+    if (token.isBlank()) return memoryControl
+    val encoded = Base64.encodeToString(
+        token.toByteArray(Charsets.UTF_8),
+        Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+    )
+    val authMarker = "[[FDEX_AUTH_V1:$encoded]]"
+    val memory = memoryControl.orEmpty().trim()
+    return if (memory.isBlank()) authMarker else "$authMarker\n$memory"
 }
 
 @Composable
