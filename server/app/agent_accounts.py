@@ -31,7 +31,7 @@ class AgentAccountStore:
 
     The global FDEX_AGENT_ACCESS_TOKEN is only an enrollment/bootstrap secret. Normal
     Agent, GitHub and project calls use an account-specific opaque token. The first
-    enrollment may adopt the legacy default owner so existing projects remain visible.
+    enrollment adopts the configured legacy owner so existing projects remain visible.
     """
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
@@ -79,7 +79,7 @@ class AgentAccountStore:
 
     def enroll(self, label: str = "", preferred_owner_id: str = "") -> tuple[dict[str, object], str]:
         self.init()
-        preferred = (preferred_owner_id or "").strip()
+        preferred = (preferred_owner_id or fresh_settings().fdex_agent_default_owner or "local").strip()
         with self.db() as conn:
             preferred_taken = bool(
                 preferred
