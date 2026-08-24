@@ -7,18 +7,19 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 
 /**
  * Row-oriented local store for FDEX business data.
  *
- * Older releases stored every entity type as one large JSON array inside
- * SharedPreferences. That made every append/update rewrite the whole array and
- * became increasingly expensive as chats and works grew. This database keeps
- * one SQLite row per entity while preserving the existing JSON wire shape, so
- * AppRepository can migrate existing users without a destructive schema reset.
+ * Phase 7 selects a different SQLite file for every authenticated central FDEX user.
+ * The legacy anonymous database is kept intact and is never silently assigned to a new
+ * account, preventing cross-account data disclosure on shared Android devices.
  */
 internal class FdexLocalDatabase(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DATABASE_NAME, null, DATABASE_VERSION) {
+    SQLiteOpenHelper(context.applicationContext, databaseName(context), null, DATABASE_VERSION) {
+
+    private val centralScoped = CentralSessionStore(context).userId().isNotBlank()
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -56,11 +57,9 @@ internal class FdexLocalDatabase(context: Context) :
 
     fun upsert(kind: String, id: Long, parentId: Long?, sortKey: String, payload: JSONObject) {
         val values = ContentValues().apply {
-            put("kind", kind)
-            put("id", id)
+            put("kind", kind); put("id", id)
             if (parentId == null) putNull("parent_id") else put("parent_id", parentId)
-            put("sort_key", sortKey)
-            put("payload", payload.toString())
+            put("sort_key", sortKey); put("payload", payload.toString())
         }
         writableDatabase.insertWithOnConflict("records", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -68,98 +67,51 @@ internal class FdexLocalDatabase(context: Context) :
     fun query(kind: String, parentId: Long? = null): List<JSONObject> {
         val selection: String
         val args: Array<String>
-        if (parentId == null) {
-            selection = "kind=?"
-            args = arrayOf(kind)
-        } else {
-            selection = "kind=? AND parent_id=?"
-            args = arrayOf(kind, parentId.toString())
-        }
-        return readableDatabase.query(
-            "records",
-            arrayOf("payload"),
-            selection,
-            args,
-            null,
-            null,
-            "sort_key ASC, id ASC",
-        ).use { cursor ->
-            buildList {
-                while (cursor.moveToNext()) {
-                    runCatching { JSONObject(cursor.getString(0)) }.getOrNull()?.let(::add)
-                }
-            }
+        if (parentId == null) { selection = "kind=?"; args = arrayOf(kind) }
+        else { selection = "kind=? AND parent_id=?"; args = arrayOf(kind, parentId.toString()) }
+        return readableDatabase.query("records", arrayOf("payload"), selection, args, null, null, "sort_key ASC, id ASC").use { cursor ->
+            buildList { while (cursor.moveToNext()) runCatching { JSONObject(cursor.getString(0)) }.getOrNull()?.let(::add) }
         }
     }
 
     fun queryById(kind: String, id: Long): JSONObject? = readableDatabase.query(
-        "records",
-        arrayOf("payload"),
-        "kind=? AND id=?",
-        arrayOf(kind, id.toString()),
-        null,
-        null,
-        null,
-        "1",
-    ).use { cursor ->
-        if (!cursor.moveToFirst()) return@use null
-        runCatching { JSONObject(cursor.getString(0)) }.getOrNull()
-    }
+        "records", arrayOf("payload"), "kind=? AND id=?", arrayOf(kind, id.toString()), null, null, null, "1",
+    ).use { cursor -> if (!cursor.moveToFirst()) return@use null; runCatching { JSONObject(cursor.getString(0)) }.getOrNull() }
 
-    fun delete(kind: String, id: Long) {
-        writableDatabase.delete(
-            "records",
-            "kind=? AND id=?",
-            arrayOf(kind, id.toString()),
-        )
-    }
+    fun delete(kind: String, id: Long) { writableDatabase.delete("records", "kind=? AND id=?", arrayOf(kind, id.toString())) }
 
     fun clearAll() {
-        val db = writableDatabase
-        db.beginTransaction()
+        val db = writableDatabase; db.beginTransaction()
         try {
             db.delete("records", null, null)
             putMeta(db, META_NEXT_ID, DEFAULT_NEXT_ID.toString())
             putMeta(db, META_LEGACY_MIGRATED, "1")
             db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
+        } finally { db.endTransaction() }
     }
 
-    /** Import legacy fdex_app_v2 JSON arrays exactly once. */
+    /** Import legacy fdex_app_v2 arrays only into the legacy anonymous database. */
     fun migrateLegacyIfNeeded(prefs: SharedPreferences) {
+        if (centralScoped) return
         val db = writableDatabase
         if (meta(db, META_LEGACY_MIGRATED) == "1") return
-
         db.beginTransaction()
         try {
             var maxId = prefs.getLong("next_id", DEFAULT_NEXT_ID).coerceAtLeast(DEFAULT_NEXT_ID)
             LEGACY_KIND_KEYS.forEach { (kind, prefKey) ->
-                val raw = prefs.getString(prefKey, "[]").orEmpty()
-                val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+                val array = runCatching { JSONArray(prefs.getString(prefKey, "[]").orEmpty()) }.getOrDefault(JSONArray())
                 for (index in 0 until array.length()) {
                     val item = array.optJSONObject(index) ?: continue
-                    val id = item.optLong("id", -1L)
-                    if (id <= 0L) continue
-                    maxId = maxOf(maxId, id)
-                    insertLegacy(db, kind, item)
+                    val id = item.optLong("id", -1L); if (id <= 0L) continue
+                    maxId = maxOf(maxId, id); insertLegacy(db, kind, item)
                 }
             }
-            putMeta(db, META_NEXT_ID, maxId.toString())
-            putMeta(db, META_LEGACY_MIGRATED, "1")
+            putMeta(db, META_NEXT_ID, maxId.toString()); putMeta(db, META_LEGACY_MIGRATED, "1")
             db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-
-        // Only remove business arrays after the SQLite transaction is durable.
-        // Account/session/profile preferences intentionally remain in the small
-        // private preference file because they are not growing business data.
+        } finally { db.endTransaction() }
         prefs.edit().apply {
             LEGACY_KIND_KEYS.forEach { (_, key) -> remove(key) }
-            remove("next_id")
-            putBoolean("business_sqlite_v3", true)
+            remove("next_id"); putBoolean("business_sqlite_v3", true)
         }.apply()
     }
 
@@ -172,36 +124,19 @@ internal class FdexLocalDatabase(context: Context) :
             KIND_GROUP -> if (item.isNull("project")) null else item.optLong("project").takeIf { it > 0 }
             else -> null
         }
-        val sortKey = when (kind) {
-            KIND_PROJECT, KIND_GROUP -> item.optString("updated").ifBlank { id.toString().padStart(20, '0') }
-            else -> id.toString().padStart(20, '0')
-        }
+        val sortKey = when (kind) { KIND_PROJECT, KIND_GROUP -> item.optString("updated").ifBlank { id.toString().padStart(20, '0') }; else -> id.toString().padStart(20, '0') }
         val values = ContentValues().apply {
-            put("kind", kind)
-            put("id", id)
+            put("kind", kind); put("id", id)
             if (parentId == null) putNull("parent_id") else put("parent_id", parentId)
-            put("sort_key", sortKey)
-            put("payload", item.toString())
+            put("sort_key", sortKey); put("payload", item.toString())
         }
         db.insertWithOnConflict("records", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
-    private fun meta(db: SQLiteDatabase, key: String): String? = db.query(
-        "meta",
-        arrayOf("value"),
-        "key=?",
-        arrayOf(key),
-        null,
-        null,
-        null,
-        "1",
-    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    private fun meta(db: SQLiteDatabase, key: String): String? = db.query("meta", arrayOf("value"), "key=?", arrayOf(key), null, null, null, "1").use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
     private fun putMeta(db: SQLiteDatabase, key: String, value: String) {
-        val values = ContentValues().apply {
-            put("key", key)
-            put("value", value)
-        }
+        val values = ContentValues().apply { put("key", key); put("value", value) }
         db.insertWithOnConflict("meta", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -217,21 +152,26 @@ internal class FdexLocalDatabase(context: Context) :
         const val KIND_KNOWLEDGE = "knowledge"
         const val KIND_EMPLOYEE_PERMISSION = "employee_permission"
 
-        private const val DATABASE_NAME = "fdex-local-v3.db"
+        private const val LEGACY_DATABASE_NAME = "fdex-local-v3.db"
         private const val DATABASE_VERSION = 1
         private const val DEFAULT_NEXT_ID = 1000L
         private const val META_NEXT_ID = "next_id"
         private const val META_LEGACY_MIGRATED = "legacy_shared_preferences_migrated"
 
+        private fun databaseName(context: Context): String {
+            val userId = context.applicationContext
+                .getSharedPreferences(CentralSessionStore.PREFS, Context.MODE_PRIVATE)
+                .getString(CentralSessionStore.KEY_USER_ID, "").orEmpty().trim()
+            if (userId.isBlank()) return LEGACY_DATABASE_NAME
+            val digest = MessageDigest.getInstance("SHA-256").digest(userId.toByteArray())
+                .joinToString("") { "%02x".format(it) }.take(24)
+            return "fdex-local-user-$digest.db"
+        }
+
         private val LEGACY_KIND_KEYS = listOf(
-            KIND_EMPLOYEE to "employees",
-            KIND_MESSAGE to "messages",
-            KIND_PROJECT to "projects",
-            KIND_NOTE to "notes",
-            KIND_ASSET to "assets",
-            KIND_REPORT to "reports",
-            KIND_GROUP to "groups",
-            KIND_GROUP_MESSAGE to "group_messages",
+            KIND_EMPLOYEE to "employees", KIND_MESSAGE to "messages", KIND_PROJECT to "projects",
+            KIND_NOTE to "notes", KIND_ASSET to "assets", KIND_REPORT to "reports",
+            KIND_GROUP to "groups", KIND_GROUP_MESSAGE to "group_messages",
         )
     }
 }
