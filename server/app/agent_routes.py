@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import secrets
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.agent_access import agent_token_valid
 from app.agent_loop import FdexAgentLoop
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
 from app.config import get_settings
@@ -21,12 +21,6 @@ class AgentTaskCreateRequest(BaseModel):
 class AgentToolRunRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=64)
     args: dict[str, Any] = Field(default_factory=dict)
-
-
-def agent_token_valid(configured: str, provided: str) -> bool:
-    expected = (configured or "").strip()
-    actual = (provided or "").strip()
-    return bool(expected and actual and secrets.compare_digest(expected, actual))
 
 
 def _require_agent_access(request: Request) -> None:
