@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Coding Agent · FDEX{% endblock %}
+{% block heading %}Coding Agent{% endblock %}
+{% block subheading %}控制 FDEX Agent Runtime 是否允许 Android Coding Agent 执行开发任务{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin">返回仪表盘</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+    <div class="panel-header">
+        <div>
+            <h2>Agent Runtime 总开关</h2>
+            <p>此开关对应 <code>FDEX_AGENT_ENABLED</code>。默认开启，可随时在控制台关闭。</p>
+        </div>
+        <span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">
+            {% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}
+        </span>
+    </div>
+
+    <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启以应用 Coding Agent 设置。确定继续吗？">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="checkbox-field aligned">
+            <input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}>
+            <span>启用 Coding Agent Runtime</span>
+        </label>
+        <p class="muted">开启后，持有正确 Agent Token 的 Android Coding Agent 员工可以创建和执行受限开发任务。关闭后 <code>/api/agent</code> 执行能力不可用。</p>
+        <div class="inline-note {% if token_ready %}success-note{% else %}warning-note{% endif %}">
+            {% if token_ready %}
+            Agent Token 已配置。Android 端仍需填写对应的 <code>FDEX_AGENT_ACCESS_TOKEN</code>。
+            {% else %}
+            当前 Agent Token 尚未就绪。请先运行服务器更新脚本生成高强度 <code>FDEX_AGENT_ACCESS_TOKEN</code>，不要复用 GitHub、管理员或 AI API Key。
+            {% endif %}
+        </div>
+        <button class="button primary" type="submit">保存并自动重启服务</button>
+    </form>
+
+    <p class="path-note">配置文件：<code>{{ env_path }}</code>。关闭开关不会删除 Agent Token、任务历史或工作区。</p>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>安全边界</h2><p>总开关只决定 Runtime 是否可执行，不会放宽 Phase 3 的工具限制</p></div></div>
+    <div class="content-grid equal">
+        <div><strong>允许</strong><p class="muted">独立 worktree 中读取、修改、测试并提交代码。</p></div>
+        <div><strong>仍然禁止</strong><p class="muted">直接写 main、自动 push/merge、读取任意服务器路径或绕过 Agent Token。</p></div>
+    </div>
+</section>
+{% endblock %}

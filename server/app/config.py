@@ -28,11 +28,10 @@ class Settings(BaseSettings):
     ai_model: str = ""
     ai_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
 
-    # FDEX Agent Runtime. Disabled by default until an administrator intentionally
-    # provisions a server-side workspace. Android never receives shell credentials.
+    # FDEX Agent Runtime. Enabled by default and controllable from /admin/agent.
     # A dedicated access token is required whenever the runtime is enabled; never
     # reuse GitHub, admin, or AI provider credentials for this purpose.
-    fdex_agent_enabled: bool = False
+    fdex_agent_enabled: bool = True
     fdex_agent_access_token: str = ""
     fdex_agent_workspace: str = "/opt/fdex"
     fdex_agent_worktree_root: str = str(SERVER_DIR / "data" / "agent-worktrees")

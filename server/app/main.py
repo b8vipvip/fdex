@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin_routes import router as admin_router
+from app.agent_admin_routes import router as agent_admin_router
 from app.agent_routes import router as agent_router
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
@@ -31,8 +32,6 @@ app = FastAPI(
     version=settings.app_version,
 )
 
-# update_server.sh creates a cryptographically random value. The deterministic fallback
-# keeps the public API available before initialization, while admin login remains disabled.
 session_secret = settings.admin_session_secret or hashlib.sha256(
     f"{settings.app_dir}:{settings.service_name}:admin-not-initialized".encode()
 ).hexdigest()
@@ -52,18 +51,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Runs before the AI router sees the request. It consumes the Android-only memory
-# control marker, recalls MemPalace/Letta, and upgrades the old single rolePrompt
-# contract into ordered FDEX system layers. All memory failures are fail-open.
-# The stream-safe wrapper replays the rewritten request body once, then delegates
-# subsequent ASGI receive() calls so StreamingResponse can wait for a real disconnect
-# instead of entering a CPU-spinning empty-request loop.
 app.add_middleware(StreamSafeFdexMemoryMiddleware)
 
 
 @app.middleware("http")
 async def trace_client_ai_requests(request: Request, call_next):
-    """Emit copy-friendly lifecycle logs before FastAPI parses large attachment bodies."""
     if request.url.path not in {"/api/client/ai", "/api/client/ai/stream"}:
         return await call_next(request)
 
@@ -112,6 +104,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(admin_router)
+app.include_router(agent_admin_router)
 app.include_router(provider_admin_router)
 app.include_router(realtime_diagnostic_admin_router)
 app.include_router(client_ai_router)

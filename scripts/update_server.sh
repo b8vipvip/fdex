@@ -78,10 +78,10 @@ if not values.get("ADMIN_LOG_LINES", "").strip():
 if not values.get("RELEASE_CACHE_DIR", "").strip():
     updates["RELEASE_CACHE_DIR"] = "/opt/fdex/server/data/releases"
 
-# Coding Agent is opt-in, but its secret is provisioned ahead of activation so
-# enabling the runtime never leaves /api/agent unprotected.
+# Coding Agent is enabled by default, while its dedicated secret remains mandatory.
+# Existing installations keep their explicit value; only a missing setting defaults to true.
 if not values.get("FDEX_AGENT_ENABLED", "").strip():
-    updates["FDEX_AGENT_ENABLED"] = "false"
+    updates["FDEX_AGENT_ENABLED"] = "true"
 if len(values.get("FDEX_AGENT_ACCESS_TOKEN", "")) < 32:
     updates["FDEX_AGENT_ACCESS_TOKEN"] = secrets.token_urlsafe(48)
 if not values.get("FDEX_AGENT_WORKSPACE", "").strip():
@@ -172,7 +172,6 @@ fi
 mkdir -p "${RELEASE_CACHE_DIR}"
 chmod 755 "${RELEASE_CACHE_DIR}"
 
-# Stop only our own service. Never terminate an unrelated process occupying the selected port.
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 
 if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :${FDEX_PORT}" | grep -q .; then
@@ -210,7 +209,6 @@ systemctl enable --now fdex-release-sync.timer
 systemctl enable --now fdex-provider-probe.timer
 systemctl restart "${SERVICE_NAME}.service"
 
-# Try release sync once immediately. Failure is non-fatal because the timer keeps retrying every minute.
 systemctl start fdex-release-sync.service 2>/dev/null || true
 
 for _ in {1..30}; do
@@ -219,6 +217,7 @@ for _ in {1..30}; do
     curl --silent "http://127.0.0.1:${FDEX_PORT}/api/health"
     echo
     echo "管理后台：${PUBLIC_BASE_URL}/admin"
+    echo "Coding Agent 控制台：${PUBLIC_BASE_URL}/admin/agent"
     echo "AI 供应商管理：${PUBLIC_BASE_URL}/admin/providers"
     echo "AI 供应商自动深测：每 15 分钟检查一次到期线路"
     echo "APK 更新接口：${PUBLIC_BASE_URL}/api/client/update"
@@ -229,7 +228,7 @@ for _ in {1..30}; do
       echo "首次生成的管理员密码：${GENERATED_ADMIN_PASSWORD}"
       echo "请立即登录后台并修改密码；该密码只在本次终端输出。"
     fi
-    echo "Coding Agent 默认保持关闭；启用前请设置 FDEX_AGENT_ENABLED=true，并将 server/.env 中的 FDEX_AGENT_ACCESS_TOKEN 填入 Android Coding Agent 页面。"
+    echo "Coding Agent 默认启用；可在服务端控制台 /admin/agent 随时关闭或重新开启。"
     exit 0
   fi
   sleep 1
