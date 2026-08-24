@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -71,15 +72,17 @@ object ClientAiApi {
     ): AiGatewayResult = withContext(Dispatchers.IO) {
         try {
             val payload = buildPayload(system, prompt, maxTokens, context)
-            val request = buildRequest(
-                path = "/api/client/ai",
-                accept = "application/json",
-                payload = payload,
-                requestId = requestId,
-                mode = "fallback",
-                context = context,
-            )
-            requestClient.newCall(request).execute().use { response ->
+            openAuthenticatedResponse(requestClient, context) { accessToken, userId ->
+                buildRequest(
+                    path = "/api/client/ai",
+                    accept = "application/json",
+                    payload = payload,
+                    requestId = requestId,
+                    mode = "fallback",
+                    accessToken = accessToken,
+                    userId = userId,
+                )
+            }.use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@withContext AiGatewayResult.Failure(
@@ -112,20 +115,22 @@ object ClientAiApi {
             if (attachments.isNotEmpty()) emit(AiStreamEvent.Status("正在读取附件并生成请求数据… 请求 ${requestId.take(8)}"))
             val payload = buildPayload(system, prompt, maxTokens, context)
             if (attachments.isNotEmpty()) emit(AiStreamEvent.Status("附件已准备，正在上传到 FDEX 服务端… 请求 ${requestId.take(8)}"))
-            val request = buildRequest(
-                path = "/api/client/ai/stream",
-                accept = "text/event-stream",
-                payload = payload,
-                requestId = requestId,
-                mode = "stream",
-                context = context,
-            )
             val hasAudioAttachment = attachments.any {
                 it.kind == ChatAttachmentKind.AUDIO || it.mimeType.startsWith("audio/", ignoreCase = true)
             }
             val client = if (attachments.isNotEmpty() && !hasAudioAttachment) attachmentStreamClient else streamClient
 
-            client.newCall(request).execute().use { response ->
+            openAuthenticatedResponse(client, context) { accessToken, userId ->
+                buildRequest(
+                    path = "/api/client/ai/stream",
+                    accept = "text/event-stream",
+                    payload = payload,
+                    requestId = requestId,
+                    mode = "stream",
+                    accessToken = accessToken,
+                    userId = userId,
+                )
+            }.use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
                     emit(AiStreamEvent.Failure(withRequestId(extractError(body, "服务端返回 HTTP ${response.code}"), requestId)))
@@ -210,13 +215,33 @@ object ClientAiApi {
         }
     }
 
+    private suspend fun openAuthenticatedResponse(
+        client: OkHttpClient,
+        context: Context?,
+        requestFactory: (accessToken: String, userId: String) -> Request,
+    ): Response {
+        val store = context?.let(::CentralSessionStore)
+        val initialToken = if (context != null) CentralSessionManager.ensureAccess(context).orEmpty() else ""
+        val userId = store?.userId().orEmpty()
+        var response = client.newCall(requestFactory(initialToken, userId)).execute()
+        if (response.code == 401 && context != null && initialToken.isNotBlank()) {
+            val refreshed = CentralSessionManager.refreshAfterUnauthorized(context, initialToken).orEmpty()
+            if (refreshed.isNotBlank() && refreshed != initialToken) {
+                response.close()
+                response = client.newCall(requestFactory(refreshed, CentralSessionStore(context).userId())).execute()
+            }
+        }
+        return response
+    }
+
     private fun buildRequest(
         path: String,
         accept: String,
         payload: JSONObject,
         requestId: String,
         mode: String,
-        context: Context?,
+        accessToken: String,
+        userId: String,
     ): Request {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
         val builder = Request.Builder()
@@ -228,13 +253,9 @@ object ClientAiApi {
             .header("X-FDEX-Request-ID", requestId)
             .header("X-FDEX-Request-Mode", mode)
             .header("X-FDEX-Payload-Bytes", bytes.size.toString())
-        if (context != null) {
-            val session = CentralSessionStore(context)
-            val token = session.accessToken().trim()
-            if (token.isNotBlank()) {
-                builder.header("Authorization", "Bearer $token")
-                builder.header("X-FDEX-User-ID", session.userId())
-            }
+        if (accessToken.isNotBlank()) {
+            builder.header("Authorization", "Bearer ${accessToken.trim()}")
+            if (userId.isNotBlank()) builder.header("X-FDEX-User-ID", userId)
         }
         return builder.build()
     }
