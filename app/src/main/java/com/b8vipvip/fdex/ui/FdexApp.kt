@@ -234,8 +234,12 @@ fun FdexApp() {
                 is Route.ProjectDetail -> ProjectDetailScreen(repo, current.id, revision, onChanged = { touch() }, onGroup = { go(Route.GroupChat(it)) }, snackbar = snackbar)
                 Route.NewGroup -> NewGroupScreen(repo) { id -> touch(); go(Route.GroupChat(id), keepCurrent = false) }
                 is Route.GroupChat -> StreamingGroupChatScreen(repo, current.id, revision, onChanged = { touch() }, snackbar = snackbar)
-                Route.Account -> AccountScreen(repo, onChanged = { touch() }, snackbar = snackbar)
-                Route.PrivacySecurity -> PrivacySecurityScreen(onChanged = { touch() }, snackbar = snackbar)
+                Route.Account -> CenterAccountScreen(repo)
+                Route.PrivacySecurity -> CenterSecurityScreen(
+                    onChanged = { touch() },
+                    snackbar = snackbar,
+                    onRequireLogin = { sessions.clear(); agentPreferences.clearAccountCredential(); history.clear(); route = Route.Login; reloadIdentity() },
+                )
                 Route.Settings -> SettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
                 Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
                 Route.Update -> UpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }

@@ -25,6 +25,23 @@ class Settings(BaseSettings):
     fdex_auth_registration_enabled: bool = True
     fdex_auth_access_minutes: int = Field(default=60, ge=5, le=1440)
     fdex_auth_refresh_days: int = Field(default=30, ge=1, le=365)
+    fdex_auth_login_max_failures: int = Field(default=5, ge=2, le=50)
+    fdex_auth_login_window_minutes: int = Field(default=10, ge=1, le=1440)
+    fdex_auth_login_block_minutes: int = Field(default=15, ge=1, le=1440)
+    fdex_auth_reset_code_minutes: int = Field(default=10, ge=2, le=60)
+    fdex_auth_reset_max_attempts: int = Field(default=5, ge=1, le=20)
+
+    # SMTP is used only for FDEX account-security mail such as password reset codes.
+    # If host/from are blank, reset requests fail closed without exposing whether an email exists.
+    fdex_smtp_host: str = ""
+    fdex_smtp_port: int = Field(default=587, ge=1, le=65535)
+    fdex_smtp_username: str = ""
+    fdex_smtp_password: str = ""
+    fdex_smtp_from_email: str = ""
+    fdex_smtp_from_name: str = "FDEX"
+    fdex_smtp_starttls: bool = True
+    fdex_smtp_ssl: bool = False
+    fdex_smtp_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
     # Legacy one-provider fields are retained only for migration. Runtime AI traffic,
     # including Coding Agent, is routed through the encrypted provider pool.
@@ -116,6 +133,10 @@ class Settings(BaseSettings):
     @property
     def admin_ready(self) -> bool:
         return bool(self.admin_username.strip() and len(self.admin_password) >= 12 and len(self.admin_session_secret) >= 32)
+
+    @property
+    def smtp_ready(self) -> bool:
+        return bool(self.fdex_smtp_host.strip() and self.fdex_smtp_from_email.strip())
 
     @property
     def github_owner_repo(self) -> tuple[str, str]:
