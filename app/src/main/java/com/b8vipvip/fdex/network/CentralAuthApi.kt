@@ -1,5 +1,6 @@
 package com.b8vipvip.fdex.network
 
+import android.content.Context
 import android.os.Build
 import com.b8vipvip.fdex.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,26 @@ data class CentralSessionDto(
     val refreshToken: String,
     val accessExpiresAt: String,
     val refreshExpiresAt: String,
+)
+
+data class CentralDeviceSessionDto(
+    val id: String,
+    val deviceName: String,
+    val clientIp: String,
+    val createdAt: String,
+    val lastSeenAt: String,
+    val refreshExpiresAt: String,
+    val active: Boolean,
+    val current: Boolean,
+)
+
+data class CentralSecurityEventDto(
+    val event: String,
+    val success: Boolean,
+    val risk: String,
+    val clientIp: String,
+    val deviceName: String,
+    val createdAt: String,
 )
 
 sealed interface CentralAuthResult<out T> {
@@ -63,6 +84,80 @@ object CentralAuthApi {
     suspend fun refresh(refreshToken: String): CentralAuthResult<CentralSessionDto> =
         authRequest("/api/auth/refresh", JSONObject().put("refresh_token", refreshToken.trim()))
 
+    suspend fun requestPasswordReset(email: String): CentralAuthResult<String> = plainJsonRequest(
+        "/api/auth/password/reset/request",
+        JSONObject().put("email", email.trim()),
+    ) { json -> json.optString("message").ifBlank { "如果邮箱已注册，验证码邮件将很快送达" } }
+
+    suspend fun confirmPasswordReset(email: String, code: String, newPassword: String): CentralAuthResult<String> = plainJsonRequest(
+        "/api/auth/password/reset/confirm",
+        JSONObject().put("email", email.trim()).put("code", code.trim()).put("new_password", newPassword),
+    ) { json -> json.optString("message").ifBlank { "密码已重置，请重新登录" } }
+
+    suspend fun changePassword(context: Context, currentPassword: String, newPassword: String): CentralAuthResult<Boolean> =
+        authorizedJsonRequest(
+            context,
+            "POST",
+            "/api/auth/password/change",
+            JSONObject().put("current_password", currentPassword).put("new_password", newPassword),
+        ) { true }
+
+    suspend fun listSessions(context: Context): CentralAuthResult<List<CentralDeviceSessionDto>> =
+        authorizedJsonRequest(context, "GET", "/api/auth/sessions", null) { json ->
+            val array = json.optJSONArray("sessions")
+            buildList {
+                if (array != null) for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    add(
+                        CentralDeviceSessionDto(
+                            id = item.optString("id"),
+                            deviceName = item.optString("device_name"),
+                            clientIp = item.optString("client_ip"),
+                            createdAt = item.optString("created_at"),
+                            lastSeenAt = item.optString("last_seen_at"),
+                            refreshExpiresAt = item.optString("refresh_expires_at"),
+                            active = item.optBoolean("active"),
+                            current = item.optBoolean("current"),
+                        ),
+                    )
+                }
+            }
+        }
+
+    suspend fun revokeSession(context: Context, sessionId: String): CentralAuthResult<Boolean> =
+        authorizedJsonRequest(context, "POST", "/api/auth/sessions/${sessionId.trim()}/revoke", JSONObject()) { true }
+
+    suspend fun logoutAll(context: Context): CentralAuthResult<Boolean> =
+        authorizedJsonRequest(context, "POST", "/api/auth/logout-all", JSONObject()) { true }
+
+    suspend fun securityEvents(context: Context): CentralAuthResult<List<CentralSecurityEventDto>> =
+        authorizedJsonRequest(context, "GET", "/api/auth/security-events?limit=30", null) { json ->
+            val array = json.optJSONArray("events")
+            buildList {
+                if (array != null) for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    add(
+                        CentralSecurityEventDto(
+                            event = item.optString("event"),
+                            success = item.optBoolean("success"),
+                            risk = item.optString("risk"),
+                            clientIp = item.optString("client_ip"),
+                            deviceName = item.optString("device_name"),
+                            createdAt = item.optString("created_at"),
+                        ),
+                    )
+                }
+            }
+        }
+
+    suspend fun deleteAccount(context: Context, password: String): CentralAuthResult<Boolean> =
+        authorizedJsonRequest(
+            context,
+            "POST",
+            "/api/auth/account/delete",
+            JSONObject().put("password", password).put("confirmation", "DELETE MY FDEX"),
+        ) { true }
+
     suspend fun logout(accessToken: String): CentralAuthResult<Boolean> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
@@ -95,6 +190,62 @@ object CentralAuthApi {
         } catch (error: Exception) {
             CentralAuthResult.Failure(error.message ?: "无法连接 FDEX 中心服务器")
         }
+    }
+
+    private suspend fun <T> plainJsonRequest(path: String, payload: JSONObject, parser: (JSONObject) -> T): CentralAuthResult<T> =
+        withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url("${BuildConfig.SERVER_BASE_URL}$path")
+                    .header("Accept", "application/json")
+                    .post(payload.toString().toRequestBody(jsonType))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) return@withContext CentralAuthResult.Failure(errorMessage(body, "FDEX 账号服务 HTTP ${response.code}"))
+                    runCatching { parser(JSONObject(body)) }
+                        .fold({ CentralAuthResult.Success(it) }, { CentralAuthResult.Failure("FDEX 账号响应格式无效") })
+                }
+            } catch (error: Exception) {
+                CentralAuthResult.Failure(error.message ?: "无法连接 FDEX 中心服务器")
+            }
+        }
+
+    private suspend fun <T> authorizedJsonRequest(
+        context: Context,
+        method: String,
+        path: String,
+        payload: JSONObject?,
+        parser: (JSONObject) -> T,
+    ): CentralAuthResult<T> = withContext(Dispatchers.IO) {
+        var token = CentralSessionManager.ensureAccess(context)
+            ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+        repeat(2) { attempt ->
+            val request = buildAuthorizedRequest(method, path, token, payload)
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.code == 401 && attempt == 0) {
+                    token = CentralSessionManager.refreshAfterUnauthorized(context, token)
+                        ?: return@withContext CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+                } else if (!response.isSuccessful) {
+                    return@withContext CentralAuthResult.Failure(errorMessage(body, "FDEX 账号服务 HTTP ${response.code}"))
+                } else {
+                    return@withContext runCatching { parser(JSONObject(body.ifBlank { "{}" })) }
+                        .fold({ CentralAuthResult.Success(it) }, { CentralAuthResult.Failure("FDEX 账号响应格式无效") })
+                }
+            }
+        }
+        CentralAuthResult.Failure("FDEX 登录状态已失效，请重新登录")
+    }
+
+    private fun buildAuthorizedRequest(method: String, path: String, token: String, payload: JSONObject?): Request {
+        val builder = Request.Builder()
+            .url("${BuildConfig.SERVER_BASE_URL}$path")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer ${token.trim()}")
+        if (method == "GET") builder.get()
+        else builder.post((payload ?: JSONObject()).toString().toRequestBody(jsonType))
+        return builder.build()
     }
 
     internal fun parseSession(json: JSONObject): CentralSessionDto {
