@@ -29,10 +29,9 @@ def _token_hash(token: str) -> str:
 class AgentAccountStore:
     """Server-side identity boundary for Coding Agent accounts.
 
-    The current Android application does not yet have a general server login system, so
-    Phase 6 introduces a scoped Agent credential. The global FDEX_AGENT_ACCESS_TOKEN is
-    used only as an enrollment/bootstrap secret. Normal Agent, GitHub and project calls
-    use an account-specific opaque token after enrollment.
+    The global FDEX_AGENT_ACCESS_TOKEN is only an enrollment/bootstrap secret. Normal
+    Agent, GitHub and project calls use an account-specific opaque token. The first
+    enrollment may adopt the legacy default owner so existing projects remain visible.
     """
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
@@ -78,9 +77,15 @@ class AgentAccountStore:
         finally:
             conn.close()
 
-    def enroll(self, label: str = "") -> tuple[dict[str, object], str]:
+    def enroll(self, label: str = "", preferred_owner_id: str = "") -> tuple[dict[str, object], str]:
         self.init()
-        owner_id = "acct_" + uuid.uuid4().hex[:24]
+        preferred = (preferred_owner_id or "").strip()
+        with self.db() as conn:
+            preferred_taken = bool(
+                preferred
+                and conn.execute("SELECT 1 FROM agent_accounts WHERE owner_id=?", (preferred,)).fetchone()
+            )
+        owner_id = preferred if preferred and not preferred_taken else "acct_" + uuid.uuid4().hex[:24]
         token = secrets.token_urlsafe(48)
         now = _now()
         with self.db() as conn:
