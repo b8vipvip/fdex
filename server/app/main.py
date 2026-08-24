@@ -14,6 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.admin_routes import router as admin_router
 from app.agent_admin_routes import router as agent_admin_router
 from app.agent_routes import router as agent_router
+from app.auth_routes import router as auth_router
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
@@ -28,15 +29,11 @@ from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
 
 settings = get_settings()
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-)
+app = FastAPI(title=settings.app_name, version=settings.app_version)
 
 session_secret = settings.admin_session_secret or hashlib.sha256(
     f"{settings.app_dir}:{settings.service_name}:admin-not-initialized".encode()
 ).hexdigest()
-
 app.add_middleware(
     SessionMiddleware,
     secret_key=session_secret,
@@ -59,40 +56,20 @@ app.add_middleware(StreamSafeFdexMemoryMiddleware)
 async def trace_client_ai_requests(request: Request, call_next):
     if request.url.path not in {"/api/client/ai", "/api/client/ai/stream"}:
         return await call_next(request)
-
     request_id = request_id_for(request)
     started = perf_counter()
     client_host = request.client.host if request.client else ""
-    log_ai_event(
-        "http_request_begin",
-        request_id,
-        method=request.method,
-        path=request.url.path,
-        content_length=request.headers.get("content-length", ""),
-        content_type=request.headers.get("content-type", ""),
-        mode=request.headers.get("x-fdex-request-mode", ""),
-        client=client_host,
-    )
+    log_ai_event("http_request_begin", request_id, method=request.method, path=request.url.path,
+                 content_length=request.headers.get("content-length", ""), content_type=request.headers.get("content-type", ""),
+                 mode=request.headers.get("x-fdex-request-mode", ""), client=client_host)
     try:
         response = await call_next(request)
     except Exception as exc:
-        log_ai_event(
-            "http_request_exception",
-            request_id,
-            level="error",
-            elapsed_ms=int((perf_counter() - started) * 1000),
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
+        log_ai_event("http_request_exception", request_id, level="error", elapsed_ms=int((perf_counter() - started) * 1000),
+                     error_type=type(exc).__name__, error=str(exc))
         raise
-
     response.headers["X-FDEX-Request-ID"] = request_id
-    log_ai_event(
-        "http_request_end",
-        request_id,
-        status_code=response.status_code,
-        elapsed_ms=int((perf_counter() - started) * 1000),
-    )
+    log_ai_event("http_request_end", request_id, status_code=response.status_code, elapsed_ms=int((perf_counter() - started) * 1000))
     return response
 
 
@@ -109,6 +86,7 @@ app.include_router(agent_admin_router)
 app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
 app.include_router(realtime_diagnostic_admin_router)
+app.include_router(auth_router)
 app.include_router(client_ai_router)
 app.include_router(realtime_voice_router)
 app.include_router(client_update_router)
@@ -127,45 +105,26 @@ def root() -> RedirectResponse:
 
 @app.get(f"{settings.api_prefix}/info")
 def info() -> dict[str, str]:
-    return {
-        "service": settings.app_name,
-        "version": settings.app_version,
-        "status": "running",
-        "docs": f"{settings.public_base_url}/docs",
-        "health": f"{settings.public_base_url}{settings.api_prefix}/health",
-        "admin": f"{settings.public_base_url}/admin",
-    }
+    return {"service": settings.app_name, "version": settings.app_version, "status": "running",
+            "docs": f"{settings.public_base_url}/docs", "health": f"{settings.public_base_url}{settings.api_prefix}/health",
+            "admin": f"{settings.public_base_url}/admin"}
 
 
 @app.get(f"{settings.api_prefix}/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        service=settings.app_name,
-        version=settings.app_version,
-        time=datetime.now(timezone.utc),
-    )
+    return HealthResponse(status="ok", service=settings.app_name, version=settings.app_version, time=datetime.now(timezone.utc))
 
 
 @app.get(f"{settings.api_prefix}/version", response_model=VersionResponse)
 def version() -> VersionResponse:
-    return VersionResponse(
-        service=settings.app_name,
-        version=settings.app_version,
-        environment=settings.environment,
-    )
+    return VersionResponse(service=settings.app_name, version=settings.app_version, environment=settings.environment)
 
 
 @app.get(f"{settings.api_prefix}/public-config", response_model=PublicConfigResponse)
 def public_config() -> PublicConfigResponse:
     providers = provider_store().list(enabled_only=True)
     primary = providers[0] if providers else None
-    return PublicConfigResponse(
-        service=settings.app_name,
-        version=settings.app_version,
-        public_base_url=settings.public_base_url,
-        api_prefix=settings.api_prefix,
-        ai_provider=str(primary["name"]) if primary else "provider_pool",
-        ai_model=str(primary["main_text_model"]) if primary else "",
-        ai_enabled=bool(primary and primary.get("api_key_configured") and primary.get("main_text_model")),
-    )
+    return PublicConfigResponse(service=settings.app_name, version=settings.app_version, public_base_url=settings.public_base_url,
+                                api_prefix=settings.api_prefix, ai_provider=str(primary["name"]) if primary else "provider_pool",
+                                ai_model=str(primary["main_text_model"]) if primary else "",
+                                ai_enabled=bool(primary and primary.get("api_key_configured") and primary.get("main_text_model")))
