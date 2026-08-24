@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     ai_model: str = ""
     ai_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
 
+    # FDEX Agent Runtime. Disabled by default until an administrator intentionally
+    # provisions a server-side workspace. Android never receives shell credentials.
+    fdex_agent_enabled: bool = False
+    fdex_agent_workspace: str = "/opt/fdex"
+    fdex_agent_command_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    fdex_agent_max_output_chars: int = Field(default=20000, ge=1000, le=200000)
+
     # MemPalace raw history + Letta structured memory. FDEX uses the same encrypted
     # provider pool through a loopback-only provider proxy; Android never receives
     # provider credentials or these service tokens.
