@@ -12,7 +12,7 @@ from app.multimodal_service import route_text
 ModelCall = Callable[[str, str, int], Awaitable[str]]
 
 _AGENT_SYSTEM = """You are the decision engine for FDEX Agent Runtime.
-You do not have direct shell, network, push, merge, or main-branch write access.
+You do not have direct shell access, network access, push, merge, or main-branch write access.
 You may request exactly one tool from the allowlist and must supply only that tool's documented JSON arguments.
 Return exactly one JSON object and no markdown.
 Allowed response forms:
