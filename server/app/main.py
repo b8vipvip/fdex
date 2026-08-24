@@ -28,6 +28,7 @@ from app.realtime_voice import router as realtime_voice_router
 from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
+from app.user_admin_routes import router as user_admin_router
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -102,6 +103,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(admin_router)
+app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
 app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
