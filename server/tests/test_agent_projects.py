@@ -50,14 +50,19 @@ def test_github_token_is_encrypted_and_not_returned(tmp_path: Path, monkeypatch:
     assert secret["token"] == "ghp_super_secret_token"
 
 
-def test_project_remote_permissions_default_off(tmp_path: Path) -> None:
+def test_project_remote_permissions_default_off_and_pr_requires_push(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    project = store.save_project("local", name="Read only", repo_full_name="octo/read-only")
-    assert project["allow_push"] is False
-    assert project["allow_pr"] is False
+    read_only = store.save_project("local", name="Read only", repo_full_name="octo/read-only")
+    assert read_only["allow_push"] is False
+    assert read_only["allow_pr"] is False
+
+    pr_project = store.save_project("local", name="PR", repo_full_name="octo/pr", allow_pr=True)
+    assert pr_project["allow_pr"] is True
+    assert pr_project["allow_push"] is True
 
 
 def test_owner_scope_rejects_path_escape(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    with pytest.raises(ValueError):
-        store.save_project("../escape", name="Bad", repo_full_name="octo/repo")
+    for owner_id in ("../escape", "..", "."):
+        with pytest.raises(ValueError):
+            store.save_project(owner_id, name="Bad", repo_full_name="octo/repo")
