@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 from app.config import fresh_settings
@@ -28,14 +30,21 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
     After that, every receive() call must delegate to the original ASGI receive callable so
     Starlette's StreamingResponse can block while waiting for a real http.disconnect event.
 
-    Returning an immediate empty http.request forever creates a tight busy loop in
-    StreamingResponse's disconnect listener. That loop can pin one worker at 100% CPU,
-    starve the response generator, make the admin console sluggish and eventually make the
-    Android client time out before stream_begin is reached.
+    Center-authenticated requests also derive the persisted memory namespace from the
+    server-validated FDEX user id. A client-supplied scope token is therefore only a
+    per-user sub-scope and can never select another user's remote memory namespace.
     """
 
     def __init__(self, app: Callable[..., Awaitable[Any]]):
         super().__init__(app)
+
+    @staticmethod
+    def _bind_user_scope(scope: dict[str, Any], control):
+        user_id = str(scope.get("fdex_user_id") or "").strip()
+        if not user_id:
+            return control
+        bound = hashlib.sha256(f"{user_id}:{control.scope_token}".encode("utf-8")).hexdigest()
+        return replace(control, scope_token=bound)
 
     async def __call__(
         self,
@@ -81,6 +90,7 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
                 await self._replay(scope, body, receive, send)
             return
 
+        control = self._bind_user_scope(scope, control)
         user_prompt, local_context = extract_local_context(without_marker)
         query = user_prompt.strip() or "当前附件或任务"
         recall = MemoryRecall()
@@ -114,9 +124,6 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
             if not replayed_request:
                 replayed_request = True
                 return {"type": "http.request", "body": rewritten, "more_body": False}
-            # Critical: do not fabricate another empty request. StreamingResponse runs a
-            # disconnect listener that repeatedly calls receive(); delegating here lets it
-            # sleep until the server actually reports a disconnect instead of spinning CPU.
             return await receive()
 
         async def memory_send(message: dict[str, Any]) -> None:
