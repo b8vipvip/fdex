@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from app.central_auth import central_auth_store
 from app.memory_middleware import decode_memory_control
+from app.memory_scope_registry import memory_scope_registry
 
 _PROTECTED_HTTP_PATHS = {"/api/client/ai", "/api/client/ai/stream"}
 _PROTECTED_WEBSOCKET_PATHS = {"/api/client/voice/realtime"}
@@ -26,7 +27,8 @@ class CenterUserAuthMiddleware:
     For both transports the server-validated user id is written into ASGI scope. Remote
     memory control is rebound to that user id before downstream recall/write code sees it,
     so two FDEX accounts cannot share a remote memory namespace even if their local scope
-    token happens to be identical.
+    token happens to be identical. Realtime bound scopes are also registered against the
+    one-way account hash so account-wide export/erasure can enumerate every device scope.
     """
 
     def __init__(self, app: Callable[..., Awaitable[Any]]) -> None:
@@ -206,7 +208,9 @@ class CenterUserAuthMiddleware:
             return clean
         if not isinstance(payload, dict):
             return clean
-        payload["scope"] = hashlib.sha256(f"{user_id}:{control.scope_token}".encode("utf-8")).hexdigest()
+        bound = hashlib.sha256(f"{user_id}:{control.scope_token}".encode("utf-8")).hexdigest()
+        memory_scope_registry().register(user_id, bound)
+        payload["scope"] = bound
         rebound = base64.urlsafe_b64encode(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).decode("ascii").rstrip("=")

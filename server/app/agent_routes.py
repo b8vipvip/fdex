@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.account_operations import account_operation_status
 from app.agent_access import agent_token_valid
 from app.agent_accounts import agent_account_store
 from app.agent_loop import FdexAgentLoop
@@ -61,17 +62,24 @@ def _require_bootstrap(request: Request) -> None:
 
 
 def _account_owner(request: Request) -> tuple[str, str]:
-    # Phase 7 canonical identity: an authenticated FDEX user owns GitHub connections,
-    # projects, tasks and sandbox paths. Client-supplied owner IDs are never trusted.
     authorization = request.headers.get("Authorization", "").strip()
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() == "bearer" and token.strip():
         user = central_auth_store().authenticate_access(token.strip())
         if user is None:
             raise HTTPException(status_code=401, detail="FDEX login has expired")
-        return str(user["id"]), "central"
+        owner_id = str(user["id"])
+        operation = account_operation_status(owner_id)
+        if operation.busy:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "当前账号正在执行数据导出、长期记忆清理或账号注销，请稍后重试",
+                    "operation": operation.operation,
+                },
+            )
+        return owner_id, "central"
 
-    # Phase 6 compatibility path. New clients should not need this account credential.
     account_token = request.headers.get("X-FDEX-Account-Token", "").strip()
     if account_token:
         account = agent_account_store().authenticate(account_token)
@@ -79,7 +87,6 @@ def _account_owner(request: Request) -> tuple[str, str]:
             raise HTTPException(status_code=401, detail="invalid legacy Agent account token")
         return str(account["owner_id"]), "agent-account-legacy"
 
-    # Oldest single-user clients can still reach only the configured legacy owner.
     configured = settings.fdex_agent_access_token
     provided = request.headers.get("X-FDEX-Agent-Token", "")
     if configured.strip() and agent_token_valid(configured, provided):
