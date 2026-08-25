@@ -83,6 +83,21 @@ https://fdex.k2n.cn/admin
 
 首次执行更新脚本时，会自动生成管理员密码与会话密钥，并在当前终端显示一次初始密码。AI Provider Key 使用独立 Fernet 密钥加密保存到 `server/data/ai-providers.db`，密钥文件为 `server/data/ai-providers.key`；后台页面只显示脱敏结果。旧 `.env` AI 配置仅用于兼容迁移和服务级配置，不再是多供应商 Key 的主存储位置。
 
+## Coding Agent 与 GitHub Device OAuth
+
+Coding Agent 使用 FDEX 中心账号的 `user_id` 作为唯一 owner scope。GitHub 连接、项目、repository、任务 worktree、任务历史和构建缓存均按账号隔离；Android 不再要求用户粘贴 Personal Access Token。
+
+管理员先创建 GitHub OAuth App，并在 App 设置中启用 [Device Flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)，然后在“管理后台 → Coding Agent → GitHub Device OAuth”填写 Client ID。也可写入：
+
+```dotenv
+FDEX_GITHUB_OAUTH_CLIENT_ID=Ov23li...
+FDEX_GITHUB_OAUTH_SCOPE="repo read:user offline_access"
+```
+
+Device Flow 不需要 Client Secret。Android 只接收一次性用户码并打开 GitHub 浏览器确认页；`device_code`、access token 与轮换 refresh token 均由服务端加密保存且不进入 API 响应。授权完成后，项目选择器通过 GitHub 的“当前用户仓库”接口只列出该 GitHub 身份有权访问的仓库，并根据仓库权限决定项目是否可 push Agent 分支/创建 PR。
+
+`repo` scope 可访问用户授权范围内的私有仓库，生产部署应根据业务需要收紧 scope。后台 PAT Connector 仅作为旧部署迁移或应急兼容入口。
+
 主要地址：
 
 ```text
@@ -97,6 +112,9 @@ https://fdex.k2n.cn/admin
 /api/client/ai/stream   Android SSE AI 网关
 /api/client/voice/realtime  Realtime WebSocket
 /api/client/update      latest_only 客户端更新检查
+/api/agent/github/oauth/device/start        启动账号级 GitHub Device OAuth
+/api/agent/github/oauth/device/{id}/poll    按 GitHub 规定频率检查授权
+/api/agent/github/repositories              列出当前连接可访问的仓库
 ```
 
 ## 服务端本地运行

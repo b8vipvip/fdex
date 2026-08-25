@@ -32,7 +32,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
     with store.db() as conn:
         project_count = int(conn.execute("SELECT COUNT(*) FROM agent_projects WHERE owner_id=?", (clean,)).fetchone()[0])
         connection_count = int(conn.execute("SELECT COUNT(*) FROM github_connections WHERE owner_id=?", (clean,)).fetchone()[0])
+        device_flow_count = int(conn.execute("SELECT COUNT(*) FROM github_device_flows WHERE owner_id=?", (clean,)).fetchone()[0])
         conn.execute("DELETE FROM agent_projects WHERE owner_id=?", (clean,))
+        conn.execute("DELETE FROM github_device_flows WHERE owner_id=?", (clean,))
         conn.execute("DELETE FROM github_connections WHERE owner_id=?", (clean,))
 
     task_count = agent_task_store().delete_owner(clean)
@@ -48,6 +50,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
     return {
         "projects": project_count,
         "github_connections": connection_count,
+        "github_device_flows": device_flow_count,
         "agent_tasks": task_count,
         "owner_directories": removed_dirs,
     }

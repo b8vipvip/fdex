@@ -14,7 +14,7 @@ from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, AgentTask, agent_runtime
 from app.agent_tasks import TaskRunBusy, agent_task_store
 from app.central_auth import central_auth_store
-from app.config import get_settings
+from app.config import fresh_settings, get_settings
 
 settings = get_settings()
 router = APIRouter(prefix=f"{settings.api_prefix}/agent", tags=["agent"])
@@ -195,10 +195,13 @@ def capabilities(request: Request) -> dict[str, object]:
 @router.get("/github/connections")
 def github_connections(request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
-    return {"connections": agent_project_store().list_connections(owner_id)}
+    return {
+        "oauth_configured": bool(fresh_settings().fdex_github_oauth_client_id.strip()),
+        "connections": agent_project_store().list_connections(owner_id),
+    }
 
 
-@router.post("/github/connections")
+@router.post("/github/connections", deprecated=True)
 def save_github_connection(request_body: GitHubConnectionRequest, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
     try:
@@ -210,6 +213,59 @@ def save_github_connection(request_body: GitHubConnectionRequest, request: Reque
         )
     except (KeyError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/github/oauth/device/start")
+def start_github_device_oauth(request: Request) -> dict[str, object]:
+    owner_id, _ = _account_owner(request)
+    try:
+        return agent_project_store().start_device_flow(owner_id)
+    except RuntimeError as exc:
+        status = 503 if "not configured" in str(exc) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/github/oauth/device/{flow_id}/poll")
+def poll_github_device_oauth(flow_id: str, request: Request) -> dict[str, object]:
+    owner_id, _ = _account_owner(request)
+    try:
+        return agent_project_store().poll_device_flow(owner_id, flow_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status = 503 if "not configured" in str(exc) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/github/repositories")
+def github_repositories(
+    request: Request,
+    connection_id: int,
+    page: int = 1,
+    per_page: int = 100,
+    query: str = "",
+) -> dict[str, object]:
+    owner_id, _ = _account_owner(request)
+    try:
+        repositories = agent_project_store().list_repositories(
+            owner_id,
+            connection_id,
+            page=page,
+            per_page=per_page,
+            query=query,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status = 503 if "not configured" in str(exc) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"repositories": repositories, "page": max(1, page), "per_page": max(1, min(per_page, 100))}
 
 
 @router.delete("/github/connections/{connection_id}")

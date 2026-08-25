@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
@@ -53,6 +54,35 @@ def save_agent_settings(request: Request, csrf_token: str = Form(...), fdex_agen
     except (ValueError, RuntimeError) as exc:
         write_audit(request, "restart_after_agent_settings", success=False, error=str(exc)); set_flash(request, f"Coding Agent 设置已保存，但自动重启失败：{exc}。请到“版本与维护”手动重启服务。", "error")
     return RedirectResponse("/admin/agent", status_code=303)
+
+
+@router.post("/github-oauth", response_model=None)
+def save_github_oauth_settings(
+    request: Request,
+    csrf_token: str = Form(...),
+    client_id: str = Form(""),
+    scope: str = Form("repo read:user offline_access"),
+) -> Response:
+    if not is_admin(request): return _login_redirect()
+    verify_csrf(request, csrf_token)
+    clean_client_id = client_id.strip()
+    clean_scope = " ".join(scope.split())
+    if clean_client_id and not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", clean_client_id):
+        set_flash(request, "GitHub OAuth Client ID 格式无效。", "error")
+        return RedirectResponse("/admin/agent#github-oauth", status_code=303)
+    if len(clean_scope) > 200 or (clean_scope and not re.fullmatch(r"[A-Za-z0-9:_ -]+", clean_scope)):
+        set_flash(request, "GitHub OAuth scope 格式无效。", "error")
+        return RedirectResponse("/admin/agent#github-oauth", status_code=303)
+    write_env(
+        {
+            "FDEX_GITHUB_OAUTH_CLIENT_ID": clean_client_id,
+            "FDEX_GITHUB_OAUTH_SCOPE": clean_scope,
+        }
+    )
+    get_settings.cache_clear()
+    write_audit(request, "save_agent_github_oauth", enabled=bool(clean_client_id), scope=clean_scope)
+    set_flash(request, "GitHub Device OAuth 设置已保存；Android 新连接立即使用此配置。")
+    return RedirectResponse("/admin/agent#github-oauth", status_code=303)
 
 
 @router.post("/github", response_model=None)

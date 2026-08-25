@@ -11,7 +11,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -27,7 +26,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
@@ -65,13 +63,6 @@ internal fun CodingAgentChatScreen(
     var selectedProjectId by remember { mutableStateOf(agentPrefs.projectId(employeeId)) }
 
     var showProjectSetup by remember { mutableStateOf(false) }
-    var setupBusy by remember { mutableStateOf(false) }
-    var githubToken by remember { mutableStateOf("") }
-    var repositoryName by remember { mutableStateOf("") }
-    var projectName by remember { mutableStateOf("") }
-    var baseBranch by remember { mutableStateOf("main") }
-    var memoryMb by remember { mutableStateOf("2048") }
-    var allowNetwork by remember { mutableStateOf(false) }
 
     suspend fun reloadProjects() {
         if (accessToken.isBlank()) return
@@ -133,57 +124,12 @@ internal fun CodingAgentChatScreen(
 
             if (showProjectSetup && accessToken.isNotBlank()) {
                 item(key = "github-project-setup") {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("GitHub · ${sessions.email()}", fontWeight = FontWeight.Bold)
-                            Text("GitHub Token 只提交到服务端加密保存；连接、项目和沙箱全部绑定当前 FDEX user_id。", style = MaterialTheme.typography.bodySmall, color = Muted)
-                            OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("GitHub Token") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = repositoryName, onValueChange = { repositoryName = it }, label = { Text("仓库，例如 b8vipvip/fdex") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = projectName, onValueChange = { projectName = it }, label = { Text("项目名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = baseBranch, onValueChange = { baseBranch = it }, label = { Text("基础分支") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = memoryMb, onValueChange = { memoryMb = it.filter(Char::isDigit) }, label = { Text("单任务内存上限 MB") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Checkbox(checked = allowNetwork, onCheckedChange = { allowNetwork = it })
-                                Text("允许构建任务联网下载依赖（默认关闭更安全）")
-                            }
-                            Button(
-                                enabled = githubToken.isNotBlank() && repositoryName.isNotBlank() && !setupBusy,
-                                onClick = {
-                                    setupBusy = true
-                                    scope.launch {
-                                        when (val connection = AgentApi.saveGitHubConnection(context, githubToken)) {
-                                            is AgentApiResult.Failure -> snackbar.showSnackbar(connection.message)
-                                            is AgentApiResult.Success -> {
-                                                val memory = memoryMb.toIntOrNull()?.coerceIn(128, 16384) ?: 2048
-                                                val shortName = repositoryName.substringAfterLast('/').ifBlank { "GitHub Project" }
-                                                when (val saved = AgentApi.saveProject(
-                                                    context = context,
-                                                    connectionId = connection.value.id,
-                                                    repository = repositoryName.trim(),
-                                                    name = projectName.trim().ifBlank { shortName },
-                                                    baseBranch = baseBranch.trim().ifBlank { "main" },
-                                                    allowPush = true,
-                                                    allowPr = true,
-                                                    allowNetwork = allowNetwork,
-                                                    sandboxMemoryMb = memory,
-                                                )) {
-                                                    is AgentApiResult.Failure -> snackbar.showSnackbar(saved.message)
-                                                    is AgentApiResult.Success -> {
-                                                        githubToken = ""; repositoryName = ""; projectName = ""
-                                                        selectedProjectId = saved.value.id
-                                                        agentPrefs.setProjectId(employeeId, saved.value.id)
-                                                        reloadProjects(); showProjectSetup = false
-                                                        snackbar.showSnackbar("GitHub 项目已加入当前 FDEX 账号")
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        setupBusy = false
-                                    }
-                                },
-                            ) { Text(if (setupBusy) "连接中" else "连接 GitHub 并添加项目") }
-                        }
-                    }
+                    GitHubProjectSetup(snackbar = snackbar, onProjectSaved = { saved ->
+                        projects = (projects.filterNot { it.id == saved.id } + saved).sortedBy { it.name }
+                        selectedProjectId = saved.id
+                        agentPrefs.setProjectId(employeeId, saved.id)
+                        showProjectSetup = false
+                    })
                 }
             }
 

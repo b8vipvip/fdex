@@ -98,7 +98,18 @@ def _public_sessions(store: CentralAuthStore, user_id: str) -> list[dict[str, ob
 
 
 def _safe_connections(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    allowed = ("id", "name", "created_at", "updated_at", "token_configured")
+    allowed = (
+        "id",
+        "name",
+        "login",
+        "auth_type",
+        "scope",
+        "token_expires_at",
+        "needs_reconnect",
+        "created_at",
+        "updated_at",
+        "token_configured",
+    )
     return [{key: item.get(key) for key in allowed if key in item} for item in items]
 
 
@@ -166,6 +177,10 @@ def build_account_export(
             "password_reset_code",
             "github_token",
             "github_token_cipher",
+            "github_refresh_token",
+            "github_refresh_token_cipher",
+            "github_device_code",
+            "github_device_code_cipher",
             "provider_api_keys",
             "embeddings",
             "sandbox_cache_files",
