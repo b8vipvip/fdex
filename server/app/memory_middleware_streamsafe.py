@@ -30,8 +30,9 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
     Center-authenticated requests derive the persisted namespace from the server-validated
     FDEX user id. Phase 7.3 records that one-way bound scope in a content-free registry so
     account-wide export/erasure can cover several devices without trusting an owner id from
-    the client. Background writes are suppressed while a destructive account operation owns
-    the cross-worker lock, preventing a response that started earlier from repopulating data.
+    the client. Each request also snapshots a memory-generation fence: a successful clear
+    advances the generation before releasing its account lock, so a response that began
+    before the clear cannot repopulate the newly erased remote memory afterwards.
     """
 
     def __init__(self, app: Callable[..., Awaitable[Any]]):
@@ -46,10 +47,20 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
         memory_scope_registry().register(user_id, bound)
         return replace(control, scope_token=bound)
 
-    async def _remember(self, *, control: MemoryControl, user_text: str, assistant_text: str) -> None:
+    async def _remember(
+        self,
+        *,
+        control: MemoryControl,
+        user_text: str,
+        assistant_text: str,
+        expected_generation: int | None = None,
+    ) -> None:
         try:
-            if memory_scope_registry().write_blocked(control.scope_token):
-                logger.info("FDEX memory write skipped during account data operation")
+            if memory_scope_registry().write_blocked(
+                control.scope_token,
+                expected_generation=expected_generation,
+            ):
+                logger.info("FDEX memory write skipped by account data-operation fence")
                 return
         except Exception:
             # A registry failure must never break an already-produced AI response. Fail safe
@@ -103,6 +114,11 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
             return
 
         control = self._bind_user_scope(scope, control)
+        try:
+            write_generation = memory_scope_registry().write_generation(control.scope_token)
+        except Exception:
+            logger.exception("FDEX memory write generation lookup failed")
+            write_generation = None
         user_prompt, local_context = extract_local_context(without_marker)
         query = user_prompt.strip() or "当前附件或任务"
         recall = MemoryRecall()
@@ -160,6 +176,7 @@ class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
                                 control=control,
                                 user_text=user_prompt,
                                 assistant_text=assistant,
+                                expected_generation=write_generation,
                             )
                         )
 
