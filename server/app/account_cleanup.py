@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
 from app.agent_projects import agent_project_store
 from app.config import fresh_settings
+from app.memory_erasure import erase_account_memory
 
 
 def _safe_owner_path(root: Path, user_id: str) -> Path:
@@ -15,16 +17,15 @@ def _safe_owner_path(root: Path, user_id: str) -> Path:
     return target
 
 
-def purge_owned_agent_resources(user_id: str) -> dict[str, int]:
-    """Delete server-owned GitHub/project metadata and filesystem sandboxes for one FDEX user.
-
-    This intentionally runs before the center account row is removed. Failure leaves the
-    account intact so the user can retry rather than creating a half-deleted identity.
-    """
+def _validate_user_id(user_id: str) -> str:
     clean = (user_id or "").strip()
     if not clean.startswith("usr_") or len(clean) < 12:
         raise ValueError("invalid FDEX user id")
+    return clean
 
+
+def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
+    clean = _validate_user_id(user_id)
     store = agent_project_store()
     store.init()
     with store.db() as conn:
@@ -46,4 +47,21 @@ def purge_owned_agent_resources(user_id: str) -> dict[str, int]:
         "projects": project_count,
         "github_connections": connection_count,
         "owner_directories": removed_dirs,
+    }
+
+
+def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
+    """Delete every server-owned resource for one FDEX user before identity removal.
+
+    The historical function name is retained because the account route already calls it,
+    but Phase 7.2 expands the cleanup contract to remote long-term memory as well. Memory
+    erasure runs first and is fail-closed: if Letta or Qdrant cannot confirm deletion, the
+    center account row is left intact so the user can retry instead of orphaning memory.
+    """
+    clean = _validate_user_id(user_id)
+    memory_cleanup = asyncio.run(erase_account_memory(clean))
+    agent_cleanup = _purge_agent_resources_only(clean)
+    return {
+        **agent_cleanup,
+        "memory": memory_cleanup,
     }
