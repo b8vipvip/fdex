@@ -9,7 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from app import account_operations
-from app.account_operations import AccountOperationBusy, account_operation, account_operation_status
+from app.account_operations import (
+    AccountOperationBusy,
+    account_operation,
+    account_operation_status,
+    mark_account_deleted,
+)
 from app.config import Settings
 from app.fdex_memory import MemoryScope
 from app.memory_erasure import MemoryErasureService
@@ -189,3 +194,22 @@ def test_cross_worker_account_operation_lock_exposes_busy_status_without_clobber
         assert account_operation_status(user).operation == "account_delete"
 
     assert account_operation_status(user).busy is False
+
+
+def test_deleted_account_tombstone_keeps_stale_background_memory_writes_blocked(tmp_path: Path, monkeypatch) -> None:
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    monkeypatch.setattr(account_operations, "_lock_dir", lambda: lock_dir)
+    user = "usr_1234567890abcdef12345678"
+    scope_key = "c" * 64
+    registry = MemoryScopeRegistry(tmp_path / "scopes.sqlite3")
+    registry.register(user, scope_key)
+
+    assert registry.write_blocked(scope_key) is False
+    with account_operation(user, "account_delete"):
+        assert registry.write_blocked(scope_key) is True
+        mark_account_deleted(user)
+    # The flock is gone, but a response that began before deletion must still be unable
+    # to create new long-term memory for the now-deleted identity.
+    assert account_operation_status(user).busy is False
+    assert registry.write_blocked(scope_key) is True
