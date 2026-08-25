@@ -8,6 +8,7 @@ from typing import Any
 from app.config import fresh_settings
 from app.fdex_memory import MemoryRecall, MemoryScope, memory_coordinator
 from app.memory_middleware import MemoryControl, compose_system_layers, decode_memory_control, extract_local_context
+from app.memory_scope_registry import memory_scope_registry
 
 logger = logging.getLogger(__name__)
 MemoryWriter = Callable[..., Awaitable[dict[str, Any]]]
@@ -25,11 +26,7 @@ async def prepare_realtime_memory(
     system: str,
     memory_control: str,
 ) -> tuple[str, MemoryControl | None, MemoryRecall]:
-    """Consume opaque control data and bootstrap a new realtime session.
-
-    The control marker is never returned in the system string, including malformed or
-    legacy cases where a client accidentally placed it inside `system`.
-    """
+    """Consume opaque control data and bootstrap a new realtime session."""
     clean_system, embedded_control = decode_memory_control(system or "")
     _, separate_control = decode_memory_control(memory_control or "")
     control = separate_control or embedded_control
@@ -130,6 +127,14 @@ class RealtimeMemoryRecorder:
 
     async def _persist(self, user: str, assistant: str, reason: str) -> None:
         assert self.control is not None
+        try:
+            if memory_scope_registry().write_blocked(self.control.scope_token):
+                self._emit("realtime_memory_write_blocked", reason=reason)
+                return
+        except Exception:
+            logger.exception("FDEX realtime memory ownership guard failed; suppressing write")
+            self._emit("realtime_memory_write_guard_failed", reason=reason)
+            return
         try:
             writer = self.writer or memory_coordinator().remember_exchange
             outcome = await writer(
