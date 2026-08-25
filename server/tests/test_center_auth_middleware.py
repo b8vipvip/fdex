@@ -10,6 +10,9 @@ from app.center_auth_middleware import CenterUserAuthMiddleware
 from app.memory_middleware import decode_memory_control
 
 
+_FAKE_USER_ID = "usr_aaaaaaaaaaaaaaaaaaaaaaaa"
+
+
 def _marker(name: str, value: str) -> str:
     encoded = base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
     return f"[[{name}:{encoded}]]"
@@ -35,7 +38,7 @@ def _memory_marker(scope_token: str) -> str:
 class _FakeStore:
     def authenticate_access(self, token: str):
         if token == "valid-center-access-token-for-test":
-            return {"id": "usr_alpha", "email": "alpha@example.com"}
+            return {"id": _FAKE_USER_ID, "email": "alpha@example.com"}
         return None
 
 
@@ -78,14 +81,14 @@ def test_realtime_first_message_authenticates_and_rebinds_memory(monkeypatch) ->
     scope = {"type": "websocket", "path": "/api/client/voice/realtime", "headers": []}
     asyncio.run(middleware(scope, receive, send))
 
-    assert seen["scope_user_id"] == "usr_alpha"
+    assert seen["scope_user_id"] == _FAKE_USER_ID
     payload = seen["payload"]
     assert isinstance(payload, dict)
     control_text = str(payload["memory_control"])
     assert "FDEX_AUTH_V1" not in control_text
     _, control = decode_memory_control(control_text)
     assert control is not None
-    expected = hashlib.sha256(f"usr_alpha:{original_scope}".encode("utf-8")).hexdigest()
+    expected = hashlib.sha256(f"{_FAKE_USER_ID}:{original_scope}".encode("utf-8")).hexdigest()
     assert control.scope_token == expected
 
     match = center_auth_module._MEMORY_MARKER.search(control_text)
