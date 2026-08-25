@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 
 from app.account_cleanup import purge_owned_agent_resources
 from app.account_data_export import build_account_export
-from app.account_operations import AccountOperationBusy, account_operation, account_operation_status
+from app.account_operations import (
+    AccountOperationBusy,
+    account_operation,
+    account_operation_status,
+    mark_account_deleted,
+)
 from app.auth_email import AuthEmailUnavailable, send_password_reset_code
 from app.central_auth import AuthRateLimitError, central_auth_store
 from app.config import fresh_settings, get_settings
@@ -328,6 +333,9 @@ def delete_account(body: DeleteAccountRequest, request: Request) -> dict[str, ob
                 raise HTTPException(status_code=400, detail="密码错误，无法注销账号")
             cleanup = purge_owned_agent_resources(user_id)
             deleted = store.delete_account(user_id, body.password)
+            # Keep the tombstone write inside the same cross-worker critical section so no
+            # stale response can observe an unlocked-but-not-yet-tombstoned identity.
+            mark_account_deleted(user_id)
     except AccountOperationBusy as exc:
         raise _operation_busy(exc) from exc
     except MemoryErasureError as exc:
