@@ -49,6 +49,10 @@ def _deleted_path_by_hash(owner_hash: str) -> Path:
     return _lock_dir() / f"{_validate_owner_hash(owner_hash)}.deleted"
 
 
+def _memory_generation_path_by_hash(owner_hash: str) -> Path:
+    return _lock_dir() / f"{_validate_owner_hash(owner_hash)}.memory-generation"
+
+
 @dataclass(frozen=True, slots=True)
 class AccountOperationStatus:
     busy: bool
@@ -104,6 +108,41 @@ def account_operation_status_by_hash(owner_hash: str) -> AccountOperationStatus:
 
 def account_operation_status(user_id: str) -> AccountOperationStatus:
     return account_operation_status_by_hash(account_hash(user_id))
+
+
+def memory_generation_by_hash(owner_hash: str) -> int:
+    path = _memory_generation_path_by_hash(owner_hash)
+    if not path.exists():
+        return 0
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip() or "0"))
+    except (OSError, ValueError):
+        return 0
+
+
+def memory_generation(user_id: str) -> int:
+    return memory_generation_by_hash(account_hash(user_id))
+
+
+def advance_memory_generation(user_id: str) -> int:
+    """Advance the write fence while the caller owns the per-account operation lock.
+
+    Requests/realtime sessions snapshot the generation when they start. A successful clear
+    advances it before releasing the lock, so any response that began before the clear can
+    no longer repopulate the just-erased remote memory after the lock is gone. New requests
+    observe the new generation and may form fresh memory normally.
+    """
+    owner_hash = account_hash(user_id)
+    path = _memory_generation_path_by_hash(owner_hash)
+    next_value = memory_generation_by_hash(owner_hash) + 1
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(f"{next_value}\n", encoding="utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(path)
+    return next_value
 
 
 def mark_account_deleted(user_id: str) -> str:
