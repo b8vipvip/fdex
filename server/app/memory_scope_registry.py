@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
-from app.account_operations import account_operation_status_by_hash
+from app.account_operations import account_deleted_by_hash, account_operation_status_by_hash
 from app.config import fresh_settings
 
 
@@ -120,7 +120,12 @@ class MemoryScopeRegistry:
 
     def write_blocked(self, scope_key: str) -> bool:
         owner_hash = self.owner_hash_for_scope(scope_key)
-        return bool(owner_hash and account_operation_status_by_hash(owner_hash).busy)
+        if not owner_hash:
+            return False
+        # The flock covers the active erase/delete critical section. The persistent deletion
+        # tombstone covers a slower HTTP/realtime response that began before account deletion
+        # and tries to write after the flock has already been released.
+        return account_deleted_by_hash(owner_hash) or account_operation_status_by_hash(owner_hash).busy
 
     def scope_count(self, user_id: str) -> int:
         return len(self.scopes_for_user(user_id))
