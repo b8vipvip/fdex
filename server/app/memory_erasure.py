@@ -14,7 +14,7 @@ import httpx
 
 from app.config import Settings, fresh_settings
 from app.fdex_memory import MemoryScope
-from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
+from app.memory_scope_registry import MemoryScopeRegistry
 
 
 def _now() -> str:
@@ -142,7 +142,7 @@ class MemoryErasureService:
         self.raw_db_path = memory_dir / "mempalace-raw.sqlite3"
         self.letta_state_path = memory_dir / "letta-agent.json"
         self.registry = MemoryErasureRegistry(registry_path or memory_dir / "memory-erasure-registry.sqlite3")
-        self.scope_registry = scope_registry or memory_scope_registry()
+        self.scope_registry = scope_registry or MemoryScopeRegistry(memory_dir / "memory-scope-owners.sqlite3")
         self._qdrant_owned = qdrant_client is None
         self._qdrant = qdrant_client or httpx.AsyncClient(
             timeout=httpx.Timeout(self.settings.fdex_memory_qdrant_timeout_seconds),
@@ -162,13 +162,6 @@ class MemoryErasureService:
         return clean
 
     def account_ids_for_user(self, user_id: str) -> list[str]:
-        """Return every MemPalace/Letta account component known for this center user.
-
-        The direct user-id scope is kept as a Phase 7.2 compatibility candidate. Current
-        client traffic is server-bound to SHA256(user_id:local_scope), and those opaque bound
-        scopes are learned by MemoryScopeRegistry. Multiple devices can therefore be erased
-        together once their scope has been observed by a Phase 7.3 server.
-        """
         clean = self._validate_user_id(user_id)
         raw_scopes = [clean, *self.scope_registry.scopes_for_user(clean)]
         return list(dict.fromkeys(MemoryScope(value).account_id for value in raw_scopes if value))
@@ -184,23 +177,12 @@ class MemoryErasureService:
         try:
             for account_id in account_ids:
                 letta_count += await self._erase_letta_account_id(account_id)
-            self.registry.update(
-                account_hash,
-                "letta_erased",
-                memory_scopes=len(account_ids),
-                letta_agents=letta_count,
-            )
+            self.registry.update(account_hash, "letta_erased", memory_scopes=len(account_ids), letta_agents=letta_count)
 
             rows: list[sqlite3.Row] = []
             for account_id in account_ids:
                 rows.extend(await anyio.to_thread.run_sync(self._mempalace_rows, account_id))
-            point_ids = list(
-                dict.fromkeys(
-                    str(row["point_id"])
-                    for row in rows
-                    if str(row["point_id"] or "").strip()
-                )
-            )
+            point_ids = list(dict.fromkeys(str(row["point_id"]) for row in rows if str(row["point_id"] or "").strip()))
             qdrant_count = await self._erase_qdrant_points(point_ids)
             self.registry.update(
                 account_hash,
@@ -256,10 +238,7 @@ class MemoryErasureService:
         stored = self.registry.get(self.account_hash(clean)) or {}
         return {
             "phase": str(stored.get("phase") or "idle"),
-            "memory_scopes": max(
-                int(stored.get("memory_scopes") or 0),
-                len(self.account_ids_for_user(clean)),
-            ),
+            "memory_scopes": max(int(stored.get("memory_scopes") or 0), len(self.account_ids_for_user(clean))),
             "mempalace_rows": int(stored.get("mempalace_rows") or 0),
             "qdrant_points": int(stored.get("qdrant_points") or 0),
             "letta_agents": int(stored.get("letta_agents") or 0),
@@ -274,27 +253,17 @@ class MemoryErasureService:
         conn = sqlite3.connect(self.raw_db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
-            table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'"
-            ).fetchone()
+            table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'").fetchone()
             if table is None:
                 return []
-            return list(
-                conn.execute(
-                    "SELECT point_id FROM mempalace_drawers WHERE account_id=? ORDER BY rowid",
-                    (account_id,),
-                ).fetchall()
-            )
+            return list(conn.execute("SELECT point_id FROM mempalace_drawers WHERE account_id=? ORDER BY rowid", (account_id,)).fetchall())
         finally:
             conn.close()
 
     async def _erase_qdrant_points(self, point_ids: list[str]) -> int:
         if not point_ids:
             return 0
-        url = (
-            f"{self.settings.fdex_memory_qdrant_url.rstrip('/')}/collections/"
-            f"{self.settings.fdex_memory_qdrant_collection}/points/delete?wait=true"
-        )
+        url = f"{self.settings.fdex_memory_qdrant_url.rstrip('/')}/collections/{self.settings.fdex_memory_qdrant_collection}/points/delete?wait=true"
         deleted = 0
         for offset in range(0, len(point_ids), 256):
             chunk = point_ids[offset : offset + 256]
@@ -327,16 +296,11 @@ class MemoryErasureService:
         try:
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA secure_delete=ON")
-            table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'"
-            ).fetchone()
+            table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'").fetchone()
             if table is None:
                 return 0
             placeholders = ",".join("?" for _ in account_ids)
-            cursor = conn.execute(
-                f"DELETE FROM mempalace_drawers WHERE account_id IN ({placeholders})",
-                tuple(account_ids),
-            )
+            cursor = conn.execute(f"DELETE FROM mempalace_drawers WHERE account_id IN ({placeholders})", tuple(account_ids))
             deleted = max(0, int(cursor.rowcount))
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -355,11 +319,7 @@ class MemoryErasureService:
         agents = payload.get("agents") if isinstance(payload, dict) else None
         if not isinstance(agents, dict):
             raise MemoryErasureError("letta_state_invalid")
-        return {
-            str(scope_key): str(agent_id)
-            for scope_key, agent_id in agents.items()
-            if str(scope_key).strip() and str(agent_id).strip()
-        }
+        return {str(scope_key): str(agent_id) for scope_key, agent_id in agents.items() if str(scope_key).strip() and str(agent_id).strip()}
 
     def _default_letta_client(self) -> Any:
         from letta_client import Letta
@@ -385,10 +345,7 @@ class MemoryErasureService:
         current.pop(removed_scope_key, None)
         self.letta_state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.letta_state_path.with_suffix(".json.erasure.tmp")
-        temporary.write_text(
-            json.dumps({"schema_version": 1, "agents": current}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        temporary.write_text(json.dumps({"schema_version": 1, "agents": current}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(self.letta_state_path)
 
     async def _erase_letta(self, scope: MemoryScope) -> int:
@@ -440,12 +397,16 @@ async def erase_account_memory(user_id: str) -> dict[str, object]:
 
 
 def memory_erasure_status(user_id: str) -> dict[str, object]:
-    service = MemoryErasureService(qdrant_client=_NoopAsyncClient())
+    settings = fresh_settings()
+    memory_dir = Path(settings.fdex_memory_data_dir).expanduser().resolve()
+    service = MemoryErasureService(
+        settings,
+        qdrant_client=_NoopAsyncClient(),
+        scope_registry=MemoryScopeRegistry(memory_dir / "memory-scope-owners.sqlite3"),
+    )
     return service.status(user_id)
 
 
 class _NoopAsyncClient:
-    """Status-only sentinel: no network method should ever be called."""
-
     async def aclose(self) -> None:
         return None
