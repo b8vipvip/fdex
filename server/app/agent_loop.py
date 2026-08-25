@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from app.agent_runtime import AgentRuntimeError, FdexAgentRuntime
+from app.agent_runtime import AgentRuntimeError, AgentTaskCancelled, FdexAgentRuntime
 from app.config import get_settings
 from app.multimodal_service import route_text
 
@@ -51,7 +51,6 @@ class AgentDecisionError(AgentRuntimeError):
 
 
 async def _default_model_call(system: str, prompt: str, max_tokens: int) -> str:
-    # route_text is the single shared AI gateway used by normal FDEX employees and Coding Agent.
     result = await route_text(system=system, prompt=prompt, max_tokens=max_tokens)
     if not result.ok:
         detail = "; ".join(result.errors[-5:]) or "no enabled text provider returned an answer"
@@ -123,10 +122,12 @@ class FdexAgentLoop:
                 task = await self.runtime.get_task(task_id)
                 if task is None:
                     raise AgentRuntimeError("task not found")
+                await self.runtime._raise_if_cancelled(task)
                 allowed_tools = self.runtime.allowed_tools_for_task(task)
                 prompt = self._build_prompt(task, transcript, step, allowed_tools)
                 task.emit("model.started", f"Planning step {step} via shared provider pool")
                 raw = await self.model_call(_AGENT_SYSTEM, prompt, self.model_max_tokens)
+                await self.runtime._raise_if_cancelled(task)
                 decision = parse_decision(raw, allowed_tools)
                 if decision.summary:
                     task.emit("agent.progress", decision.summary)
@@ -143,6 +144,8 @@ class FdexAgentLoop:
                     )
                 )
             raise AgentRuntimeError(f"agent exceeded maximum steps ({self.max_steps})")
+        except AgentTaskCancelled:
+            return
         except Exception as exc:
             await self.runtime.fail_task(task_id, str(exc))
 
