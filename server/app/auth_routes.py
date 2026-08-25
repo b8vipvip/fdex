@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.account_cleanup import purge_owned_agent_resources
+from app.account_data_export import build_account_export
+from app.account_operations import AccountOperationBusy, account_operation, account_operation_status
 from app.auth_email import AuthEmailUnavailable, send_password_reset_code
 from app.central_auth import AuthRateLimitError, central_auth_store
 from app.config import fresh_settings, get_settings
+from app.memory_erasure import MemoryErasureError, erase_account_memory, memory_erasure_status
+from app.memory_scope_registry import memory_scope_registry
 
 settings = get_settings()
 router = APIRouter(prefix=f"{settings.api_prefix}/auth", tags=["auth"])
@@ -48,6 +55,15 @@ class ResetConfirmRequest(BaseModel):
 class DeleteAccountRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
     confirmation: str = Field(min_length=1, max_length=80)
+
+
+class ClearMemoryRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    confirmation: str = Field(min_length=1, max_length=80)
+
+
+class RegisterMemoryScopeRequest(BaseModel):
+    scope_token: str = Field(min_length=24, max_length=128)
 
 
 def bearer_token(request: Request) -> str:
@@ -93,6 +109,17 @@ def _expand_reset_code(email: str, code: str) -> str:
             (normalized,),
         ).fetchone()
     return f"{row['id']}.{raw}" if row is not None else raw
+
+
+def _operation_busy(exc: AccountOperationBusy) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": "当前账号正在执行其它数据操作，请稍后重试",
+            "operation": exc.status.operation,
+            "started_at": exc.status.started_at,
+        },
+    )
 
 
 @router.post("/register")
@@ -231,6 +258,63 @@ def security_events(request: Request, limit: int = 30) -> dict[str, object]:
     return {"events": central_auth_store().security_events(str(user["id"]), limit=limit)}
 
 
+@router.post("/memory/register-scope")
+def register_memory_scope(body: RegisterMemoryScopeRequest, request: Request) -> dict[str, object]:
+    """Register a current-device legacy local scope without ever accepting an owner id."""
+    user = require_user(request)
+    token = body.scope_token.strip()
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for ch in token):
+        raise HTTPException(status_code=400, detail="Invalid FDEX memory scope token")
+    user_id = str(user["id"])
+    bound = hashlib.sha256(f"{user_id}:{token}".encode("utf-8")).hexdigest()
+    memory_scope_registry().register(user_id, bound)
+    return {"ok": True, "registered_scopes": memory_scope_registry().scope_count(user_id)}
+
+
+@router.get("/memory/status")
+def memory_status(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    user_id = str(user["id"])
+    return {
+        **memory_erasure_status(user_id),
+        "operation": account_operation_status(user_id).to_dict(),
+        "registered_device_scopes": memory_scope_registry().scope_count(user_id),
+    }
+
+
+@router.post("/memory/clear")
+def clear_memory(body: ClearMemoryRequest, request: Request) -> dict[str, object]:
+    user = require_user(request)
+    user_id = str(user["id"])
+    if body.confirmation.strip() != "CLEAR MY FDEX MEMORY":
+        raise HTTPException(status_code=400, detail="请输入 CLEAR MY FDEX MEMORY 确认清空长期记忆")
+    store = central_auth_store()
+    try:
+        with account_operation(user_id, "memory_clear"):
+            if not store.verify_password(user_id, body.password):
+                raise HTTPException(status_code=400, detail="密码错误，无法清空长期记忆")
+            report = asyncio.run(erase_account_memory(user_id))
+    except AccountOperationBusy as exc:
+        raise _operation_busy(exc) from exc
+    except MemoryErasureError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "远程长期记忆尚未完全清除，可稍后重试", "code": exc.code},
+        ) from exc
+    return {"ok": True, "memory_cleanup": report}
+
+
+@router.get("/data-export")
+def data_export(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    user_id = str(user["id"])
+    try:
+        with account_operation(user_id, "data_export"):
+            return build_account_export(user_id)
+    except AccountOperationBusy as exc:
+        raise _operation_busy(exc) from exc
+
+
 @router.post("/account/delete")
 def delete_account(body: DeleteAccountRequest, request: Request) -> dict[str, object]:
     user = require_user(request)
@@ -238,16 +322,26 @@ def delete_account(body: DeleteAccountRequest, request: Request) -> dict[str, ob
         raise HTTPException(status_code=400, detail="请输入 DELETE MY FDEX 确认注销")
     store = central_auth_store()
     user_id = str(user["id"])
-    if not store.verify_password(user_id, body.password):
-        raise HTTPException(status_code=400, detail="密码错误，无法注销账号")
     try:
-        cleanup = purge_owned_agent_resources(user_id)
-        deleted = store.delete_account(user_id, body.password)
+        with account_operation(user_id, "account_delete"):
+            if not store.verify_password(user_id, body.password):
+                raise HTTPException(status_code=400, detail="密码错误，无法注销账号")
+            cleanup = purge_owned_agent_resources(user_id)
+            deleted = store.delete_account(user_id, body.password)
+    except AccountOperationBusy as exc:
+        raise _operation_busy(exc) from exc
+    except MemoryErasureError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "远程长期记忆清理失败，账号尚未注销，可稍后重试", "code": exc.code},
+        ) from exc
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="账号资源清理失败，账号尚未注销") from exc
-    return {"ok": True, "deleted_user_id": str(deleted["id"]), "agent_cleanup": cleanup}
+    return {"ok": True, "deleted_user_id": str(deleted["id"]), "account_cleanup": cleanup}
 
 
 @router.post("/logout")
