@@ -34,10 +34,19 @@ def _lock_dir() -> Path:
     return root
 
 
-def _lock_path_by_hash(owner_hash: str) -> Path:
-    if len(owner_hash) != 64 or any(ch not in "0123456789abcdef" for ch in owner_hash):
+def _validate_owner_hash(owner_hash: str) -> str:
+    clean = (owner_hash or "").strip().lower()
+    if len(clean) != 64 or any(ch not in "0123456789abcdef" for ch in clean):
         raise ValueError("invalid FDEX account hash")
-    return _lock_dir() / f"{owner_hash}.lock"
+    return clean
+
+
+def _lock_path_by_hash(owner_hash: str) -> Path:
+    return _lock_dir() / f"{_validate_owner_hash(owner_hash)}.lock"
+
+
+def _deleted_path_by_hash(owner_hash: str) -> Path:
+    return _lock_dir() / f"{_validate_owner_hash(owner_hash)}.deleted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,22 +87,48 @@ def _read_metadata(handle, owner_hash: str) -> AccountOperationStatus:
 
 
 def account_operation_status_by_hash(owner_hash: str) -> AccountOperationStatus:
-    path = _lock_path_by_hash(owner_hash)
+    clean_hash = _validate_owner_hash(owner_hash)
+    path = _lock_path_by_hash(clean_hash)
     handle = path.open("a+", encoding="utf-8")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return _read_metadata(handle, owner_hash)
+            return _read_metadata(handle, clean_hash)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            return AccountOperationStatus(busy=False, owner_hash=owner_hash)
+            return AccountOperationStatus(busy=False, owner_hash=clean_hash)
     finally:
         handle.close()
 
 
 def account_operation_status(user_id: str) -> AccountOperationStatus:
     return account_operation_status_by_hash(account_hash(user_id))
+
+
+def mark_account_deleted(user_id: str) -> str:
+    """Persist a one-way deletion tombstone while the delete lock is still held.
+
+    Background HTTP/realtime responses can outlive the request that deleted the account.
+    The tombstone remains after the flock is released so those stale responses cannot create
+    a fresh MemPalace/Letta namespace for an identity that no longer exists. It contains no
+    email, token, content or raw user id.
+    """
+    owner_hash = account_hash(user_id)
+    path = _deleted_path_by_hash(owner_hash)
+    temporary = path.with_name(path.name + ".tmp")
+    payload = {"account_hash": owner_hash, "deleted_at": _now()}
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(path)
+    return owner_hash
+
+
+def account_deleted_by_hash(owner_hash: str) -> bool:
+    return _deleted_path_by_hash(owner_hash).exists()
 
 
 @contextmanager
