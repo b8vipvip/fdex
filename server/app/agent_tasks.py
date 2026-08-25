@@ -169,7 +169,11 @@ class AgentTaskStore:
                     error=excluded.error,branch=excluded.branch,worktree=excluded.worktree,
                     commit_sha=excluded.commit_sha,pushed=excluded.pushed,pr_url=excluded.pr_url,
                     changed_files_json=excluded.changed_files_json,events_json=excluded.events_json,
-                    cancel_requested=excluded.cancel_requested,parent_task_id=excluded.parent_task_id,
+                    cancel_requested=CASE
+                        WHEN agent_tasks.cancel_requested=1 THEN 1
+                        ELSE excluded.cancel_requested
+                    END,
+                    parent_task_id=excluded.parent_task_id,
                     created_at=excluded.created_at,updated_at=excluded.updated_at
                 """,
                 values,
@@ -222,6 +226,16 @@ class AgentTaskStore:
                     (owner_id, limit),
                 ).fetchall()
         return [self._row(row) for row in rows]
+
+    def active_count(self, owner_id: str) -> int:
+        self.init()
+        owner_id = _owner(owner_id)
+        with self.db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM agent_tasks WHERE owner_id=? AND status IN ('queued','running')",
+                (owner_id,),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def request_cancel(self, owner_id: str, task_id: str) -> dict[str, Any]:
         current = self.get(owner_id, task_id)
