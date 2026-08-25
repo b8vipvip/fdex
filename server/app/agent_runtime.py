@@ -3,25 +3,27 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from app.agent_projects import agent_project_store
 from app.agent_sandbox import AgentSandboxError, SystemdExecutionSandbox
+from app.agent_tasks import agent_task_store
 from app.config import get_settings
 
-AgentTaskStatus = Literal["queued", "running", "succeeded", "failed"]
+AgentTaskStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
 
 
 @dataclass(slots=True)
 class AgentEvent:
     type: str
     message: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(slots=True)
@@ -42,26 +44,36 @@ class AgentTask:
     pushed: bool = False
     pr_url: str = ""
     changed_files: set[str] = field(default_factory=set)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    cancel_requested: bool = False
+    parent_task_id: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     events: list[AgentEvent] = field(default_factory=list)
+    _persist: Callable[[Any], None] | None = field(default=None, repr=False, compare=False)
 
     def emit(self, type_: str, message: str) -> None:
         self.events.append(AgentEvent(type=type_, message=message))
-        self.updated_at = datetime.now(timezone.utc)
+        if len(self.events) > 300:
+            self.events = self.events[-300:]
+        self.updated_at = datetime.now(UTC)
+        if self._persist is not None:
+            self._persist(self)
 
 
 class AgentRuntimeError(RuntimeError):
     pass
 
 
+class AgentTaskCancelled(AgentRuntimeError):
+    pass
+
+
 class FdexAgentRuntime:
     """Account/project/task scoped Coding Agent runtime.
 
-    Configured projects live under an account-specific filesystem root and each task gets
-    a Git worktree. Build/test commands for configured projects run in an ephemeral systemd
-    sandbox with cgroup limits and filesystem/network isolation. No account keeps a resident
-    sandbox process, so idle accounts consume effectively no additional sandbox RAM.
+    Phase 7.4 persists every task/event to SQLite so history survives process restarts and
+    multiple Uvicorn workers. The in-memory map is only a hot cache. Task execution remains
+    project/worktree isolated and the durable task store supplies cross-worker run locking.
     """
 
     _BASE_TOOLS = (
@@ -87,6 +99,7 @@ class FdexAgentRuntime:
         self.max_output_chars = settings.fdex_agent_max_output_chars
         self.max_file_chars = settings.fdex_agent_max_file_chars
         self.execution_sandbox = SystemdExecutionSandbox()
+        self.task_store = agent_task_store()
         self._tasks: dict[str, AgentTask] = {}
         self._lock = asyncio.Lock()
 
@@ -111,7 +124,7 @@ class FdexAgentRuntime:
         settings = get_settings()
         return {
             "enabled": self.enabled,
-            "runtime": "fdex-agent-runtime-v6",
+            "runtime": "fdex-agent-runtime-v7",
             "ai_source": "shared_provider_pool",
             "default_owner": self.default_owner,
             "sandbox_root": str(self.sandbox_root),
@@ -122,6 +135,9 @@ class FdexAgentRuntime:
             "account_project_task_isolation": True,
             "isolated_worktrees": True,
             "ephemeral_execution_sandbox": "systemd",
+            "persistent_task_history": True,
+            "cross_worker_task_lock": True,
+            "task_cancel_retry": True,
             "sandbox_memory_mb": settings.fdex_agent_sandbox_memory_mb,
             "sandbox_cpu_percent": settings.fdex_agent_sandbox_cpu_percent,
             "sandbox_max_concurrent": settings.fdex_agent_sandbox_max_concurrent,
@@ -130,14 +146,81 @@ class FdexAgentRuntime:
             "direct_main_write": False,
         }
 
-    async def create_task(self, prompt: str, *, owner_id: str | None = None, project_id: int | None = None) -> AgentTask:
+    @staticmethod
+    def _parse_time(value: Any) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            return datetime.now(UTC)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            return datetime.now(UTC)
+
+    def _persist_task_sync(self, task: AgentTask) -> None:
+        self.task_store.save(task)
+
+    def _task_from_record(self, row: dict[str, Any]) -> AgentTask:
+        events = [
+            AgentEvent(
+                type=str(item.get("type") or ""),
+                message=str(item.get("message") or ""),
+                created_at=self._parse_time(item.get("created_at")),
+            )
+            for item in list(row.get("events") or [])
+            if isinstance(item, dict)
+        ]
+        task = AgentTask(
+            id=str(row["id"]),
+            prompt=str(row.get("prompt") or ""),
+            owner_id=str(row.get("owner_id") or self.default_owner),
+            project_id=int(row["project_id"]) if row.get("project_id") is not None else None,
+            project_name=str(row.get("project_name") or "Local FDEX"),
+            repository=str(row.get("repository") or ""),
+            base_branch=str(row.get("base_branch") or "main"),
+            status=str(row.get("status") or "queued"),  # type: ignore[arg-type]
+            result=str(row.get("result") or ""),
+            error=str(row.get("error") or ""),
+            branch=str(row.get("branch") or ""),
+            worktree=str(row.get("worktree") or ""),
+            commit_sha=str(row.get("commit_sha") or ""),
+            pushed=bool(row.get("pushed")),
+            pr_url=str(row.get("pr_url") or ""),
+            changed_files=set(str(item) for item in list(row.get("changed_files") or [])),
+            cancel_requested=bool(row.get("cancel_requested")),
+            parent_task_id=str(row.get("parent_task_id") or ""),
+            created_at=self._parse_time(row.get("created_at")),
+            updated_at=self._parse_time(row.get("updated_at")),
+            events=events,
+            _persist=self._persist_task_sync,
+        )
+        return task
+
+    async def create_task(
+        self,
+        prompt: str,
+        *,
+        owner_id: str | None = None,
+        project_id: int | None = None,
+        parent_task_id: str = "",
+    ) -> AgentTask:
         clean_prompt = prompt.strip()
         if not clean_prompt:
             raise AgentRuntimeError("prompt is required")
         if not self.enabled:
             raise AgentRuntimeError("FDEX Agent Runtime is disabled")
         owner = (owner_id or self.default_owner).strip()
-        task = AgentTask(id=uuid.uuid4().hex, prompt=clean_prompt, owner_id=owner)
+        if project_id is not None:
+            usage = self.execution_sandbox.account_usage(owner)
+            if bool(usage.get("over_limit")):
+                raise AgentRuntimeError("account sandbox disk limit reached; clean completed workspaces before creating a new task")
+        task = AgentTask(
+            id=uuid.uuid4().hex,
+            prompt=clean_prompt,
+            owner_id=owner,
+            parent_task_id=parent_task_id,
+            _persist=self._persist_task_sync,
+        )
         if project_id is not None:
             try:
                 project = agent_project_store().get_project(owner, int(project_id))
@@ -156,12 +239,82 @@ class FdexAgentRuntime:
 
     async def get_task(self, task_id: str) -> AgentTask | None:
         async with self._lock:
-            return self._tasks.get(task_id)
+            cached = self._tasks.get(task_id)
+        if cached is not None:
+            return cached
+        try:
+            row = await asyncio.to_thread(self.task_store.get_any, task_id)
+        except ValueError:
+            return None
+        if row is None:
+            return None
+        task = self._task_from_record(row)
+        async with self._lock:
+            existing = self._tasks.get(task_id)
+            if existing is not None:
+                return existing
+            self._tasks[task_id] = task
+        return task
+
+    async def list_tasks(self, owner_id: str, *, status: str = "", limit: int = 50) -> list[AgentTask]:
+        rows = await asyncio.to_thread(self.task_store.list, owner_id, status=status, limit=limit)
+        tasks: list[AgentTask] = []
+        for row in rows:
+            task_id = str(row["id"])
+            async with self._lock:
+                cached = self._tasks.get(task_id)
+            task = cached or self._task_from_record(row)
+            if cached is None:
+                async with self._lock:
+                    self._tasks.setdefault(task_id, task)
+            tasks.append(task)
+        return tasks
+
+    async def request_cancel(self, owner_id: str, task_id: str) -> AgentTask:
+        task = await self.get_task(task_id)
+        if task is None or task.owner_id != owner_id:
+            raise AgentRuntimeError("task not found")
+        if task.status in {"succeeded", "failed", "canceled"}:
+            return task
+        task.cancel_requested = True
+        if task.status == "queued":
+            task.status = "canceled"
+            task.error = ""
+            task.emit("task.canceled", "Task canceled before execution")
+        else:
+            task.emit("task.cancel_requested", "Cancellation requested; stopping at the next safe tool boundary")
+        return task
+
+    async def retry_task(self, owner_id: str, task_id: str) -> AgentTask:
+        source = await self.get_task(task_id)
+        if source is None or source.owner_id != owner_id:
+            raise AgentRuntimeError("task not found")
+        if source.status not in {"succeeded", "failed", "canceled"}:
+            raise AgentRuntimeError("only completed, failed or canceled tasks can be retried")
+        return await self.create_task(
+            source.prompt,
+            owner_id=owner_id,
+            project_id=source.project_id,
+            parent_task_id=source.id,
+        )
+
+    async def _raise_if_cancelled(self, task: AgentTask) -> None:
+        requested = task.cancel_requested
+        if not requested:
+            requested = await asyncio.to_thread(self.task_store.cancel_requested, task.id)
+        if requested:
+            task.cancel_requested = True
+            if task.status != "canceled":
+                task.status = "canceled"
+                task.error = ""
+                task.emit("task.canceled", "Task stopped after a cancellation request")
+            raise AgentTaskCancelled("task canceled")
 
     async def execute_tool(self, task_id: str, tool: str, *, args: dict[str, Any] | None = None, terminal: bool = False) -> str:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
+        await self._raise_if_cancelled(task)
         allowed = self.allowed_tools_for_task(task)
         if tool not in allowed:
             raise AgentRuntimeError(f"tool not allowed for project: {tool}")
@@ -171,6 +324,9 @@ class FdexAgentRuntime:
         try:
             worktree = await asyncio.to_thread(self._ensure_worktree, task)
             output = await asyncio.to_thread(self._execute_tool_sync, task, worktree, tool, args)
+            await self._raise_if_cancelled(task)
+        except AgentTaskCancelled:
+            raise
         except Exception as exc:
             task.status = "failed"
             task.error = str(exc)
@@ -193,6 +349,7 @@ class FdexAgentRuntime:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
+        await self._raise_if_cancelled(task)
         task.status = "succeeded"
         task.result = result.strip()
         task.error = ""
@@ -203,10 +360,73 @@ class FdexAgentRuntime:
         task = await self.get_task(task_id)
         if task is None:
             raise AgentRuntimeError("task not found")
+        if task.cancel_requested or await asyncio.to_thread(self.task_store.cancel_requested, task.id):
+            task.cancel_requested = True
+            task.status = "canceled"
+            task.error = ""
+            task.emit("task.canceled", "Task stopped after a cancellation request")
+            return task
         task.status = "failed"
         task.error = error.strip()[:2000]
         task.emit("task.failed", task.error)
         return task
+
+    async def cleanup_completed_workspaces(self, owner_id: str, *, limit: int = 100) -> dict[str, int]:
+        tasks = await self.list_tasks(owner_id, limit=limit)
+        released = 0
+        failed = 0
+        for task in tasks:
+            if task.status not in {"succeeded", "failed", "canceled"} or not task.worktree:
+                continue
+            try:
+                await asyncio.to_thread(self._release_worktree, task)
+                released += 1
+            except Exception:
+                failed += 1
+        cache_bytes = await asyncio.to_thread(self.execution_sandbox.clear_account_cache, owner_id)
+        return {"released_worktrees": released, "failed_worktrees": failed, "cache_bytes_removed": cache_bytes}
+
+    def _release_worktree(self, task: AgentTask) -> None:
+        path = Path(task.worktree).expanduser().resolve()
+        if task.project_id is None:
+            allowed_root = self.worktree_root.resolve()
+            source = self.workspace.resolve()
+        else:
+            repo, worktrees = agent_project_store().project_paths(task.owner_id, task.project_id)
+            allowed_root = worktrees.resolve()
+            source = repo.resolve()
+        if path != allowed_root and allowed_root not in path.parents:
+            raise AgentRuntimeError("task worktree escaped configured worktree root")
+        if source.is_dir() and (source / ".git").exists():
+            subprocess.run(
+                ("git", "worktree", "remove", "--force", str(path)),
+                cwd=str(source),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+                check=False,
+            )
+            subprocess.run(
+                ("git", "worktree", "prune"),
+                cwd=str(source),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            if task.branch.startswith("fdex-agent/"):
+                subprocess.run(
+                    ("git", "branch", "-D", task.branch),
+                    cwd=str(source),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+        if path.exists():
+            shutil.rmtree(path)
+        task.worktree = ""
+        task.emit("workspace.released", "Released completed task worktree")
 
     def _source_and_worktrees(self, task: AgentTask) -> tuple[Path, Path, str]:
         if task.project_id is None:
@@ -387,9 +607,6 @@ class FdexAgentRuntime:
         cwd = worktree if relative_cwd == "." else worktree / relative_cwd
         if not cwd.is_dir():
             raise AgentRuntimeError(f"test working directory not found: {relative_cwd}")
-
-        # Preserve the legacy local FDEX development path for backwards compatibility.
-        # Every configured GitHub project must use the transient account sandbox.
         if task.project_id is None:
             return self._run_command(
                 argv,
@@ -398,7 +615,6 @@ class FdexAgentRuntime:
                 check=False,
                 include_exit_code=True,
             )
-
         try:
             project = agent_project_store().get_project(task.owner_id, task.project_id)
             task.emit(
