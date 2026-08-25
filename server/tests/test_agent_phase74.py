@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app import account_cleanup
 from app.agent_runtime import AgentTask, FdexAgentRuntime
 from app.agent_sandbox import SystemdExecutionSandbox
 from app.agent_tasks import AgentTaskStore, TaskRunBusy
@@ -49,6 +50,27 @@ def test_task_run_lock_rejects_second_worker(tmp_path: Path) -> None:
         with pytest.raises(TaskRunBusy):
             with store.run_lock(task_id):
                 pass
+
+
+def test_cross_worker_cancel_flag_cannot_be_overwritten_by_stale_runner(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    owner = "usr_1234567890abcdef12345678"
+    stale_runner = AgentTask(
+        id="c" * 32,
+        prompt="long task",
+        owner_id=owner,
+        status="running",
+        _persist=store.save,
+    )
+    stale_runner.emit("agent.started", "running")
+
+    canceled = store.request_cancel(owner, stale_runner.id)
+    assert canceled["cancel_requested"] is True
+    # Simulate an older worker emitting progress after another worker requested cancel.
+    stale_runner.emit("agent.progress", "stale progress")
+    latest = store.get(owner, stale_runner.id)
+    assert latest is not None
+    assert latest["cancel_requested"] is True
 
 
 def test_runtime_can_restore_cancel_and_retry_task_after_restart(tmp_path: Path) -> None:
@@ -99,3 +121,23 @@ def test_sandbox_usage_and_cache_cleanup_are_owner_scoped(tmp_path: Path) -> Non
     assert removed >= 1024
     assert sandbox.account_usage(owner)["cache_bytes"] == 0
     assert (project / "README.md").exists()
+
+
+def test_account_deletion_is_blocked_before_memory_erasure_when_agent_task_is_active(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeTasks:
+        def active_count(self, owner_id: str) -> int:
+            calls.append("active")
+            return 1
+
+    async def fake_memory(owner_id: str):
+        calls.append("memory")
+        return {"completed": True}
+
+    monkeypatch.setattr(account_cleanup, "agent_task_store", lambda: FakeTasks())
+    monkeypatch.setattr(account_cleanup, "erase_account_memory", fake_memory)
+
+    with pytest.raises(ValueError, match="Coding Agent"):
+        account_cleanup.purge_owned_agent_resources("usr_1234567890abcdef12345678")
+    assert calls == ["active"]
