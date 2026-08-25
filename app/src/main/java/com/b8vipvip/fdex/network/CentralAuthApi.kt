@@ -48,6 +48,20 @@ data class CentralSecurityEventDto(
     val createdAt: String,
 )
 
+data class CentralMemoryStatusDto(
+    val phase: String,
+    val memoryScopes: Int,
+    val registeredDeviceScopes: Int,
+    val mempalaceRows: Int,
+    val qdrantPoints: Int,
+    val lettaAgents: Int,
+    val lastError: String,
+    val updatedAt: String,
+    val completedAt: String,
+    val busy: Boolean,
+    val operation: String,
+)
+
 sealed interface CentralAuthResult<out T> {
     data class Success<T>(val value: T) : CentralAuthResult<T>
     data class Failure(val message: String) : CentralAuthResult<Nothing>
@@ -149,6 +163,43 @@ object CentralAuthApi {
                 }
             }
         }
+
+    suspend fun registerMemoryScope(context: Context, localScopeToken: String): CentralAuthResult<Int> =
+        authorizedJsonRequest(
+            context,
+            "POST",
+            "/api/auth/memory/register-scope",
+            JSONObject().put("scope_token", localScopeToken.trim()),
+        ) { it.optInt("registered_scopes") }
+
+    suspend fun memoryStatus(context: Context): CentralAuthResult<CentralMemoryStatusDto> =
+        authorizedJsonRequest(context, "GET", "/api/auth/memory/status", null) { json ->
+            val op = json.optJSONObject("operation") ?: JSONObject()
+            CentralMemoryStatusDto(
+                phase = json.optString("phase", "idle"),
+                memoryScopes = json.optInt("memory_scopes"),
+                registeredDeviceScopes = json.optInt("registered_device_scopes"),
+                mempalaceRows = json.optInt("mempalace_rows"),
+                qdrantPoints = json.optInt("qdrant_points"),
+                lettaAgents = json.optInt("letta_agents"),
+                lastError = json.optString("last_error"),
+                updatedAt = json.optString("updated_at"),
+                completedAt = json.optString("completed_at"),
+                busy = op.optBoolean("busy"),
+                operation = op.optString("operation"),
+            )
+        }
+
+    suspend fun clearMemory(context: Context, password: String): CentralAuthResult<Boolean> =
+        authorizedJsonRequest(
+            context,
+            "POST",
+            "/api/auth/memory/clear",
+            JSONObject().put("password", password).put("confirmation", "CLEAR MY FDEX MEMORY"),
+        ) { true }
+
+    suspend fun exportData(context: Context): CentralAuthResult<String> =
+        authorizedJsonRequest(context, "GET", "/api/auth/data-export", null) { json -> json.toString(2) }
 
     suspend fun deleteAccount(context: Context, password: String): CentralAuthResult<Boolean> =
         authorizedJsonRequest(
@@ -269,6 +320,11 @@ object CentralAuthApi {
     }
 
     private fun errorMessage(body: String, fallback: String): String = runCatching {
-        JSONObject(body).optString("detail")
+        val detail = JSONObject(body).opt("detail")
+        when (detail) {
+            is JSONObject -> detail.optString("message").ifBlank { detail.toString() }
+            is String -> detail
+            else -> detail?.toString().orEmpty()
+        }
     }.getOrNull().orEmpty().ifBlank { fallback }
 }
