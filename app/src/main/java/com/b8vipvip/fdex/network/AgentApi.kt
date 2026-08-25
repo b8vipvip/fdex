@@ -9,11 +9,41 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 
 data class AgentEventDto(val type: String, val message: String, val createdAt: String)
-data class AgentGitHubConnectionDto(val id: Int, val name: String, val login: String)
+data class AgentGitHubConnectionDto(
+    val id: Int,
+    val name: String,
+    val login: String,
+    val authType: String,
+    val tokenExpiresAt: String,
+    val needsReconnect: Boolean,
+)
+data class AgentGitHubDeviceFlowDto(
+    val id: String,
+    val userCode: String,
+    val verificationUri: String,
+    val status: String,
+    val intervalSeconds: Int,
+    val retryAfterSeconds: Int,
+    val expiresAt: String,
+    val error: String,
+    val connection: AgentGitHubConnectionDto?,
+)
+data class AgentGitHubRepositoryDto(
+    val id: Long,
+    val name: String,
+    val fullName: String,
+    val isPrivate: Boolean,
+    val defaultBranch: String,
+    val canPush: Boolean,
+    val archived: Boolean,
+    val description: String,
+)
 data class AgentProjectDto(
     val id: Int, val name: String, val repository: String, val baseBranch: String,
     val allowPush: Boolean, val allowPr: Boolean, val allowNetwork: Boolean,
@@ -54,15 +84,59 @@ object AgentApi {
         .connectTimeout(20, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.MINUTES).callTimeout(0, TimeUnit.SECONDS).build()
 
-    suspend fun saveGitHubConnection(context: Context, token: String, name: String = "GitHub"): AgentApiResult<AgentGitHubConnectionDto> {
+    suspend fun listGitHubConnections(context: Context): AgentApiResult<List<AgentGitHubConnectionDto>> {
         return try {
-            val payload = JSONObject().put("name", name).put("token", token)
-            val response = executeAuthenticated(context, "POST", "/api/agent/github/connections", payload)
-            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "GitHub 连接 HTTP ${response.code}"))
-            val json = JSONObject(response.body)
-            AgentApiResult.Success(AgentGitHubConnectionDto(json.optInt("id"), json.optString("name", "GitHub"), json.optString("login")))
+            val response = executeAuthenticated(context, "GET", "/api/agent/github/connections")
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "GitHub 连接列表 HTTP ${response.code}"))
+            val array = JSONObject(response.body).optJSONArray("connections")
+            AgentApiResult.Success(buildList {
+                if (array != null) for (index in 0 until array.length()) {
+                    array.optJSONObject(index)?.let { add(parseGitHubConnection(it)) }
+                }
+            })
         } catch (error: Exception) {
-            AgentApiResult.Failure(error.message ?: "无法保存 GitHub 连接")
+            AgentApiResult.Failure(error.message ?: "无法读取 GitHub 连接")
+        }
+    }
+
+    suspend fun startGitHubDeviceFlow(context: Context): AgentApiResult<AgentGitHubDeviceFlowDto> =
+        deviceFlowRequest(context, "/api/agent/github/oauth/device/start")
+
+    suspend fun pollGitHubDeviceFlow(context: Context, flowId: String): AgentApiResult<AgentGitHubDeviceFlowDto> =
+        deviceFlowRequest(context, "/api/agent/github/oauth/device/${encode(flowId)}/poll")
+
+    suspend fun listGitHubRepositories(
+        context: Context,
+        connectionId: Int,
+        query: String = "",
+    ): AgentApiResult<List<AgentGitHubRepositoryDto>> {
+        return try {
+            val path = buildString {
+                append("/api/agent/github/repositories?connection_id=$connectionId&per_page=100")
+                if (query.isNotBlank()) append("&query=${encode(query.trim())}")
+            }
+            val response = executeAuthenticated(context, "GET", path)
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "GitHub 仓库列表 HTTP ${response.code}"))
+            val array = JSONObject(response.body).optJSONArray("repositories")
+            AgentApiResult.Success(buildList {
+                if (array != null) for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    add(
+                        AgentGitHubRepositoryDto(
+                            id = item.optLong("id"),
+                            name = item.optString("name"),
+                            fullName = item.optString("full_name"),
+                            isPrivate = item.optBoolean("private"),
+                            defaultBranch = item.optString("default_branch", "main"),
+                            canPush = item.optBoolean("can_push"),
+                            archived = item.optBoolean("archived"),
+                            description = item.optString("description"),
+                        )
+                    )
+                }
+            })
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法读取 GitHub 仓库")
         }
     }
 
@@ -193,6 +267,40 @@ object AgentApi {
         }
     }
 
+    private suspend fun deviceFlowRequest(context: Context, path: String): AgentApiResult<AgentGitHubDeviceFlowDto> {
+        return try {
+            val response = executeAuthenticated(context, "POST", path, JSONObject())
+            if (!response.successful) return AgentApiResult.Failure(extractError(response.body, "GitHub 授权 HTTP ${response.code}"))
+            AgentApiResult.Success(parseDeviceFlow(JSONObject(response.body)))
+        } catch (error: Exception) {
+            AgentApiResult.Failure(error.message ?: "无法连接 GitHub 授权服务")
+        }
+    }
+
+    private fun parseGitHubConnection(item: JSONObject): AgentGitHubConnectionDto = AgentGitHubConnectionDto(
+        id = item.optInt("id"),
+        name = item.optString("name", "GitHub"),
+        login = item.optString("login"),
+        authType = item.optString("auth_type", "pat"),
+        tokenExpiresAt = item.optString("token_expires_at"),
+        needsReconnect = item.optBoolean("needs_reconnect"),
+    )
+
+    private fun parseDeviceFlow(item: JSONObject): AgentGitHubDeviceFlowDto {
+        val connection = item.optJSONObject("connection")?.let(::parseGitHubConnection)
+        return AgentGitHubDeviceFlowDto(
+            id = item.optString("id"),
+            userCode = item.optString("user_code"),
+            verificationUri = item.optString("verification_uri"),
+            status = item.optString("status"),
+            intervalSeconds = item.optInt("interval_seconds", 5).coerceAtLeast(1),
+            retryAfterSeconds = item.optInt("retry_after_seconds", 0).coerceAtLeast(0),
+            expiresAt = item.optString("expires_at"),
+            error = item.optString("error"),
+            connection = connection,
+        )
+    }
+
     private fun parseProject(item: JSONObject): AgentProjectDto = AgentProjectDto(
         id = item.optInt("id"), name = item.optString("name"), repository = item.optString("repository"),
         baseBranch = item.optString("base_branch", "main"), allowPush = item.optBoolean("allow_push"), allowPr = item.optBoolean("allow_pr"),
@@ -235,4 +343,6 @@ object AgentApi {
         val detail = JSONObject(body).opt("detail")
         when (detail) { is String -> detail; is JSONObject -> detail.optString("message").ifBlank { detail.toString() }; null -> ""; else -> detail.toString() }
     }.getOrNull().orEmpty().ifBlank { fallback }
+
+    private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
 }

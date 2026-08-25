@@ -10,10 +10,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -28,7 +26,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
@@ -58,14 +55,7 @@ internal fun AgentCenterScreen(
     var projects by remember { mutableStateOf<List<AgentProjectDto>>(emptyList()) }
     var tasks by remember { mutableStateOf<List<AgentTaskDto>>(emptyList()) }
     var usage by remember { mutableStateOf<AgentSandboxUsageDto?>(null) }
-    var loading by remember { mutableStateOf(false) }
     var operationsBusy by remember { mutableStateOf(false) }
-    var githubToken by remember { mutableStateOf("") }
-    var repository by remember { mutableStateOf("") }
-    var projectName by remember { mutableStateOf("") }
-    var baseBranch by remember { mutableStateOf("main") }
-    var memoryMb by remember { mutableStateOf("2048") }
-    var allowNetwork by remember { mutableStateOf(false) }
 
     suspend fun reloadProjects() {
         if (accessToken.isBlank()) return
@@ -254,68 +244,10 @@ internal fun AgentCenterScreen(
         }
 
         item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("连接 GitHub 并添加项目", fontWeight = FontWeight.Bold)
-                    Text("GitHub Token 只提交到中心服务器加密保存，不写入 Android 本机数据库。", color = Muted)
-                    OutlinedTextField(
-                        githubToken,
-                        { githubToken = it },
-                        label = { Text("GitHub Token") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(repository, { repository = it }, label = { Text("仓库，例如 b8vipvip/fdex") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(projectName, { projectName = it }, label = { Text("项目名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(baseBranch, { baseBranch = it }, label = { Text("基础分支") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(memoryMb, { memoryMb = it.filter(Char::isDigit) }, label = { Text("单任务内存上限 MB") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(allowNetwork, { allowNetwork = it })
-                        Text("允许构建任务联网下载依赖")
-                    }
-                    Button(
-                        enabled = !loading && accessToken.isNotBlank() && githubToken.isNotBlank() && repository.isNotBlank(),
-                        onClick = {
-                            loading = true
-                            scope.launch {
-                                when (val connection = AgentApi.saveGitHubConnection(context, githubToken.trim())) {
-                                    is AgentApiResult.Failure -> snackbar.showSnackbar(connection.message)
-                                    is AgentApiResult.Success -> {
-                                        val repoName = repository.trim()
-                                        when (
-                                            val saved = AgentApi.saveProject(
-                                                context = context,
-                                                connectionId = connection.value.id,
-                                                repository = repoName,
-                                                name = projectName.trim().ifBlank { repoName.substringAfterLast('/') },
-                                                baseBranch = baseBranch.trim().ifBlank { "main" },
-                                                allowPush = true,
-                                                allowPr = true,
-                                                allowNetwork = allowNetwork,
-                                                sandboxMemoryMb = memoryMb.toIntOrNull()?.coerceIn(128, 16384) ?: 2048,
-                                            )
-                                        ) {
-                                            is AgentApiResult.Failure -> snackbar.showSnackbar(saved.message)
-                                            is AgentApiResult.Success -> {
-                                                githubToken = ""
-                                                repository = ""
-                                                projectName = ""
-                                                reloadProjects()
-                                                reloadOperations()
-                                                snackbar.showSnackbar("GitHub 项目已加入当前 FDEX 账号")
-                                            }
-                                        }
-                                    }
-                                }
-                                loading = false
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(if (loading) "连接中…" else "连接 GitHub 并添加项目") }
-                }
+            GitHubProjectSetup(snackbar = snackbar, onProjectSaved = { saved ->
+                projects = (projects.filterNot { it.id == saved.id } + saved).sortedBy { it.name }
+            })
             }
-        }
     }
 }
 

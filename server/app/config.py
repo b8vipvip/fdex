@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # worktrees and build caches; users can release completed workspaces from the client.
     fdex_agent_account_disk_mb: int = Field(default=20480, ge=512, le=204800)
 
+    # Per-account GitHub authorization uses OAuth Device Flow. The client secret is
+    # deliberately not needed by the device flow; access/refresh tokens stay encrypted
+    # in the server-side Agent project store and are never returned to Android.
+    fdex_github_oauth_client_id: str = ""
+    fdex_github_oauth_scope: str = "repo read:user offline_access"
+    fdex_github_oauth_refresh_skew_seconds: int = Field(default=300, ge=30, le=3600)
+
     fdex_memory_enabled: bool = True
     fdex_memory_managed_stack: bool = True
     fdex_memory_required: bool = False

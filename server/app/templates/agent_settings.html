@@ -25,12 +25,23 @@
     <div class="inline-note">每个账号拥有独立目录和依赖缓存：<code>{{ settings.fdex_agent_sandbox_root }}/owners/&lt;account&gt;/</code>。不同项目再分成独立 repository/worktrees；只有同一账号自己的项目共享该账号的构建缓存。</div>
 </section>
 
+<section class="panel form-section" id="github-oauth">
+    <div class="panel-header"><div><h2>GitHub Device OAuth</h2><p>Android 用户通过浏览器授权自己的 GitHub；访问令牌和轮换刷新令牌只在 FDEX 服务端加密保存。</p></div><span class="badge {% if settings.fdex_github_oauth_client_id %}success{% endif %}">{% if settings.fdex_github_oauth_client_id %}已配置{% else %}待配置{% endif %}</span></div>
+    <div class="inline-note">在 GitHub OAuth App 设置中启用 <strong>Device Flow</strong>，然后填写 Client ID。Device Flow 不需要把 Client Secret 部署到 FDEX 或 Android。</div>
+    <form method="post" action="/admin/agent/github-oauth" class="form-grid" style="margin-top:16px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>OAuth Client ID</span><input name="client_id" value="{{ settings.fdex_github_oauth_client_id }}" placeholder="Ov23li..." maxlength="100"><small>留空会关闭 Android 新建 GitHub 连接。</small></label>
+        <label class="field"><span>OAuth scopes</span><input name="scope" value="{{ settings.fdex_github_oauth_scope }}" maxlength="200"><small>私有仓库和 PR 通常需要 <code>repo</code>；令牌轮换使用 <code>offline_access</code>。</small></label>
+        <div><button class="button primary" type="submit">保存 Device OAuth</button></div>
+    </form>
+</section>
+
 <section class="panel form-section" id="github">
-    <div class="panel-header"><div><h2>默认账号 GitHub Connector</h2><p>这里仅管理兼容默认账号 <code>{{ owner_id }}</code>。新版 Android 中，每个 FDEX Coding Agent 账号可以自行连接自己的 GitHub，凭据仍只在服务端加密保存。</p></div><span class="badge">Owner: {{ owner_id }}</span></div>
+    <div class="panel-header"><div><h2>兼容 GitHub Connector（PAT）</h2><p>仅供默认账号 <code>{{ owner_id }}</code> 迁移或应急使用。新版 Android 不再收集 GitHub Token，而是使用上面的账号级 Device OAuth。</p></div><span class="badge">Owner: {{ owner_id }}</span></div>
     <form method="post" action="/admin/agent/github" class="form-grid">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label class="field"><span>连接名称</span><input name="name" value="GitHub" required maxlength="80"></label>
-        <label class="field"><span>GitHub Token</span><input type="password" name="token" required autocomplete="new-password"><small>建议 Fine-grained PAT，只授权需要的仓库。</small></label>
+        <label class="field"><span>GitHub Token</span><input type="password" name="token" required autocomplete="new-password"><small>兼容入口；建议只授权需要的仓库。</small></label>
         <div><button class="button primary" type="submit">验证并连接 GitHub</button></div>
     </form>
     {% if connections %}

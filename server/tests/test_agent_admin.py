@@ -8,6 +8,8 @@ def test_agent_runtime_defaults_to_enabled_without_env_file() -> None:
     assert "agent-sandboxes" in settings.fdex_agent_sandbox_root
     assert settings.fdex_agent_sandbox_memory_mb == 2048
     assert settings.fdex_agent_sandbox_max_concurrent == 1
+    assert settings.fdex_github_oauth_client_id == ""
+    assert "offline_access" in settings.fdex_github_oauth_scope
 
 
 def test_agent_admin_template_exposes_runtime_projects_and_shared_ai() -> None:
@@ -15,6 +17,9 @@ def test_agent_admin_template_exposes_runtime_projects_and_shared_ai() -> None:
     assert 'name="fdex_agent_enabled"' in template
     assert "统一供应商模型池" in template
     assert "GitHub Connector" in template
+    assert "GitHub Device OAuth" in template
+    assert 'name="client_id"' in template
+    assert 'name="scope"' in template
     assert "Agent 项目" in template
     assert "执行沙箱资源" in template
     assert "account → project → task" in template

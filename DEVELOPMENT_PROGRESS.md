@@ -1,11 +1,21 @@
 # FDEX 开发进度
 
-最后更新：2026-08-15
+最后更新：2026-08-25
+
+## 2026-08-25 接续开发基线
+
+- **v1.1.32 / Phase 7.4 已发布**：PR #62 合并后，持久化 Coding Agent 任务/事件、跨 worker 取消与重试、账号沙箱磁盘预算和安全清理已经进入正式 Release。
+- **Phase 7.5 当前开发分支**：GitHub Device OAuth + 账号级仓库发现，目标是让 Android 不再收集/保存 GitHub Token。
+- 每个 Device Flow、GitHub 连接、仓库项目都绑定 FDEX 中心账号 `user_id`；跨账号读取 flow/connection/repository 会失败。
+- `device_code`、access token、refresh token 只在服务端 Fernet 加密保存；API 只返回用户码、GitHub 确认地址和脱敏连接元数据。
+- 服务端按 GitHub 的 `interval` 强制限制轮询；expiring token 在跨 worker 文件锁内轮换并重新验证 GitHub user id。
+- Android 授权完成后只展示该 GitHub 身份通过 `/user/repos` 可访问的仓库，并根据 `permissions.push` 决定是否启用 Agent push/PR。
+- 管理后台新增 OAuth Client ID/scope 配置；旧 PAT Connector 仅作为迁移/应急兼容入口。
 
 ## 当前正式基线
 
-- Android 正式版：**v1.1.15**
-- v1.1.15 状态：**已发布**；员工 Prompt 改为客户端完全管理，并补齐后台实时语音诊断日志下载入口
+- Android 正式版：**v1.1.32**
+- v1.1.32 状态：**已发布**；Phase 7.4 持久化 Agent 任务和沙箱生命周期已上线
 - 服务端：FastAPI + systemd + 宝塔/Nginx
 - Android：Kotlin + Jetpack Compose
 - AI 接入：服务端多供应商管理，客户端不保存第三方 API Key
