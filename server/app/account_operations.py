@@ -101,10 +101,13 @@ def account_operation(user_id: str, operation: str) -> Iterator[AccountOperation
     owner_hash = account_hash(user_id)
     path = _lock_path_by_hash(owner_hash)
     handle = path.open("a+", encoding="utf-8")
+    acquired = False
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
         except BlockingIOError as exc:
+            # Never truncate/unlock the metadata written by the process that owns the lock.
             raise AccountOperationBusy(_read_metadata(handle, owner_hash)) from exc
 
         started = _now()
@@ -121,14 +124,15 @@ def account_operation(user_id: str, operation: str) -> Iterator[AccountOperation
         os.fsync(handle.fileno())
         yield status
     finally:
-        try:
-            handle.seek(0)
-            handle.truncate()
-            handle.flush()
-        except Exception:
-            pass
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
+        if acquired:
+            try:
+                handle.seek(0)
+                handle.truncate()
+                handle.flush()
+            except Exception:
+                pass
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
         handle.close()
