@@ -11,8 +11,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.config import fresh_settings
-
 _TASK_ID = re.compile(r"^[0-9a-f]{32}$")
 _OWNER = re.compile(r"^[A-Za-z0-9_.@-]{1,80}$")
 _TERMINAL = {"succeeded", "failed", "canceled"}
@@ -49,7 +47,7 @@ class AgentTaskStore:
     """
 
     def __init__(self, path: Path | None = None, lock_root: Path | None = None) -> None:
-        data = Path(fresh_settings().app_dir).expanduser().resolve() / "server" / "data"
+        data = Path(__file__).resolve().parents[1] / "data"
         self.path = (path or data / "agent-tasks.db").resolve()
         self.lock_root = (lock_root or data / "agent-task-locks").resolve()
 
