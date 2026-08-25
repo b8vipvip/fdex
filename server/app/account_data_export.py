@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from app.agent_projects import agent_project_store
 from app.central_auth import CentralAuthStore, central_auth_store
@@ -98,6 +97,30 @@ def _public_sessions(store: CentralAuthStore, user_id: str) -> list[dict[str, ob
     ]
 
 
+def _safe_connections(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    allowed = ("id", "name", "created_at", "updated_at", "token_configured")
+    return [{key: item.get(key) for key in allowed if key in item} for item in items]
+
+
+def _safe_projects(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    allowed = (
+        "id",
+        "name",
+        "repo_full_name",
+        "base_branch",
+        "connection_id",
+        "allow_push",
+        "allow_pr",
+        "allow_network",
+        "sandbox_memory_mb",
+        "sandbox_cpu_percent",
+        "enabled",
+        "created_at",
+        "updated_at",
+    )
+    return [{key: item.get(key) for key in allowed if key in item} for item in items]
+
+
 def build_account_export(
     user_id: str,
     *,
@@ -121,12 +144,18 @@ def build_account_export(
         "account": user,
         "sessions": _public_sessions(store, user_id),
         "security_events": store.security_events(user_id, limit=100),
-        "github_connections": projects.list_connections(user_id),
-        "coding_agent_projects": projects.list_projects(user_id, enabled_only=False),
+        # Whitelist fields here even though the project store currently redacts token_cipher.
+        # This prevents a future store refactor from accidentally expanding a user export.
+        "github_connections": _safe_connections(projects.list_connections(user_id)),
+        "coding_agent_projects": _safe_projects(projects.list_projects(user_id, enabled_only=False)),
         "long_term_memory": {
             "status": memory_erasure_status(user_id),
             "registered_device_scopes": scopes.scope_count(user_id),
-            "history": _remote_history(user_id, scopes),
+            "mempalace_raw_history": _remote_history(user_id, scopes),
+            "letta_structured_memory": {
+                "included": False,
+                "reason": "Letta structured agent internals are not serialized into the portable export; they remain covered by account memory erasure.",
+            },
         },
         "excluded_secrets": [
             "password_hash",
@@ -139,5 +168,6 @@ def build_account_export(
             "github_token_cipher",
             "provider_api_keys",
             "embeddings",
+            "sandbox_cache_files",
         ],
     }
