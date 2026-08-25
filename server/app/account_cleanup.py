@@ -56,11 +56,14 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
 def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
     """Delete every server-owned resource for one FDEX user before identity removal.
 
-    Memory erasure runs first and is fail-closed. Phase 7.4 additionally removes durable
-    Coding Agent task/event history, so deleting the center account leaves no task prompts
-    or execution metadata behind in the Agent task database.
+    An account cannot be deleted while a queued/running Coding Agent request can still write
+    task/worktree state. This guard runs before remote-memory erasure so a rejected deletion
+    attempt does not partially erase the user's data. Once no task is active, memory erasure
+    remains fail-closed and durable Agent task/event rows are removed with the other resources.
     """
     clean = _validate_user_id(user_id)
+    if agent_task_store().active_count(clean):
+        raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再注销账号")
     memory_cleanup = asyncio.run(erase_account_memory(clean))
     agent_cleanup = _purge_agent_resources_only(clean)
     return {
