@@ -109,7 +109,6 @@ def _task_payload(task: AgentTask) -> dict[str, object]:
         "result": task.result,
         "error": task.error,
         "branch": task.branch,
-        "worktree": task.worktree,
         "commit_sha": task.commit_sha,
         "pushed": task.pushed,
         "pr_url": task.pr_url,
@@ -123,6 +122,12 @@ def _task_payload(task: AgentTask) -> dict[str, object]:
             for event in task.events
         ],
     }
+
+
+def _require_scoped_project(auth_mode: str, project_id: int | None) -> None:
+    """Keep authenticated users out of the shared legacy FDEX workspace."""
+    if auth_mode != "bootstrap-legacy" and project_id is None:
+        raise HTTPException(status_code=400, detail="请选择当前 FDEX 账号下的 GitHub 项目后再创建任务")
 
 
 def _project_payload(item: dict[str, Any]) -> dict[str, object]:
@@ -282,7 +287,8 @@ async def list_tasks(request: Request, status: str = "", limit: int = 50) -> dic
 
 @router.post("/tasks")
 async def create_task(request_body: AgentTaskCreateRequest, request: Request) -> dict[str, object]:
-    owner_id, _ = _account_owner(request)
+    owner_id, auth_mode = _account_owner(request)
+    _require_scoped_project(auth_mode, request_body.project_id)
     try:
         task = await agent_runtime().create_task(
             request_body.prompt,
@@ -305,11 +311,12 @@ async def get_task(task_id: str, request: Request) -> dict[str, object]:
 
 @router.post("/tasks/{task_id}/run")
 async def run_agent(task_id: str, request: Request) -> dict[str, object]:
-    owner_id, _ = _account_owner(request)
+    owner_id, auth_mode = _account_owner(request)
     runtime = agent_runtime()
     task = await _stored_task(owner_id, task_id, prime_runtime=True)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_scoped_project(auth_mode, task.project_id)
     if task.status not in {"queued", "running"}:
         raise HTTPException(status_code=409, detail=f"任务当前状态为 {task.status}，不能重复执行")
     try:
@@ -338,8 +345,20 @@ async def cancel_task(task_id: str, request: Request) -> dict[str, object]:
     task = await _stored_task(owner_id, task_id, prime_runtime=True)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    runtime = agent_runtime()
     try:
-        task = await agent_runtime().request_cancel(owner_id, task_id)
+        with agent_task_store().run_lock(task_id):
+            # A running row without an execution-lock owner is an orphan left by a stopped
+            # worker. Make it terminal immediately so retry and account deletion are possible.
+            task = await _stored_task(owner_id, task_id, prime_runtime=True)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            task = await runtime.request_cancel(owner_id, task_id, force_terminal=True)
+    except TaskRunBusy:
+        try:
+            task = await runtime.request_cancel(owner_id, task_id)
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     except AgentRuntimeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _task_payload(task)
@@ -347,10 +366,11 @@ async def cancel_task(task_id: str, request: Request) -> dict[str, object]:
 
 @router.post("/tasks/{task_id}/retry")
 async def retry_task(task_id: str, request: Request) -> dict[str, object]:
-    owner_id, _ = _account_owner(request)
+    owner_id, auth_mode = _account_owner(request)
     task = await _stored_task(owner_id, task_id, prime_runtime=True)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_scoped_project(auth_mode, task.project_id)
     try:
         task = await agent_runtime().retry_task(owner_id, task_id)
     except AgentRuntimeError as exc:
@@ -361,10 +381,11 @@ async def retry_task(task_id: str, request: Request) -> dict[str, object]:
 
 @router.post("/tasks/{task_id}/tools/run")
 async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Request) -> dict[str, object]:
-    owner_id, _ = _account_owner(request)
+    owner_id, auth_mode = _account_owner(request)
     task = await _stored_task(owner_id, task_id, prime_runtime=True)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_scoped_project(auth_mode, task.project_id)
     try:
         task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
     except AgentRuntimeError as exc:

@@ -270,17 +270,21 @@ class FdexAgentRuntime:
             tasks.append(task)
         return tasks
 
-    async def request_cancel(self, owner_id: str, task_id: str) -> AgentTask:
+    async def request_cancel(self, owner_id: str, task_id: str, *, force_terminal: bool = False) -> AgentTask:
         task = await self.get_task(task_id)
         if task is None or task.owner_id != owner_id:
             raise AgentRuntimeError("task not found")
         if task.status in {"succeeded", "failed", "canceled"}:
             return task
         task.cancel_requested = True
-        if task.status == "queued":
+        was_queued = task.status == "queued"
+        if was_queued or force_terminal:
             task.status = "canceled"
             task.error = ""
-            task.emit("task.canceled", "Task canceled before execution")
+            message = "Task canceled before execution"
+            if force_terminal and not was_queued:
+                message = "Task canceled after confirming no worker owns its execution lock"
+            task.emit("task.canceled", message)
         else:
             task.emit("task.cancel_requested", "Cancellation requested; stopping at the next safe tool boundary")
         return task
@@ -372,7 +376,8 @@ class FdexAgentRuntime:
         return task
 
     async def cleanup_completed_workspaces(self, owner_id: str, *, limit: int = 100) -> dict[str, int]:
-        tasks = await self.list_tasks(owner_id, limit=limit)
+        rows = await asyncio.to_thread(self.task_store.list_releasable, owner_id, limit=limit)
+        tasks = [self._task_from_record(row) for row in rows]
         released = 0
         failed = 0
         for task in tasks:
@@ -414,15 +419,6 @@ class FdexAgentRuntime:
                 timeout=30,
                 check=False,
             )
-            if task.branch.startswith("fdex-agent/"):
-                subprocess.run(
-                    ("git", "branch", "-D", task.branch),
-                    cwd=str(source),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                    check=False,
-                )
         if path.exists():
             shutil.rmtree(path)
         task.worktree = ""

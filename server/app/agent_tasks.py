@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -17,7 +18,7 @@ _TERMINAL = {"succeeded", "failed", "canceled"}
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _owner(value: str) -> str:
@@ -50,51 +51,59 @@ class AgentTaskStore:
         data = Path(__file__).resolve().parents[1] / "data"
         self.path = (path or data / "agent-tasks.db").resolve()
         self.lock_root = (lock_root or data / "agent-task-locks").resolve()
+        self._initialized = False
+        self._init_lock = threading.Lock()
 
     def init(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.lock_root.mkdir(parents=True, exist_ok=True)
-        for item in (self.path.parent, self.lock_root):
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.lock_root.mkdir(parents=True, exist_ok=True)
+            for item in (self.path.parent, self.lock_root):
+                try:
+                    os.chmod(item, 0o700)
+                except OSError:
+                    pass
+            with self.db() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_tasks (
+                        id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        project_id INTEGER,
+                        project_name TEXT NOT NULL DEFAULT '',
+                        repository TEXT NOT NULL DEFAULT '',
+                        base_branch TEXT NOT NULL DEFAULT 'main',
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        result TEXT NOT NULL DEFAULT '',
+                        error TEXT NOT NULL DEFAULT '',
+                        branch TEXT NOT NULL DEFAULT '',
+                        worktree TEXT NOT NULL DEFAULT '',
+                        commit_sha TEXT NOT NULL DEFAULT '',
+                        pushed INTEGER NOT NULL DEFAULT 0,
+                        pr_url TEXT NOT NULL DEFAULT '',
+                        changed_files_json TEXT NOT NULL DEFAULT '[]',
+                        events_json TEXT NOT NULL DEFAULT '[]',
+                        cancel_requested INTEGER NOT NULL DEFAULT 0,
+                        parent_task_id TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_updated
+                        ON agent_tasks(owner_id, updated_at DESC, id DESC);
+                    CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_status
+                        ON agent_tasks(owner_id, status, updated_at DESC);
+                    """
+                )
             try:
-                os.chmod(item, 0o700)
+                os.chmod(self.path, 0o600)
             except OSError:
                 pass
-        with self.db() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS agent_tasks (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    prompt TEXT NOT NULL,
-                    project_id INTEGER,
-                    project_name TEXT NOT NULL DEFAULT '',
-                    repository TEXT NOT NULL DEFAULT '',
-                    base_branch TEXT NOT NULL DEFAULT 'main',
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    result TEXT NOT NULL DEFAULT '',
-                    error TEXT NOT NULL DEFAULT '',
-                    branch TEXT NOT NULL DEFAULT '',
-                    worktree TEXT NOT NULL DEFAULT '',
-                    commit_sha TEXT NOT NULL DEFAULT '',
-                    pushed INTEGER NOT NULL DEFAULT 0,
-                    pr_url TEXT NOT NULL DEFAULT '',
-                    changed_files_json TEXT NOT NULL DEFAULT '[]',
-                    events_json TEXT NOT NULL DEFAULT '[]',
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    parent_task_id TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_updated
-                    ON agent_tasks(owner_id, updated_at DESC, id DESC);
-                CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_status
-                    ON agent_tasks(owner_id, status, updated_at DESC);
-                """
-            )
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+            self._initialized = True
 
     @contextmanager
     def db(self) -> Iterator[sqlite3.Connection]:
@@ -114,7 +123,7 @@ class AgentTaskStore:
     @staticmethod
     def _iso(value: Any) -> str:
         if isinstance(value, datetime):
-            return value.astimezone(UTC).isoformat(timespec="seconds")
+            return value.astimezone(UTC).isoformat(timespec="microseconds")
         return str(value or _now())
 
     @staticmethod
@@ -125,43 +134,111 @@ class AgentTaskStore:
             "created_at": AgentTaskStore._iso(getattr(event, "created_at", None)),
         }
 
+    @staticmethod
+    def _json_list(value: Any) -> list[Any]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _merge_events(existing: Any, incoming: list[dict[str, str]]) -> list[dict[str, str]]:
+        merged: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in [*AgentTaskStore._json_list(existing), *incoming]:
+            if not isinstance(item, dict):
+                continue
+            normalized = {
+                "type": str(item.get("type") or "")[:100],
+                "message": str(item.get("message") or "")[:4000],
+                "created_at": str(item.get("created_at") or "")[:80],
+            }
+            fingerprint = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            merged.append(normalized)
+        return merged[-300:]
+
     def save(self, task: Any) -> None:
         self.init()
         task_id = _task_id(str(task.id))
         owner_id = _owner(str(task.owner_id))
         changed = sorted(str(item)[:1000] for item in getattr(task, "changed_files", set()))
         events = [self._event_payload(item) for item in list(getattr(task, "events", []))[-300:]]
-        values = (
-            task_id,
-            owner_id,
-            str(task.prompt)[:12000],
-            getattr(task, "project_id", None),
-            str(getattr(task, "project_name", ""))[:200],
-            str(getattr(task, "repository", ""))[:300],
-            str(getattr(task, "base_branch", "main"))[:180],
-            str(getattr(task, "status", "queued"))[:30],
-            str(getattr(task, "result", ""))[:200000],
-            str(getattr(task, "error", ""))[:10000],
-            str(getattr(task, "branch", ""))[:300],
-            str(getattr(task, "worktree", ""))[:2000],
-            str(getattr(task, "commit_sha", ""))[:100],
-            int(bool(getattr(task, "pushed", False))),
-            str(getattr(task, "pr_url", ""))[:2000],
-            json.dumps(changed, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(events, ensure_ascii=False, separators=(",", ":")),
-            int(bool(getattr(task, "cancel_requested", False))),
-            str(getattr(task, "parent_task_id", ""))[:32],
-            self._iso(getattr(task, "created_at", None)),
-            self._iso(getattr(task, "updated_at", None)),
-        )
+        values: dict[str, Any] = {
+            "id": task_id,
+            "owner_id": owner_id,
+            "prompt": str(task.prompt)[:12000],
+            "project_id": getattr(task, "project_id", None),
+            "project_name": str(getattr(task, "project_name", ""))[:200],
+            "repository": str(getattr(task, "repository", ""))[:300],
+            "base_branch": str(getattr(task, "base_branch", "main"))[:180],
+            "status": str(getattr(task, "status", "queued"))[:30],
+            "result": str(getattr(task, "result", ""))[:200000],
+            "error": str(getattr(task, "error", ""))[:10000],
+            "branch": str(getattr(task, "branch", ""))[:300],
+            "worktree": str(getattr(task, "worktree", ""))[:2000],
+            "commit_sha": str(getattr(task, "commit_sha", ""))[:100],
+            "pushed": int(bool(getattr(task, "pushed", False))),
+            "pr_url": str(getattr(task, "pr_url", ""))[:2000],
+            "changed_files_json": json.dumps(changed, ensure_ascii=False, separators=(",", ":")),
+            "events_json": json.dumps(events, ensure_ascii=False, separators=(",", ":")),
+            "cancel_requested": int(bool(getattr(task, "cancel_requested", False))),
+            "parent_task_id": str(getattr(task, "parent_task_id", ""))[:32],
+            "created_at": self._iso(getattr(task, "created_at", None)),
+            "updated_at": self._iso(getattr(task, "updated_at", None)),
+        }
         with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing_row = conn.execute("SELECT * FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
+            if existing_row is not None:
+                existing = dict(existing_row)
+                existing_status = str(existing.get("status") or "")
+                incoming_status = str(values["status"])
+                values["owner_id"] = str(existing["owner_id"])
+                values["created_at"] = str(existing["created_at"])
+                values["updated_at"] = max(str(existing["updated_at"]), str(values["updated_at"]))
+                values["cancel_requested"] = int(
+                    bool(existing.get("cancel_requested")) or bool(values["cancel_requested"])
+                )
+                existing_changed = [str(item)[:1000] for item in self._json_list(existing.get("changed_files_json"))]
+                values["changed_files_json"] = json.dumps(
+                    sorted(set(existing_changed).union(changed)),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                values["events_json"] = json.dumps(
+                    self._merge_events(existing.get("events_json"), events),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                for field in ("branch", "commit_sha", "pr_url", "parent_task_id"):
+                    if not values[field] and existing.get(field):
+                        values[field] = existing[field]
+                values["pushed"] = int(bool(existing.get("pushed")) or bool(values["pushed"]))
+                if existing_status in _TERMINAL:
+                    # A stale worker must never revive or replace a terminal task. Cleanup may
+                    # still clear the worktree; once empty, that release is also monotonic.
+                    values["status"] = existing_status
+                    values["result"] = existing["result"]
+                    values["error"] = existing["error"]
+                    if not existing.get("worktree") or not values["worktree"]:
+                        values["worktree"] = ""
+                elif not values["worktree"] and incoming_status not in _TERMINAL:
+                    values["worktree"] = existing.get("worktree") or ""
             conn.execute(
                 """
                 INSERT INTO agent_tasks(
                     id,owner_id,prompt,project_id,project_name,repository,base_branch,status,
                     result,error,branch,worktree,commit_sha,pushed,pr_url,changed_files_json,
                     events_json,cancel_requested,parent_task_id,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(
+                    :id,:owner_id,:prompt,:project_id,:project_name,:repository,:base_branch,:status,
+                    :result,:error,:branch,:worktree,:commit_sha,:pushed,:pr_url,:changed_files_json,
+                    :events_json,:cancel_requested,:parent_task_id,:created_at,:updated_at
+                )
                 ON CONFLICT(id) DO UPDATE SET
                     owner_id=excluded.owner_id,prompt=excluded.prompt,project_id=excluded.project_id,
                     project_name=excluded.project_name,repository=excluded.repository,
@@ -169,10 +246,7 @@ class AgentTaskStore:
                     error=excluded.error,branch=excluded.branch,worktree=excluded.worktree,
                     commit_sha=excluded.commit_sha,pushed=excluded.pushed,pr_url=excluded.pr_url,
                     changed_files_json=excluded.changed_files_json,events_json=excluded.events_json,
-                    cancel_requested=CASE
-                        WHEN agent_tasks.cancel_requested=1 THEN 1
-                        ELSE excluded.cancel_requested
-                    END,
+                    cancel_requested=excluded.cancel_requested,
                     parent_task_id=excluded.parent_task_id,
                     created_at=excluded.created_at,updated_at=excluded.updated_at
                 """,
@@ -227,6 +301,26 @@ class AgentTaskStore:
                 ).fetchall()
         return [self._row(row) for row in rows]
 
+    def list_releasable(self, owner_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return terminal tasks that still own a worktree.
+
+        Filtering in SQLite is important: taking the newest N task-history rows first can hide
+        an older worktree forever when newer task rows have already been cleaned.
+        """
+        self.init()
+        owner_id = _owner(owner_id)
+        limit = max(1, min(int(limit), 1000))
+        with self.db() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM agent_tasks
+                WHERE owner_id=? AND status IN ('succeeded','failed','canceled') AND worktree<>''
+                ORDER BY updated_at,id LIMIT ?
+                """,
+                (owner_id, limit),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
     def active_count(self, owner_id: str) -> int:
         self.init()
         owner_id = _owner(owner_id)
@@ -237,14 +331,14 @@ class AgentTaskStore:
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
-    def request_cancel(self, owner_id: str, task_id: str) -> dict[str, Any]:
+    def request_cancel(self, owner_id: str, task_id: str, *, force_terminal: bool = False) -> dict[str, Any]:
         current = self.get(owner_id, task_id)
         if current is None:
             raise KeyError("task not found")
         if str(current["status"]) in _TERMINAL:
             return current
         now = _now()
-        status = "canceled" if str(current["status"]) == "queued" else str(current["status"])
+        status = "canceled" if force_terminal or str(current["status"]) == "queued" else str(current["status"])
         with self.db() as conn:
             conn.execute(
                 "UPDATE agent_tasks SET cancel_requested=1,status=?,updated_at=? WHERE id=? AND owner_id=?",

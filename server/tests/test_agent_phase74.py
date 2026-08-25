@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app import account_cleanup
 from app.agent_runtime import AgentTask, FdexAgentRuntime
@@ -71,6 +73,104 @@ def test_cross_worker_cancel_flag_cannot_be_overwritten_by_stale_runner(tmp_path
     latest = store.get(owner, stale_runner.id)
     assert latest is not None
     assert latest["cancel_requested"] is True
+
+
+def test_orphan_cancel_is_terminal_and_stale_worker_cannot_revive_it(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    owner = "usr_1234567890abcdef12345678"
+    stale_runner = AgentTask(
+        id="d" * 32,
+        prompt="orphaned task",
+        owner_id=owner,
+        status="running",
+        _persist=store.save,
+    )
+    stale_runner.emit("agent.started", "running")
+
+    canceled = store.request_cancel(owner, stale_runner.id, force_terminal=True)
+    assert canceled["status"] == "canceled"
+    stale_runner.emit("agent.progress", "late worker event")
+
+    latest = store.get(owner, stale_runner.id)
+    assert latest is not None
+    assert latest["status"] == "canceled"
+    assert latest["cancel_requested"] is True
+    assert {item["message"] for item in latest["events"]} == {"running", "late worker event"}
+
+
+def test_releasable_worktree_is_not_hidden_by_newer_clean_history(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    owner = "usr_1234567890abcdef12345678"
+    oldest = AgentTask(
+        id=f"{1:032x}",
+        prompt="old workspace",
+        owner_id=owner,
+        status="succeeded",
+        worktree=str(tmp_path / "old-worktree"),
+        _persist=store.save,
+    )
+    oldest.emit("task.completed", "old")
+    for index in range(2, 152):
+        clean = AgentTask(
+            id=f"{index:032x}",
+            prompt="already cleaned",
+            owner_id=owner,
+            status="succeeded",
+            _persist=store.save,
+        )
+        clean.emit("task.completed", f"clean-{index}")
+
+    rows = store.list_releasable(owner, limit=100)
+    assert [row["id"] for row in rows] == [oldest.id]
+
+
+def test_cleanup_releases_worktree_but_preserves_local_commit_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "FDEX Test"], cwd=repo, check=True)
+    (repo / "app.txt").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE)
+
+    runtime = FdexAgentRuntime(workspace=repo, worktree_root=tmp_path / "worktrees")
+    runtime.task_store = _store(tmp_path / "task-store")
+    runtime.enabled = True
+    task = asyncio.run(runtime.create_task("update app"))
+    asyncio.run(runtime.execute_tool(task.id, "replace_text", args={"path": "app.txt", "old": "old", "new": "new"}))
+    asyncio.run(runtime.execute_tool(task.id, "git_commit", args={"message": "Update app"}))
+    asyncio.run(runtime.complete_task(task.id, "done"))
+    worktree = Path(task.worktree)
+    branch = task.branch
+
+    runtime._release_worktree(task)
+
+    assert not worktree.exists()
+    subprocess.run(["git", "show-ref", "--verify", f"refs/heads/{branch}"], cwd=repo, check=True)
+    stored = runtime.task_store.get(task.owner_id, task.id)
+    assert stored is not None
+    assert stored["worktree"] == ""
+
+
+def test_authenticated_accounts_cannot_use_shared_legacy_workspace() -> None:
+    from app import agent_routes
+
+    with pytest.raises(HTTPException) as exc:
+        agent_routes._require_scoped_project("central", None)
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException):
+        agent_routes._require_scoped_project("agent-account-legacy", None)
+    agent_routes._require_scoped_project("bootstrap-legacy", None)
+
+
+def test_task_payload_does_not_expose_server_worktree_path() -> None:
+    from app import agent_routes
+
+    payload = agent_routes._task_payload(
+        AgentTask(id="e" * 32, prompt="safe response", worktree="/opt/fdex/server/data/secret-path")
+    )
+    assert "worktree" not in payload
 
 
 def test_runtime_can_restore_cancel_and_retry_task_after_restart(tmp_path: Path) -> None:
