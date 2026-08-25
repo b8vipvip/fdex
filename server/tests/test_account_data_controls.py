@@ -13,6 +13,7 @@ from app.account_operations import (
     AccountOperationBusy,
     account_operation,
     account_operation_status,
+    advance_memory_generation,
     mark_account_deleted,
 )
 from app.config import Settings
@@ -194,6 +195,25 @@ def test_cross_worker_account_operation_lock_exposes_busy_status_without_clobber
         assert account_operation_status(user).operation == "account_delete"
 
     assert account_operation_status(user).busy is False
+
+
+def test_memory_generation_fences_pre_clear_responses_but_allows_new_requests(tmp_path: Path, monkeypatch) -> None:
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    monkeypatch.setattr(account_operations, "_lock_dir", lambda: lock_dir)
+    user = "usr_1234567890abcdef12345678"
+    scope_key = "d" * 64
+    registry = MemoryScopeRegistry(tmp_path / "scopes.sqlite3")
+    registry.register(user, scope_key)
+    before = registry.write_generation(scope_key)
+
+    with account_operation(user, "memory_clear"):
+        assert registry.write_blocked(scope_key, expected_generation=before) is True
+        after = advance_memory_generation(user)
+        assert after == before + 1
+
+    assert registry.write_blocked(scope_key, expected_generation=before) is True
+    assert registry.write_blocked(scope_key, expected_generation=after) is False
 
 
 def test_deleted_account_tombstone_keeps_stale_background_memory_writes_blocked(tmp_path: Path, monkeypatch) -> None:
