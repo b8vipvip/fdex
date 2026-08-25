@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     fdex_agent_sandbox_cpu_percent: int = Field(default=150, ge=10, le=800)
     fdex_agent_sandbox_pids_max: int = Field(default=512, ge=32, le=4096)
     fdex_agent_sandbox_max_concurrent: int = Field(default=1, ge=1, le=8)
+    # Disk is not preallocated. This is an owner-wide admission budget for repository clones,
+    # worktrees and build caches; users can release completed workspaces from the client.
+    fdex_agent_account_disk_mb: int = Field(default=20480, ge=512, le=204800)
 
     fdex_memory_enabled: bool = True
     fdex_memory_managed_stack: bool = True

@@ -29,6 +29,7 @@ class SystemdExecutionSandbox:
     No per-account process is kept alive. systemd creates a transient unit for each build,
     applies cgroup limits and mount/network restrictions, then collects it. MemoryMax is a
     ceiling rather than a reservation, so an idle FDEX account has effectively zero sandbox RAM.
+    Phase 7.4 also exposes an owner-wide disk admission budget for clones/worktrees/caches.
     """
 
     def __init__(self) -> None:
@@ -38,15 +39,23 @@ class SystemdExecutionSandbox:
         self.default_memory_mb = settings.fdex_agent_sandbox_memory_mb
         self.default_cpu_percent = settings.fdex_agent_sandbox_cpu_percent
         self.default_pids_max = settings.fdex_agent_sandbox_pids_max
+        self.account_disk_mb = settings.fdex_agent_account_disk_mb
         self._slots = threading.BoundedSemaphore(settings.fdex_agent_sandbox_max_concurrent)
 
     @staticmethod
     def available() -> bool:
         return bool(shutil.which("systemd-run")) and Path("/run/systemd/system").exists()
 
+    def _owner_root(self, owner_id: str) -> Path:
+        owners = (self.sandbox_root / "owners").resolve()
+        root = (owners / (owner_id or "").strip()).resolve()
+        if root == owners or owners not in root.parents:
+            raise AgentSandboxError("account sandbox escaped sandbox root")
+        return root
+
     def account_cache_root(self, owner_id: str) -> Path:
-        root = (self.sandbox_root / "owners" / owner_id / "cache").resolve()
-        owner_root = (self.sandbox_root / "owners" / owner_id).resolve()
+        owner_root = self._owner_root(owner_id)
+        root = (owner_root / "cache").resolve()
         if owner_root not in root.parents:
             raise AgentSandboxError("account cache escaped sandbox root")
         root.mkdir(parents=True, exist_ok=True)
@@ -54,11 +63,55 @@ class SystemdExecutionSandbox:
             (root / name).mkdir(parents=True, exist_ok=True)
         return root
 
+    @staticmethod
+    def _directory_size(root: Path) -> int:
+        if not root.exists():
+            return 0
+        total = 0
+        for current, dirs, files in os.walk(root, followlinks=False):
+            base = Path(current)
+            dirs[:] = [name for name in dirs if not (base / name).is_symlink()]
+            for name in files:
+                path = base / name
+                try:
+                    if path.is_symlink():
+                        continue
+                    total += path.stat().st_size
+                except OSError:
+                    continue
+        return total
+
+    def account_usage(self, owner_id: str) -> dict[str, object]:
+        owner_root = self._owner_root(owner_id)
+        cache = (owner_root / "cache").resolve()
+        used = self._directory_size(owner_root)
+        cache_bytes = self._directory_size(cache)
+        limit = int(self.account_disk_mb) * 1024 * 1024
+        percent = round((used / limit) * 100.0, 1) if limit else 0.0
+        return {
+            "used_bytes": used,
+            "cache_bytes": cache_bytes,
+            "workspace_bytes": max(0, used - cache_bytes),
+            "limit_bytes": limit,
+            "used_mb": round(used / (1024 * 1024), 1),
+            "cache_mb": round(cache_bytes / (1024 * 1024), 1),
+            "limit_mb": int(self.account_disk_mb),
+            "percent": percent,
+            "over_limit": used >= limit if limit else False,
+        }
+
+    def clear_account_cache(self, owner_id: str) -> int:
+        owner_root = self._owner_root(owner_id)
+        cache = (owner_root / "cache").resolve()
+        if owner_root not in cache.parents:
+            raise AgentSandboxError("account cache escaped sandbox root")
+        removed = self._directory_size(cache)
+        if cache.exists():
+            shutil.rmtree(cache)
+        return removed
+
     def _hidden_paths(self, owner_id: str, worktree: Path) -> list[Path]:
         hidden: list[Path] = []
-        # FDEX runtime credentials and databases must never be visible to repository build
-        # scripts. Hiding the whole runtime data directory also covers SQLite WAL/SHM files,
-        # including the center account DB with password/session hashes.
         for relative in (
             "server/.env",
             "server/data",
@@ -78,9 +131,6 @@ class SystemdExecutionSandbox:
                 if resolved != current_owner:
                     hidden.append(resolved)
 
-        # Within one account, hide every sibling project. The current project repository
-        # remains read-only under ProtectSystem=strict while only this task worktree/cache
-        # are writable.
         try:
             relative = worktree.resolve().relative_to(current_owner)
             parts = relative.parts
@@ -170,6 +220,8 @@ class SystemdExecutionSandbox:
     ) -> str:
         if not self.available():
             raise AgentSandboxError("systemd execution sandbox is unavailable on this server")
+        if bool(self.account_usage(owner_id).get("over_limit")):
+            raise AgentSandboxError("account sandbox disk limit reached")
         limits = SandboxLimits(
             memory_mb=memory_mb or self.default_memory_mb,
             cpu_percent=cpu_percent or self.default_cpu_percent,
