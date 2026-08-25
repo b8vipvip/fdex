@@ -11,6 +11,7 @@ from app.config import fresh_settings
 from app.fdex_memory import MemoryRecall, MemoryScope, memory_coordinator
 from app.memory_middleware import (
     FdexMemoryMiddleware,
+    MemoryControl,
     _MAX_CAPTURE_BYTES,
     _assistant_from_capture,
     _strip_client_wrapper_preamble,
@@ -18,6 +19,7 @@ from app.memory_middleware import (
     decode_memory_control,
     extract_local_context,
 )
+from app.memory_scope_registry import memory_scope_registry
 
 logger = logging.getLogger(__name__)
 
@@ -25,26 +27,36 @@ logger = logging.getLogger(__name__)
 class StreamSafeFdexMemoryMiddleware(FdexMemoryMiddleware):
     """FdexMemoryMiddleware with correct ASGI receive semantics for streaming responses.
 
-    The middleware consumes the original request body so it can remove the private memory
-    marker and inject recalled context. The rewritten body must be replayed exactly once.
-    After that, every receive() call must delegate to the original ASGI receive callable so
-    Starlette's StreamingResponse can block while waiting for a real http.disconnect event.
-
-    Center-authenticated requests also derive the persisted memory namespace from the
-    server-validated FDEX user id. A client-supplied scope token is therefore only a
-    per-user sub-scope and can never select another user's remote memory namespace.
+    Center-authenticated requests derive the persisted namespace from the server-validated
+    FDEX user id. Phase 7.3 records that one-way bound scope in a content-free registry so
+    account-wide export/erasure can cover several devices without trusting an owner id from
+    the client. Background writes are suppressed while a destructive account operation owns
+    the cross-worker lock, preventing a response that started earlier from repopulating data.
     """
 
     def __init__(self, app: Callable[..., Awaitable[Any]]):
         super().__init__(app)
 
     @staticmethod
-    def _bind_user_scope(scope: dict[str, Any], control):
+    def _bind_user_scope(scope: dict[str, Any], control: MemoryControl) -> MemoryControl:
         user_id = str(scope.get("fdex_user_id") or "").strip()
         if not user_id:
             return control
         bound = hashlib.sha256(f"{user_id}:{control.scope_token}".encode("utf-8")).hexdigest()
+        memory_scope_registry().register(user_id, bound)
         return replace(control, scope_token=bound)
+
+    async def _remember(self, *, control: MemoryControl, user_text: str, assistant_text: str) -> None:
+        try:
+            if memory_scope_registry().write_blocked(control.scope_token):
+                logger.info("FDEX memory write skipped during account data operation")
+                return
+        except Exception:
+            # A registry failure must never break an already-produced AI response. Fail safe
+            # for privacy by suppressing the optional memory write instead of guessing.
+            logger.exception("FDEX memory ownership guard failed; suppressing background write")
+            return
+        await super()._remember(control=control, user_text=user_text, assistant_text=assistant_text)
 
     async def __call__(
         self,
