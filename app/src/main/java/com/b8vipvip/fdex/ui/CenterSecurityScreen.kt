@@ -1,5 +1,7 @@
 package com.b8vipvip.fdex.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,11 +36,18 @@ import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.data.ClientPreferences
 import com.b8vipvip.fdex.data.LegacyDataMigration
+import com.b8vipvip.fdex.data.LegacyMemoryScopeRegistration
+import com.b8vipvip.fdex.data.LocalAccountDataExport
 import com.b8vipvip.fdex.network.CentralAuthApi
 import com.b8vipvip.fdex.network.CentralAuthResult
 import com.b8vipvip.fdex.network.CentralDeviceSessionDto
+import com.b8vipvip.fdex.network.CentralMemoryStatusDto
 import com.b8vipvip.fdex.network.CentralSecurityEventDto
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.time.LocalDate
 
 @Composable
 internal fun CenterSecurityScreen(
@@ -59,11 +68,35 @@ internal fun CenterSecurityScreen(
     var devices by remember { mutableStateOf<List<CentralDeviceSessionDto>>(emptyList()) }
     var securityEvents by remember { mutableStateOf<List<CentralSecurityEventDto>>(emptyList()) }
     var loadingSecurity by remember { mutableStateOf(false) }
+    var memoryStatus by remember { mutableStateOf<CentralMemoryStatusDto?>(null) }
+    var memoryLoading by remember { mutableStateOf(false) }
+    var clearMemoryPassword by remember { mutableStateOf("") }
+    var clearMemoryConfirmed by remember { mutableStateOf(false) }
+    var clearMemoryBusy by remember { mutableStateOf(false) }
+    var exportBusy by remember { mutableStateOf(false) }
+    var pendingExport by remember { mutableStateOf("") }
     var migration by remember { mutableStateOf(LegacyDataMigration.status(context)) }
     var migrationBusy by remember { mutableStateOf(false) }
     var deletePassword by remember { mutableStateOf("") }
     var deleteConfirmed by remember { mutableStateOf(false) }
     var deleteBusy by remember { mutableStateOf(false) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        val payload = pendingExport
+        if (uri == null || payload.isBlank()) return@rememberLauncherForActivityResult
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(payload) }
+                        ?: error("无法打开导出文件")
+                }.isSuccess
+            }
+            snackbar.showSnackbar(if (saved) "FDEX 数据导出已保存" else "数据导出文件保存失败")
+            pendingExport = ""
+        }
+    }
 
     suspend fun reloadSecurity() {
         loadingSecurity = true
@@ -78,7 +111,24 @@ internal fun CenterSecurityScreen(
         loadingSecurity = false
     }
 
-    LaunchedEffect(Unit) { reloadSecurity() }
+    suspend fun reloadMemoryStatus(showError: Boolean = false) {
+        memoryLoading = true
+        when (val result = CentralAuthApi.memoryStatus(context)) {
+            is CentralAuthResult.Success -> memoryStatus = result.value
+            is CentralAuthResult.Failure -> if (showError) snackbar.showSnackbar(result.message)
+        }
+        memoryLoading = false
+    }
+
+    LaunchedEffect(Unit) {
+        // Phase 7.3 can retroactively attach this device's already-created opaque local
+        // memory scopes to the authenticated user without exposing an owner id to Android.
+        LegacyMemoryScopeRegistration.localScopeTokens(context).forEach { token ->
+            CentralAuthApi.registerMemoryScope(context, token)
+        }
+        reloadSecurity()
+        reloadMemoryStatus()
+    }
 
     LazyColumn(
         Modifier.fillMaxSize().padding(12.dp),
@@ -90,7 +140,7 @@ internal fun CenterSecurityScreen(
                     Text("FDEX 中心账号安全", fontWeight = FontWeight.Bold)
                     Text(sessionsStore.email(), color = Emerald)
                     Text("User ID：${sessionsStore.userId()}", color = Muted, style = MaterialTheme.typography.bodySmall)
-                    Text("密码、设备 Session、登录审计都由中心服务器统一管理；Android 不再维护第二套本机登录密码。", color = Muted)
+                    Text("密码、设备 Session、数据导出和删除操作都由中心账号统一管理。", color = Muted)
                 }
             }
         }
@@ -108,11 +158,94 @@ internal fun CenterSecurityScreen(
                     }
                     CenterPreferenceToggle(
                         title = "启用 MemPalace / Letta 长期记忆",
-                        description = "关闭后新对话不会进行跨会话远程召回或写入。远程 namespace 已绑定当前中心 user_id。",
+                        description = "关闭后新对话不会进行跨会话远程召回或写入。远程 namespace 绑定中心 user_id。",
                         checked = remoteMemory,
                     ) {
                         remoteMemory = it; prefs.setRemoteLongTermMemory(it); onChanged()
                     }
+                }
+            }
+        }
+
+        item { SectionTitle("我的数据") }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("数据导出与远程长期记忆", fontWeight = FontWeight.Bold)
+                    val status = memoryStatus
+                    when {
+                        memoryLoading && status == null -> Text("正在读取长期记忆状态…", color = Muted)
+                        status == null -> Text("长期记忆状态暂不可用", color = Muted)
+                        else -> {
+                            Text("已登记设备记忆空间：${status.registeredDeviceScopes}", color = Muted)
+                            Text("最近清理状态：${memoryPhaseLabel(status.phase)}", color = if (status.lastError.isBlank()) Muted else MaterialTheme.colorScheme.error)
+                            if (status.lastError.isNotBlank()) Text("失败代码：${status.lastError}", color = MaterialTheme.colorScheme.error)
+                            if (status.busy) Text("当前数据操作：${status.operation.ifBlank { "处理中" }}", color = Blue)
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = !memoryLoading,
+                            onClick = { scope.launch { reloadMemoryStatus(showError = true) } },
+                        ) { Text("刷新状态") }
+                        Button(
+                            enabled = !exportBusy && memoryStatus?.busy != true,
+                            onClick = {
+                                exportBusy = true
+                                scope.launch {
+                                    when (val result = CentralAuthApi.exportData(context)) {
+                                        is CentralAuthResult.Success -> {
+                                            val payload = JSONObject()
+                                                .put("schema_version", 1)
+                                                .put("fdex_center", JSONObject(result.value))
+                                                .put("android_local", LocalAccountDataExport.snapshot(context))
+                                                .toString(2)
+                                            pendingExport = payload
+                                            exportLauncher.launch("fdex-data-export-${LocalDate.now()}.json")
+                                        }
+                                        is CentralAuthResult.Failure -> snackbar.showSnackbar(result.message)
+                                    }
+                                    exportBusy = false
+                                }
+                            },
+                        ) { Text(if (exportBusy) "准备导出…" else "导出我的数据") }
+                    }
+                    Text("导出包含中心账号公开资料、设备记录、安全审计、GitHub/Coding Agent 元数据、远程长期记忆以及当前账号 Android 本机业务数据；不会导出密码、Token、API Key 或 GitHub 密钥。", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        clearMemoryPassword,
+                        { clearMemoryPassword = it },
+                        label = { Text("当前密码") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = clearMemoryConfirmed, onCheckedChange = { clearMemoryConfirmed = it })
+                        Text("我确认清空远程长期记忆")
+                    }
+                    Button(
+                        enabled = !clearMemoryBusy && clearMemoryConfirmed && clearMemoryPassword.isNotBlank() && memoryStatus?.busy != true,
+                        onClick = {
+                            clearMemoryBusy = true
+                            scope.launch {
+                                when (val result = CentralAuthApi.clearMemory(context, clearMemoryPassword)) {
+                                    is CentralAuthResult.Success -> {
+                                        clearMemoryPassword = ""
+                                        clearMemoryConfirmed = false
+                                        snackbar.showSnackbar("远程长期记忆已清空；后续对话仍可重新形成新记忆")
+                                        reloadMemoryStatus()
+                                    }
+                                    is CentralAuthResult.Failure -> {
+                                        snackbar.showSnackbar(result.message)
+                                        reloadMemoryStatus()
+                                    }
+                                }
+                                clearMemoryBusy = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(if (clearMemoryBusy) "正在清空…" else if (memoryStatus?.phase == "failed") "重试清空长期记忆" else "清空远程长期记忆") }
+                    Text("这里只删除服务器 MemPalace / Qdrant / Letta 记忆，不删除当前 Android 本机员工、聊天、项目和知识库。若继续启用长期记忆，之后的新对话可以重新产生记忆。", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -249,14 +382,14 @@ internal fun CenterSecurityScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("永久注销中心账号", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                    Text("会删除中心账号、GitHub 连接、Coding Agent 项目和账号沙箱，并注销全部设备。当前账号对应的 Android 本机数据库也会删除；旧版 fdex-local-v3.db 备份不会自动删除。", color = Muted)
+                    Text("会先锁定当前账号的数据删除操作并清除已登记的 MemPalace / Qdrant / Letta 长期记忆，再删除 GitHub 连接、Coding Agent 项目、账号沙箱、中心账号和全部 Session。成功后当前账号 Android 本机数据库也会删除；旧版 fdex-local-v3.db 备份不会自动删除。", color = Muted)
                     OutlinedTextField(deletePassword, { deletePassword = it }, label = { Text("输入当前密码确认") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = deleteConfirmed, onCheckedChange = { deleteConfirmed = it })
                         Text("我确认永久注销当前 FDEX 账号")
                     }
                     Button(
-                        enabled = !deleteBusy && deleteConfirmed && deletePassword.isNotBlank(),
+                        enabled = !deleteBusy && deleteConfirmed && deletePassword.isNotBlank() && memoryStatus?.busy != true,
                         onClick = {
                             deleteBusy = true
                             scope.launch {
@@ -266,7 +399,10 @@ internal fun CenterSecurityScreen(
                                         sessionsStore.clear(); AgentEmployeePreferences(context).clearAccountCredential()
                                         onRequireLogin()
                                     }
-                                    is CentralAuthResult.Failure -> snackbar.showSnackbar(result.message)
+                                    is CentralAuthResult.Failure -> {
+                                        snackbar.showSnackbar(result.message)
+                                        reloadMemoryStatus()
+                                    }
                                 }
                                 deleteBusy = false
                             }
@@ -297,6 +433,16 @@ private fun CenterPreferenceToggle(
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+private fun memoryPhaseLabel(phase: String): String = when (phase) {
+    "idle" -> "尚未执行清理"
+    "started" -> "正在开始"
+    "letta_erased" -> "Letta 已清除"
+    "qdrant_erased" -> "向量记忆已清除"
+    "completed" -> "已完成"
+    "failed" -> "上次清理失败，可重试"
+    else -> phase
 }
 
 private fun securityEventLabel(event: String): String = when (event) {
