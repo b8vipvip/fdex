@@ -12,6 +12,7 @@ from app.account_operations import (
     AccountOperationBusy,
     account_operation,
     account_operation_status,
+    advance_memory_generation,
     mark_account_deleted,
 )
 from app.auth_email import AuthEmailUnavailable, send_password_reset_code
@@ -299,6 +300,10 @@ def clear_memory(body: ClearMemoryRequest, request: Request) -> dict[str, object
             if not store.verify_password(user_id, body.password):
                 raise HTTPException(status_code=400, detail="密码错误，无法清空长期记忆")
             report = asyncio.run(erase_account_memory(user_id))
+            # The erasure completed while the per-account flock is still held. Advance the
+            # generation now so any HTTP/realtime response that began before this clear is
+            # fenced out even if it finishes after the lock has been released.
+            generation = advance_memory_generation(user_id)
     except AccountOperationBusy as exc:
         raise _operation_busy(exc) from exc
     except MemoryErasureError as exc:
@@ -306,7 +311,7 @@ def clear_memory(body: ClearMemoryRequest, request: Request) -> dict[str, object
             status_code=503,
             detail={"message": "远程长期记忆尚未完全清除，可稍后重试", "code": exc.code},
         ) from exc
-    return {"ok": True, "memory_cleanup": report}
+    return {"ok": True, "memory_cleanup": report, "memory_generation": generation}
 
 
 @router.get("/data-export")
