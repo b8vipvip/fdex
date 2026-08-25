@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -140,6 +141,27 @@ def _project_payload(item: dict[str, Any]) -> dict[str, object]:
     }
 
 
+async def _stored_task(owner_id: str, task_id: str, *, prime_runtime: bool = False) -> AgentTask | None:
+    """Read the durable row instead of trusting a worker-local hot cache.
+
+    Uvicorn may route consecutive polling/cancel/run requests to different workers. The SQLite
+    row is therefore authoritative for API decisions. When a worker is about to mutate/run a
+    task we replace its local cache with the latest durable snapshot first.
+    """
+    try:
+        row = await asyncio.to_thread(agent_task_store().get, owner_id, task_id)
+    except ValueError:
+        return None
+    if row is None:
+        return None
+    runtime = agent_runtime()
+    task = runtime._task_from_record(row)
+    if prime_runtime:
+        async with runtime._lock:
+            runtime._tasks[task.id] = task
+    return task
+
+
 @router.post("/account/enroll", deprecated=True)
 def enroll_account(request_body: AgentEnrollRequest, request: Request) -> dict[str, object]:
     _require_bootstrap(request)
@@ -248,8 +270,14 @@ async def list_tasks(request: Request, status: str = "", limit: int = 50) -> dic
     clean_status = (status or "").strip().lower()
     if clean_status and clean_status not in {"queued", "running", "succeeded", "failed", "canceled"}:
         raise HTTPException(status_code=400, detail="invalid Agent task status")
-    tasks = await agent_runtime().list_tasks(owner_id, status=clean_status, limit=max(1, min(limit, 100)))
-    return {"tasks": [_task_payload(task) for task in tasks]}
+    rows = await asyncio.to_thread(
+        agent_task_store().list,
+        owner_id,
+        status=clean_status,
+        limit=max(1, min(limit, 100)),
+    )
+    runtime = agent_runtime()
+    return {"tasks": [_task_payload(runtime._task_from_record(row)) for row in rows]}
 
 
 @router.post("/tasks")
@@ -269,8 +297,8 @@ async def create_task(request_body: AgentTaskCreateRequest, request: Request) ->
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
-    task = await agent_runtime().get_task(task_id)
-    if task is None or task.owner_id != owner_id:
+    task = await _stored_task(owner_id, task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     return _task_payload(task)
 
@@ -279,25 +307,37 @@ async def get_task(task_id: str, request: Request) -> dict[str, object]:
 async def run_agent(task_id: str, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
     runtime = agent_runtime()
-    task = await runtime.get_task(task_id)
-    if task is None or task.owner_id != owner_id:
+    task = await _stored_task(owner_id, task_id, prime_runtime=True)
+    if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    if task.status not in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail=f"任务当前状态为 {task.status}，不能重复执行")
     try:
         with agent_task_store().run_lock(task_id):
+            # Re-read after the cross-worker lock is owned. A different request could have
+            # completed/canceled the task between the first read and lock acquisition.
+            task = await _stored_task(owner_id, task_id, prime_runtime=True)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            if task.status not in {"queued", "running"}:
+                raise HTTPException(status_code=409, detail=f"任务当前状态为 {task.status}，不能重复执行")
             await FdexAgentLoop(runtime).run(task_id)
     except TaskRunBusy as exc:
         raise HTTPException(status_code=409, detail="该 Coding Agent 任务已在其它 Worker 中执行") from exc
     except AgentRuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    task = await runtime.get_task(task_id)
-    if task is None:
+    latest = await _stored_task(owner_id, task_id)
+    if latest is None:
         raise HTTPException(status_code=404, detail="task not found")
-    return _task_payload(task)
+    return _task_payload(latest)
 
 
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
+    task = await _stored_task(owner_id, task_id, prime_runtime=True)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
     try:
         task = await agent_runtime().request_cancel(owner_id, task_id)
     except AgentRuntimeError as exc:
@@ -308,6 +348,9 @@ async def cancel_task(task_id: str, request: Request) -> dict[str, object]:
 @router.post("/tasks/{task_id}/retry")
 async def retry_task(task_id: str, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
+    task = await _stored_task(owner_id, task_id, prime_runtime=True)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
     try:
         task = await agent_runtime().retry_task(owner_id, task_id)
     except AgentRuntimeError as exc:
@@ -319,8 +362,8 @@ async def retry_task(task_id: str, request: Request) -> dict[str, object]:
 @router.post("/tasks/{task_id}/tools/run")
 async def run_tool(task_id: str, request_body: AgentToolRunRequest, request: Request) -> dict[str, object]:
     owner_id, _ = _account_owner(request)
-    task = await agent_runtime().get_task(task_id)
-    if task is None or task.owner_id != owner_id:
+    task = await _stored_task(owner_id, task_id, prime_runtime=True)
+    if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     try:
         task = await agent_runtime().run_inspection(task_id, request_body.tool, request_body.args)
