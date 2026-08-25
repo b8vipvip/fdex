@@ -73,6 +73,14 @@ class RealtimeMemoryRecorder:
         self._pending_users: list[str] = []
         self._assistant_parts: list[str] = []
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._write_generation: int | None = None
+        if control is not None:
+            try:
+                self._write_generation = memory_scope_registry().write_generation(control.scope_token)
+            except Exception:
+                # An unregistered legacy/test scope has no center-owned generation. Keep the
+                # recorder compatible; the write-time ownership guard still runs separately.
+                logger.debug("FDEX realtime memory generation unavailable", exc_info=True)
 
     def add_user(self, text: str, *, source: str) -> None:
         value = clean_realtime_user_text(text)[:30000]
@@ -128,7 +136,10 @@ class RealtimeMemoryRecorder:
     async def _persist(self, user: str, assistant: str, reason: str) -> None:
         assert self.control is not None
         try:
-            if memory_scope_registry().write_blocked(self.control.scope_token):
+            if memory_scope_registry().write_blocked(
+                self.control.scope_token,
+                expected_generation=self._write_generation,
+            ):
                 self._emit("realtime_memory_write_blocked", reason=reason)
                 return
         except Exception:
