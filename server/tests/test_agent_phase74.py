@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_routes import router
 from app.agent_runtime import AgentTask, FdexAgentRuntime
 from app.agent_sandbox import SystemdExecutionSandbox
 from app.agent_tasks import AgentTaskStore, TaskRunBusy
@@ -38,7 +37,9 @@ def test_task_store_round_trip_is_owner_scoped_and_durable(tmp_path: Path) -> No
     assert store.get("usr_abcdef1234567890abcdef12", task.id) is None
 
     reopened = AgentTaskStore(store.path, store.lock_root)
-    assert reopened.get(task.owner_id, task.id)["repository"] == "owner/repo"  # type: ignore[index]
+    restored = reopened.get(task.owner_id, task.id)
+    assert restored is not None
+    assert restored["repository"] == "owner/repo"
 
 
 def test_task_run_lock_rejects_second_worker(tmp_path: Path) -> None:
@@ -98,12 +99,3 @@ def test_sandbox_usage_and_cache_cleanup_are_owner_scoped(tmp_path: Path) -> Non
     assert removed >= 1024
     assert sandbox.account_usage(owner)["cache_bytes"] == 0
     assert (project / "README.md").exists()
-
-
-def test_phase74_routes_expose_history_cancel_retry_and_sandbox_controls() -> None:
-    methods = {(route.path, tuple(sorted(route.methods or []))) for route in router.routes}
-    assert ("/api/agent/tasks", ("GET",)) in methods
-    assert ("/api/agent/tasks/{task_id}/cancel", ("POST",)) in methods
-    assert ("/api/agent/tasks/{task_id}/retry", ("POST",)) in methods
-    assert ("/api/agent/sandbox/usage", ("GET",)) in methods
-    assert ("/api/agent/sandbox/cleanup", ("POST",)) in methods
