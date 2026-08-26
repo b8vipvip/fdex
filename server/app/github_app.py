@@ -95,6 +95,7 @@ class GitHubAppClient:
             "POST",
             GITHUB_TOKEN_URL,
             auth="none",
+            accept="application/json",
             form={
                 "client_id": self.settings.fdex_github_app_client_id.strip(),
                 "client_secret": self.settings.fdex_github_app_client_secret.strip(),
@@ -243,11 +244,12 @@ class GitHubAppClient:
         *,
         token: str = "",
         auth: str = "bearer",
+        accept: str = "application/vnd.github+json",
         form: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
         headers = {
-            "Accept": "application/vnd.github+json",
+            "Accept": accept,
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "fdex-github-app",
         }
