@@ -7,6 +7,7 @@ from pathlib import Path
 from app.agent_projects import agent_project_store
 from app.agent_tasks import agent_task_store
 from app.config import fresh_settings
+from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
@@ -31,6 +32,29 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
     clean = _validate_user_id(user_id)
     store = agent_project_store()
     store.init()
+
+    # A GitHub App installation remains repository authority even when FDEX forgets its id.
+    # Revoke that remote authority before deleting the local installation metadata. This is
+    # fail-closed: a non-404 GitHub failure keeps the FDEX account/connection record so cleanup
+    # can be retried instead of silently orphaning repository access.
+    with store.db() as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(github_connections)").fetchall()}
+        installation_ids: list[int] = []
+        if "github_app_installation_id" in columns:
+            rows = conn.execute(
+                """SELECT github_app_installation_id FROM github_connections
+                   WHERE owner_id=? AND auth_type='github_app' AND github_app_installation_id<>''""",
+                (clean,),
+            ).fetchall()
+            installation_ids = sorted({int(str(row[0])) for row in rows if str(row[0]).isdigit()})
+    if installation_ids:
+        client = GitHubAppClient()
+        for installation_id in installation_ids:
+            try:
+                client.delete_installation(installation_id)
+            except GitHubAppError as exc:
+                raise RuntimeError(f"GitHub App 安装撤销失败：{exc}") from exc
+
     with store.db() as conn:
         project_count = int(conn.execute("SELECT COUNT(*) FROM agent_projects WHERE owner_id=?", (clean,)).fetchone()[0])
         connection_count = int(conn.execute("SELECT COUNT(*) FROM github_connections WHERE owner_id=?", (clean,)).fetchone()[0])
@@ -57,6 +81,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         "github_device_flows": device_flow_count,
         "github_web_oauth_flows": web_oauth_flow_count,
         "github_app_flows": github_app_flow_count,
+        "github_app_installations_revoked": len(installation_ids),
         "agent_tasks": task_count,
         "owner_directories": removed_dirs,
     }
