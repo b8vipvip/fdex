@@ -1,0 +1,49 @@
+{% extends "user_base.html" %}
+{% block title %}Coding Agent 运行策略 · FDEX{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>Coding Agent 运行策略</h1>
+    <p>GitHub 仓库范围和 GitHub 读写/PR 权限完全由你安装的 FDEX GitHub App 决定；这里只配置与 GitHub 无关的账号级沙箱运行策略，一次设置后对当前 FDEX 账号下所有授权仓库生效。</p>
+  </div>
+  <div class="row">
+    <a class="button button-secondary" href="/account/agent">返回 Coding Agent</a>
+    <a class="button button-secondary" href="/account/github">GitHub App</a>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card span-7 stack">
+    <div class="card-head"><div><h2>账号级运行策略</h2><p>不再为每个仓库重复配置。</p></div></div>
+    <form action="/account/agent/runtime/policy" method="post" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="check"><input type="checkbox" name="allow_network" {% if policy.allow_network %}checked{% endif %}>允许 Coding Agent 构建任务访问外网</label>
+      <p class="fine">只影响 npm / pip / Maven 等构建依赖联网；不会扩大 GitHub App 的仓库范围或 GitHub 权限。</p>
+      <div class="grid">
+        <div class="span-6"><label>单任务沙箱内存 MB</label><input type="number" name="sandbox_memory_mb" min="128" max="16384" value="{{ policy.sandbox_memory_mb }}" required></div>
+        <div class="span-6"><label>单任务 CPU 上限 %</label><input type="number" name="sandbox_cpu_percent" min="10" max="800" value="{{ policy.sandbox_cpu_percent }}" required></div>
+      </div>
+      <button class="primary" type="submit">保存账号级运行策略</button>
+    </form>
+  </section>
+
+  <section class="card span-5 stack">
+    <div class="card-head"><div><h2>GitHub 仓库同步</h2><p>仓库来自 GitHub App Installation，不需要逐仓库添加。</p></div><span class="badge ok">{{ repository_count }}</span></div>
+    <div class="repo">
+      <div class="fine">最近同步</div>
+      <strong>{{ sync_status.last_synced_at or '尚未同步' }}</strong>
+      {% if sync_status.last_error %}<p class="danger">{{ sync_status.last_error }}</p>{% endif %}
+    </div>
+    <form action="/account/agent/runtime/sync" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="secondary" type="submit">立即刷新 GitHub 仓库</button>
+    </form>
+    <p class="fine">如果你在 GitHub 修改了“全部仓库 / 仅指定仓库”的范围，点击刷新即可。被移除的仓库会立即停止接受新任务；历史任务记录仍保留。</p>
+  </section>
+
+  <section class="card span-12">
+    <h3>权限模型</h3>
+    <p>GitHub App Installation 是唯一 GitHub 权限源。Coding Agent 对每次具体操作仍会生成“当前仓库 + 当前操作”的短期 installation token：读取仓库只申请 Contents read，Push 时申请 Contents write，创建 PR 时申请 Pull requests write。FDEX 不把一个全仓库长期 Token 交给 Agent。</p>
+  </section>
+</div>
+{% endblock %}
