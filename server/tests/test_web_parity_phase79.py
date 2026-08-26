@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import jinja2
 import pytest
+from starlette.requests import Request
 
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("ADMIN_USERNAME", "testadmin")
@@ -16,6 +17,7 @@ os.environ.setdefault("APP_DIR", "/tmp/fdex-test-phase79")
 os.environ.setdefault("SERVICE_NAME", "fdex-test")
 os.environ.setdefault("RELEASE_CACHE_DIR", "/tmp/fdex-test-phase79/releases")
 
+from app import github_app_admin_routes as github_admin  # noqa: E402
 from app.github_app_admin_routes import _manifest, router as github_app_admin_router  # noqa: E402
 from app.main import app  # noqa: E402
 from app.user_agent_task_routes import router as user_agent_router  # noqa: E402
@@ -25,6 +27,24 @@ from app.web_workspace import WebWorkspaceStore  # noqa: E402
 
 def _route_methods(router) -> set[tuple[str, tuple[str, ...]]]:
     return {(route.path, tuple(sorted(route.methods or []))) for route in router.routes}
+
+
+def _request(path: str, *, session: dict[str, object] | None = None) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("fdex.test", 443),
+            "session": session or {},
+        }
+    )
 
 
 def test_web_workspace_is_hard_scoped_by_center_user_id(tmp_path: Path) -> None:
@@ -122,6 +142,92 @@ def test_github_app_manifest_is_multi_user_and_keeps_setup_callback() -> None:
         "metadata": "read",
     }
     assert str(manifest["name"]).startswith("FDEX-fdex-k2n-cn-")
+
+
+def test_github_app_manifest_start_uses_request_first_audit_signature_and_query_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(
+        "/admin/github-app/manifest/start",
+        session={"admin_user": "testadmin", "csrf_token": "x" * 40},
+    )
+    cfg = SimpleNamespace(public_base_url="https://fdex.k2n.cn")
+    calls: list[tuple[Request, str, bool, dict[str, object]]] = []
+
+    monkeypatch.setattr(github_admin, "is_admin", lambda _request: True)
+    monkeypatch.setattr(github_admin, "verify_csrf", lambda _request, _token: None)
+    monkeypatch.setattr(github_admin, "fresh_settings", lambda: cfg)
+
+    def capture_audit(request_arg: Request, action: str, success: bool = True, **details: object) -> None:
+        calls.append((request_arg, action, success, details))
+
+    monkeypatch.setattr(github_admin, "write_audit", capture_audit)
+    response = github_admin.github_app_manifest_start(request, csrf_token="csrf")
+
+    assert response.status_code == 200
+    assert calls and calls[0][0] is request
+    assert calls[0][1] == "github_app_manifest_started"
+    assert calls[0][2] is True
+    state = str(request.session[github_admin._MANIFEST_STATE])
+    html = response.body.decode("utf-8")
+    assert f"https://github.com/settings/apps/new?state={state}" in html
+    assert 'name="state"' not in html
+
+
+def test_github_app_manifest_callback_audits_success_with_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state = "manifest-state-123"
+    request = _request(
+        "/admin/github-app/manifest/callback",
+        session={"admin_user": "testadmin", github_admin._MANIFEST_STATE: state},
+    )
+    cfg = SimpleNamespace(app_dir=str(tmp_path), public_base_url="https://fdex.k2n.cn")
+    calls: list[tuple[Request, str, bool, dict[str, object]]] = []
+    written_env: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 201
+        text = ""
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "id": 123456,
+                "slug": "fdex-test-app",
+                "client_id": "Iv23.clientid",
+                "client_secret": "client-secret-value",
+                "pem": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+            }
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        @staticmethod
+        def post(*args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(github_admin, "is_admin", lambda _request: True)
+    monkeypatch.setattr(github_admin, "fresh_settings", lambda: cfg)
+    monkeypatch.setattr(github_admin.httpx, "Client", FakeClient)
+    monkeypatch.setattr(github_admin, "write_env", lambda values: written_env.update(values))
+
+    def capture_audit(request_arg: Request, action: str, success: bool = True, **details: object) -> None:
+        calls.append((request_arg, action, success, details))
+
+    monkeypatch.setattr(github_admin, "write_audit", capture_audit)
+    response = github_admin.github_app_manifest_callback(request, code="manifest-code", state=state)
+
+    assert response.status_code == 303
+    assert calls and calls[-1][0] is request
+    assert calls[-1][1] == "github_app_manifest_completed"
+    assert calls[-1][2] is True
+    assert written_env["FDEX_GITHUB_APP_ID"] == "123456"
+    assert written_env["FDEX_GITHUB_APP_SLUG"] == "fdex-test-app"
+    assert Path(written_env["FDEX_GITHUB_APP_PRIVATE_KEY_PATH"]).exists()
 
 
 def test_github_app_admin_and_user_ui_explain_real_install_state() -> None:
