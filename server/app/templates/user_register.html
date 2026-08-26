@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>注册 · FDEX 用户中心</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/user_portal.css">
+</head>
+<body>
+<div class="login-wrap">
+    <section class="login-card stack">
+        <div class="brand-center"><span class="user-brand-mark">F</span><strong>FDEX 用户中心</strong></div>
+        <div>
+            <h1>创建 FDEX 账号</h1>
+            <p class="muted">注册后即可进入用户中心，连接自己的 GitHub App、选择仓库并管理 Coding Agent 权限。</p>
+        </div>
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+        {% if registration_enabled %}
+        <form action="/account/register" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div><label for="name">姓名 / 昵称</label><input id="name" name="name" type="text" maxlength="100" value="{{ form_name or '' }}" autocomplete="name" required></div>
+            <div><label for="email">邮箱</label><input id="email" name="email" type="email" maxlength="254" value="{{ form_email or '' }}" autocomplete="email" required></div>
+            <div><label for="company_name">公司 / 团队（可选）</label><input id="company_name" name="company_name" type="text" maxlength="120" value="{{ form_company or '' }}" autocomplete="organization"></div>
+            <div><label for="password">密码</label><input id="password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required><div class="fine">至少 8 位，建议使用独立密码。</div></div>
+            <div><label for="confirm_password">确认密码</label><input id="confirm_password" name="confirm_password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></div>
+            <button type="submit" class="primary">注册并进入用户中心</button>
+        </form>
+        {% else %}
+        <div class="alert alert-error">当前服务端已关闭新用户注册，请联系管理员。</div>
+        {% endif %}
+        <div class="divider"></div>
+        <div class="row between"><span class="fine">已经有 FDEX 账号？</span><a class="button button-secondary" href="/account/login">返回登录</a></div>
+    </section>
+</div>
+</body>
+</html>

@@ -31,8 +31,7 @@ class Settings(BaseSettings):
     fdex_auth_reset_code_minutes: int = Field(default=10, ge=2, le=60)
     fdex_auth_reset_max_attempts: int = Field(default=5, ge=1, le=20)
 
-    # SMTP is used only for FDEX account-security mail such as password reset codes.
-    # If host/from are blank, reset requests fail closed without exposing whether an email exists.
+    # Outbound account-security mail. Password-reset codes fail closed when SMTP is absent.
     fdex_smtp_host: str = ""
     fdex_smtp_port: int = Field(default=587, ge=1, le=65535)
     fdex_smtp_username: str = ""
@@ -42,6 +41,17 @@ class Settings(BaseSettings):
     fdex_smtp_starttls: bool = True
     fdex_smtp_ssl: bool = False
     fdex_smtp_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
+
+    # Optional inbound mailbox configuration for the FDEX center. Password-reset does not
+    # depend on IMAP, but the admin console can verify the receive side of the mailbox too.
+    fdex_imap_host: str = ""
+    fdex_imap_port: int = Field(default=993, ge=1, le=65535)
+    fdex_imap_username: str = ""
+    fdex_imap_password: str = ""
+    fdex_imap_mailbox: str = "INBOX"
+    fdex_imap_ssl: bool = True
+    fdex_imap_starttls: bool = False
+    fdex_imap_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
     # Legacy one-provider fields are retained only for migration. Runtime AI traffic,
     # including Coding Agent, is routed through the encrypted provider pool.
@@ -77,13 +87,25 @@ class Settings(BaseSettings):
     fdex_github_oauth_client_id: str = ""
     fdex_github_oauth_scope: str = "repo read:user offline_access"
     fdex_github_oauth_refresh_skew_seconds: int = Field(default=300, ge=30, le=3600)
-    # Phase 7.6 moves the primary GitHub connection UX to the FDEX user web center.
-    # These are service-level OAuth application credentials configured once by the operator;
-    # they are never per-user tokens and are never sent to Android or the browser.
+
+    # Phase 7.6 OAuth App remains a compatibility path. Phase 7.7 GitHub App installation
+    # is the preferred end-user integration because repository selection happens on GitHub
+    # and FDEX does not persist a user's OAuth access/refresh token.
     fdex_github_web_oauth_client_id: str = ""
     fdex_github_web_oauth_client_secret: str = ""
     fdex_github_web_oauth_scope: str = "repo read:user"
     fdex_github_web_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
+
+    # GitHub App service identity. These values identify the FDEX integration itself and are
+    # configured once by the operator. Per-user access is represented only by installation_id.
+    # Keep the private key outside the repository; either path or base64 may be supplied.
+    fdex_github_app_id: str = ""
+    fdex_github_app_slug: str = ""
+    fdex_github_app_client_id: str = ""
+    fdex_github_app_client_secret: str = ""
+    fdex_github_app_private_key_path: str = ""
+    fdex_github_app_private_key_b64: str = ""
+    fdex_github_app_flow_minutes: int = Field(default=10, ge=2, le=30)
 
     fdex_memory_enabled: bool = True
     fdex_memory_managed_stack: bool = True
@@ -154,8 +176,23 @@ class Settings(BaseSettings):
         return bool(self.fdex_smtp_host.strip() and self.fdex_smtp_from_email.strip())
 
     @property
+    def imap_ready(self) -> bool:
+        return bool(self.fdex_imap_host.strip() and self.fdex_imap_username.strip())
+
+    @property
     def github_web_oauth_ready(self) -> bool:
         return bool(self.fdex_github_web_oauth_client_id.strip() and self.fdex_github_web_oauth_client_secret.strip())
+
+    @property
+    def github_app_ready(self) -> bool:
+        key_ready = bool(self.fdex_github_app_private_key_path.strip() or self.fdex_github_app_private_key_b64.strip())
+        return bool(
+            self.fdex_github_app_id.strip()
+            and self.fdex_github_app_slug.strip()
+            and self.fdex_github_app_client_id.strip()
+            and self.fdex_github_app_client_secret.strip()
+            and key_ready
+        )
 
     @property
     def github_owner_repo(self) -> tuple[str, str]:

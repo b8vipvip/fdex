@@ -11,6 +11,12 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+# Phase 7.7 must install the GitHub App-aware project-store factory before route/runtime
+# modules import `agent_project_store` from the legacy compatibility module.
+from app.github_app_bootstrap import install_github_app_project_store
+
+install_github_app_project_store()
+
 from app.admin_routes import router as admin_router
 from app.agent_admin_routes import router as agent_admin_router
 from app.agent_routes import router as agent_router
@@ -20,6 +26,9 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
+from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_github_app_flow_cleanup
+from app.github_app_portal_routes import router as github_app_portal_router
+from app.mail_admin_routes import router as mail_admin_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
@@ -28,6 +37,7 @@ from app.realtime_voice import router as realtime_voice_router
 from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
+from app.user_account_auth_routes import router as user_account_auth_router
 from app.user_admin_routes import router as user_admin_router
 from app.user_portal_routes import router as user_portal_router
 
@@ -103,8 +113,11 @@ generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
+app.include_router(user_account_auth_router)
 app.include_router(user_portal_router)
+app.include_router(github_app_portal_router)
 app.include_router(admin_router)
+app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
 app.include_router(update_monitor_router)
@@ -117,8 +130,14 @@ app.include_router(client_update_router)
 app.include_router(agent_router)
 
 
+@app.on_event("startup")
+async def start_security_cleanup_tasks() -> None:
+    await start_github_app_flow_cleanup()
+
+
 @app.on_event("shutdown")
 async def shutdown_memory_clients() -> None:
+    await stop_github_app_flow_cleanup()
     await close_memory_coordinator()
 
 

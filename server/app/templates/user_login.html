@@ -16,6 +16,7 @@
             <h1>登录你的 FDEX 账号</h1>
             <p class="muted">在这里连接你自己的 GitHub 账号、选择仓库并控制 Coding Agent 权限。此页面与服务端管理员后台完全分离。</p>
         </div>
+        {% if request.query_params.get('reset') == 'success' %}<div class="alert alert-success">密码已重置，请使用新密码登录。</div>{% endif %}
         {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
         <form action="/account/login" method="post" class="stack">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -24,8 +25,12 @@
             <div><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
             <button type="submit" class="primary">登录用户中心</button>
         </form>
+        <div class="row between">
+            <a class="button button-secondary" href="/account/register">注册 FDEX 账号</a>
+            <a class="button button-secondary" href="/account/password/forgot">忘记密码</a>
+        </div>
         <div class="divider"></div>
-        <p class="fine">GitHub 授权令牌不会写入浏览器或 Android 客户端。授权完成后，凭据由 FDEX 服务端按当前 user_id 加密隔离保存，仅用于你授权的 Coding Agent GitHub 操作。</p>
+        <p class="fine">GitHub 授权令牌不会写入浏览器或 Android 客户端。GitHub App 模式长期只保存 installation_id；旧版兼容 OAuth 凭据也只在 FDEX 服务端按 user_id 加密隔离。</p>
     </section>
 </div>
 </body>

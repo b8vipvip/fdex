@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}邮件与账号验证 · FDEX{% endblock %}
+{% block heading %}邮件与账号验证{% endblock %}
+{% block subheading %}配置 SMTP 发件、IMAP 收件以及注册和密码重置验证策略{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/settings">服务配置</a>{% endblock %}
+
+{% block content %}
+<form method="post" action="/admin/mail" class="settings-form" data-confirm="确定保存邮件与账号验证配置吗？">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>账号注册与密码重置</h2><p>Web 用户中心和 Android 共用同一套中心账号安全策略</p></div><span class="badge {% if settings.fdex_auth_registration_enabled %}success{% endif %}">{% if settings.fdex_auth_registration_enabled %}允许注册{% else %}关闭注册{% endif %}</span></div>
+    <div class="form-grid three">
+        <label class="checkbox-field aligned"><input type="checkbox" name="registration_enabled" value="true" {% if settings.fdex_auth_registration_enabled %}checked{% endif %}><span>允许用户在 Web/客户端注册 FDEX 账号</span></label>
+        <label class="field"><span>重置验证码有效期（分钟）</span><input type="number" name="reset_code_minutes" min="2" max="60" value="{{ settings.fdex_auth_reset_code_minutes }}" required></label>
+        <label class="field"><span>验证码最大错误次数</span><input type="number" name="reset_max_attempts" min="1" max="20" value="{{ settings.fdex_auth_reset_max_attempts }}" required></label>
+    </div>
+    <div class="inline-note">用户找回密码接口不会泄露邮箱是否已经注册。验证码只保存哈希，重置成功后旧会话按中心账号安全策略撤销。</div>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>SMTP 发件服务</h2><p>用于找回密码、重置密码验证码和后续账号安全通知</p></div><span class="badge {% if settings.smtp_ready %}success{% endif %}">{% if settings.smtp_ready %}已配置{% else %}未配置{% endif %}</span></div>
+    <div class="form-grid three">
+        <label class="field"><span>SMTP 主机</span><input name="smtp_host" value="{{ settings.fdex_smtp_host }}" maxlength="255" placeholder="smtp.example.com"></label>
+        <label class="field"><span>SMTP 端口</span><input type="number" name="smtp_port" value="{{ settings.fdex_smtp_port }}" min="1" max="65535"></label>
+        <label class="field"><span>SMTP 用户名</span><input name="smtp_username" value="{{ settings.fdex_smtp_username }}" maxlength="254" autocomplete="off"></label>
+        <label class="field"><span>SMTP 密码 / 授权码</span><input type="password" name="smtp_password" autocomplete="new-password" placeholder="{% if masked_smtp_password != '未配置' %}已保存：{{ masked_smtp_password }}；留空保持不变{% else %}输入密码或邮箱授权码{% endif %}"><small>页面永远不会回显明文密码。</small></label>
+        <label class="field"><span>发件邮箱</span><input type="email" name="smtp_from_email" value="{{ settings.fdex_smtp_from_email }}" maxlength="254" placeholder="no-reply@example.com"></label>
+        <label class="field"><span>发件人名称</span><input name="smtp_from_name" value="{{ settings.fdex_smtp_from_name }}" maxlength="100"></label>
+        <label class="field"><span>连接超时（秒）</span><input type="number" step="0.1" name="smtp_timeout_seconds" value="{{ settings.fdex_smtp_timeout_seconds }}" min="2" max="120"></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="smtp_starttls" value="true" {% if settings.fdex_smtp_starttls and not settings.fdex_smtp_ssl %}checked{% endif %}><span>STARTTLS（常用端口 587）</span></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="smtp_ssl" value="true" {% if settings.fdex_smtp_ssl %}checked{% endif %}><span>SMTP SSL/TLS（常用端口 465）</span></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="clear_smtp_password" value="true"><span>清除已保存 SMTP 密码</span></label>
+    </div>
+    <p class="path-note">配置写入：<code>{{ env_path }}</code>，保存时创建安全备份。SMTP SSL 与 STARTTLS 同时选择时优先 SSL。</p>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>IMAP 收件服务</h2><p>用于验证中心邮箱的收件能力，也为后续系统邮件处理预留统一配置</p></div><span class="badge {% if settings.imap_ready %}success{% endif %}">{% if settings.imap_ready %}已配置{% else %}可选{% endif %}</span></div>
+    <div class="form-grid three">
+        <label class="field"><span>IMAP 主机</span><input name="imap_host" value="{{ settings.fdex_imap_host }}" maxlength="255" placeholder="imap.example.com"></label>
+        <label class="field"><span>IMAP 端口</span><input type="number" name="imap_port" value="{{ settings.fdex_imap_port }}" min="1" max="65535"></label>
+        <label class="field"><span>IMAP 用户名</span><input name="imap_username" value="{{ settings.fdex_imap_username }}" maxlength="254" autocomplete="off"></label>
+        <label class="field"><span>IMAP 密码 / 授权码</span><input type="password" name="imap_password" autocomplete="new-password" placeholder="{% if masked_imap_password != '未配置' %}已保存：{{ masked_imap_password }}；留空保持不变{% else %}输入密码或邮箱授权码{% endif %}"></label>
+        <label class="field"><span>邮箱目录</span><input name="imap_mailbox" value="{{ settings.fdex_imap_mailbox }}" maxlength="120"></label>
+        <label class="field"><span>连接超时（秒）</span><input type="number" step="0.1" name="imap_timeout_seconds" value="{{ settings.fdex_imap_timeout_seconds }}" min="2" max="120"></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="imap_ssl" value="true" {% if settings.fdex_imap_ssl %}checked{% endif %}><span>IMAP SSL/TLS（常用端口 993）</span></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="imap_starttls" value="true" {% if settings.fdex_imap_starttls and not settings.fdex_imap_ssl %}checked{% endif %}><span>IMAP STARTTLS（常用端口 143）</span></label>
+        <label class="checkbox-field aligned"><input type="checkbox" name="clear_imap_password" value="true"><span>清除已保存 IMAP 密码</span></label>
+    </div>
+</section>
+
+<div class="sticky-actions">
+    <button class="button primary" type="submit">保存邮件与验证配置</button>
+    <span>保存后新请求会读取最新邮件配置，不需要把邮箱密码交给 Android 或 Web 用户。</span>
+</div>
+</form>
+
+<div class="content-grid equal lower-grid" id="test">
+    <section class="panel">
+        <div class="panel-header"><div><h2>测试发件</h2><p>真实发送一封 FDEX 测试邮件</p></div></div>
+        <form method="post" action="/admin/mail/test-send" class="form-stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="field"><span>测试收件邮箱</span><input type="email" name="recipient" value="{{ settings.fdex_smtp_from_email }}" required></label>
+            <button class="button secondary full" type="submit">发送 SMTP 测试邮件</button>
+        </form>
+    </section>
+    <section class="panel">
+        <div class="panel-header"><div><h2>测试收件</h2><p>登录 IMAP 并只读统计收件箱</p></div></div>
+        <p class="muted">测试不会下载邮件正文，也不会修改已读状态；只验证 TLS、账号登录和邮箱目录访问。</p>
+        <form method="post" action="/admin/mail/test-receive">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button secondary full" type="submit">测试 IMAP 收件连接</button>
+        </form>
+    </section>
+</div>
+{% endblock %}
