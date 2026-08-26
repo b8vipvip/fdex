@@ -16,6 +16,13 @@ def _json_error(message: str, *, status_code: int = 502) -> JSONResponse:
     return JSONResponse({"ok": False, "error": clean}, status_code=status_code)
 
 
+def _tool_events(request: Request) -> list[dict[str, object]]:
+    raw = request.scope.get("fdex_employee_tool_events")
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)][:20]
+
+
 @router.post("/chat/employee/{employee_id}/send-json", response_model=None)
 async def employee_chat_send_json(
     employee_id: int,
@@ -57,23 +64,27 @@ async def employee_chat_send_json(
         try:
             answer = await _ask_employee(request, owner_id, employee, message, history, attachment)
         except HTTPException as exc:
-            # The user's message is intentionally durable even when the upstream AI fails. The
-            # browser can show the exact server-side routing failure immediately instead of making
-            # the user refresh and wonder whether the message was submitted.
             return JSONResponse(
                 {
                     "ok": False,
                     "error": str(exc.detail)[:1200],
                     "user_message": user_message,
+                    "tool_events": _tool_events(request),
                 },
                 status_code=exc.status_code if 400 <= exc.status_code < 600 else 502,
             )
         except ValueError as exc:
             return JSONResponse(
-                {"ok": False, "error": str(exc)[:1200], "user_message": user_message},
+                {
+                    "ok": False,
+                    "error": str(exc)[:1200],
+                    "user_message": user_message,
+                    "tool_events": _tool_events(request),
+                },
                 status_code=400,
             )
 
+        tool_events = _tool_events(request)
         assistant_message = store.create(
             owner_id,
             "message",
@@ -81,6 +92,7 @@ async def employee_chat_send_json(
                 "employee_id": employee_id,
                 "role": "assistant",
                 "content": answer,
+                "tool_events": tool_events,
                 "created_at": _now(),
             },
             parent_id=employee_id,
@@ -92,6 +104,7 @@ async def employee_chat_send_json(
                 "ok": True,
                 "user_message": user_message,
                 "assistant_message": assistant_message,
+                "tool_events": tool_events,
             }
         )
     except HTTPException as exc:

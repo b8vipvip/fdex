@@ -50,6 +50,12 @@ from app.user_agent_task_routes import router as user_agent_task_router
 install_provider_protocol_runtime()
 
 from app.user_app_routes import router as user_app_router
+from app.employee_chat_runtime import install_employee_chat_runtime
+
+# The Web employee route exposes a Coding Agent permission flag. Install the owner-scoped tool
+# runtime after user_app_routes exists but before user_chat_api_routes imports `_ask_employee`.
+install_employee_chat_runtime()
+
 from app.user_chat_api_routes import router as user_chat_api_router
 from app.user_home_routes import router as user_home_router
 from app.user_login_routes import router as user_login_router
