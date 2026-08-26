@@ -116,7 +116,7 @@ internal fun CodingAgentChatScreen(
                             Text("当前 FDEX 账号还没有 GitHub 项目。", style = MaterialTheme.typography.bodySmall, color = Muted)
                         }
                         OutlinedButton(enabled = accessToken.isNotBlank() && !busy, onClick = { showProjectSetup = !showProjectSetup }) {
-                            Text(if (showProjectSetup) "收起 GitHub 配置" else "添加 GitHub 项目")
+                            Text(if (showProjectSetup) "收起 GitHub 配置" else "配置 GitHub 项目")
                         }
                     }
                 }
@@ -124,12 +124,15 @@ internal fun CodingAgentChatScreen(
 
             if (showProjectSetup && accessToken.isNotBlank()) {
                 item(key = "github-project-setup") {
-                    GitHubProjectSetup(snackbar = snackbar, onProjectSaved = { saved ->
-                        projects = (projects.filterNot { it.id == saved.id } + saved).sortedBy { it.name }
-                        selectedProjectId = saved.id
-                        agentPrefs.setProjectId(employeeId, saved.id)
-                        showProjectSetup = false
-                    })
+                    GitHubProjectSetup(
+                        snackbar = snackbar,
+                        onRefresh = {
+                            scope.launch {
+                                reloadProjects()
+                                if (projects.isNotEmpty()) showProjectSetup = false
+                            }
+                        },
+                    )
                 }
             }
 
@@ -165,6 +168,11 @@ internal fun CodingAgentChatScreen(
                     val prompt = text.trim()
                     if (accessToken.isBlank()) {
                         scope.launch { snackbar.showSnackbar("FDEX 登录状态已失效，请重新登录") }
+                        return@Button
+                    }
+                    if (selectedProjectId == null) {
+                        scope.launch { snackbar.showSnackbar("请先在 FDEX 用户 Web 中心连接 GitHub 并选择项目") }
+                        showProjectSetup = true
                         return@Button
                     }
                     text = ""; repo.addMessage(employeeId, "user", prompt); onChanged(); busy = true; liveTask = null

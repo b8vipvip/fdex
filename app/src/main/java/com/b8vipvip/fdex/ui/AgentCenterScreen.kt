@@ -238,16 +238,17 @@ internal fun AgentCenterScreen(
         } else {
             item {
                 Card(Modifier.fillMaxWidth()) {
-                    Text("当前账号还没有 GitHub Agent 项目，可直接在下面添加。", modifier = Modifier.padding(14.dp), color = Muted)
+                    Text("当前账号还没有 GitHub Agent 项目，请到 FDEX 用户 Web 中心连接 GitHub 并添加仓库。", modifier = Modifier.padding(14.dp), color = Muted)
                 }
             }
         }
 
         item {
-            GitHubProjectSetup(snackbar = snackbar, onProjectSaved = { saved ->
-                projects = (projects.filterNot { it.id == saved.id } + saved).sortedBy { it.name }
-            })
-            }
+            GitHubProjectSetup(
+                snackbar = snackbar,
+                onRefresh = { scope.launch { reloadProjects() } },
+            )
+        }
     }
 }
 

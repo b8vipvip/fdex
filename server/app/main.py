@@ -29,6 +29,7 @@ from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
 from app.user_admin_routes import router as user_admin_router
+from app.user_portal_routes import router as user_portal_router
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -102,6 +103,7 @@ generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
+app.include_router(user_portal_router)
 app.include_router(admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
@@ -133,6 +135,7 @@ def info() -> dict[str, str]:
         "status": "running",
         "docs": f"{settings.public_base_url}/docs",
         "health": f"{settings.public_base_url}{settings.api_prefix}/health",
+        "account": f"{settings.public_base_url}/account",
         "admin": f"{settings.public_base_url}/admin",
     }
 

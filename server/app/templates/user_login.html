@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>登录 · FDEX 用户中心</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/user_portal.css">
+</head>
+<body>
+<div class="login-wrap">
+    <section class="login-card stack">
+        <div class="brand-center"><span class="user-brand-mark">F</span><strong>FDEX 用户中心</strong></div>
+        <div>
+            <h1>登录你的 FDEX 账号</h1>
+            <p class="muted">在这里连接你自己的 GitHub 账号、选择仓库并控制 Coding Agent 权限。此页面与服务端管理员后台完全分离。</p>
+        </div>
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+        <form action="/account/login" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next_path" value="{{ next_path }}">
+            <div><label for="email">FDEX 邮箱</label><input id="email" name="email" type="email" autocomplete="username" required></div>
+            <div><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+            <button type="submit" class="primary">登录用户中心</button>
+        </form>
+        <div class="divider"></div>
+        <p class="fine">GitHub 授权令牌不会写入浏览器或 Android 客户端。授权完成后，凭据由 FDEX 服务端按当前 user_id 加密隔离保存，仅用于你授权的 Coding Agent GitHub 操作。</p>
+    </section>
+</div>
+</body>
+</html>
