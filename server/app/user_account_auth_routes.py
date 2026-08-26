@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 
 from fastapi import APIRouter, Form, Request
@@ -21,6 +22,7 @@ from app.user_portal_routes import (
 
 router = APIRouter(prefix="/account", include_in_schema=False)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
+logger = logging.getLogger(__name__)
 
 
 def _ctx(request: Request, **extra: object) -> dict[str, object]:
@@ -136,9 +138,17 @@ def forgot_password_submit(
         if reset is not None:
             user, internal_code = reset
             visible_code = internal_code.rsplit(".", 1)[-1]
-            send_password_reset_code(str(user["email"]), visible_code, settings=cfg)
-        message = "如果该邮箱已经注册，密码重置验证码会发送到该邮箱。"
+            try:
+                send_password_reset_code(str(user["email"]), visible_code, settings=cfg)
+            except AuthEmailUnavailable:
+                # Do not let an SMTP outage become an account-enumeration oracle. Operators can
+                # diagnose the transport from /admin/mail; the public response remains identical
+                # for existing and unknown addresses.
+                logger.warning("FDEX password reset email delivery failed", exc_info=True)
+        message = "如果该邮箱已经注册，密码重置验证码会发送到该邮箱；若未收到，请稍后重试或联系管理员。"
     except AuthEmailUnavailable as exc:
+        # This branch is only reachable for globally unconfigured SMTP and is therefore identical
+        # for every submitted address.
         error = str(exc)
     except ValueError as exc:
         error = str(exc)
