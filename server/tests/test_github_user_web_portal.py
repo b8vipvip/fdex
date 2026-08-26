@@ -127,7 +127,7 @@ def test_android_github_setup_no_longer_collects_or_polls_github_credentials() -
     root = Path(__file__).resolve().parents[2]
     source = (root / "app/src/main/java/com/b8vipvip/fdex/ui/GitHubProjectSetup.kt").read_text(encoding="utf-8")
     assert "/account/github" in source
-    assert "GitHub Token" not in source
+    assert "OutlinedTextField" not in source
     assert "startGitHubDeviceFlow" not in source
     assert "pollGitHubDeviceFlow" not in source
-    assert "access token / refresh token" in source
+    assert "Android 不再要求输入" in source
