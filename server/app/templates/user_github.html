@@ -70,7 +70,7 @@
             <button class="secondary" type="submit">兼容旧版 OAuth 连接</button>
         </form>
         {% endif %}
-        <p class="fine">GitHub App 模式只长期保存 installation_id 和安装元数据。用于确认安装归属的 GitHub 用户凭据仅在短暂安装流程中加密保存，完成后立即清除；Coding Agent 每次操作再生成短期 installation token，不写入数据库、浏览器或 Android。</p>
+        <p class="fine">GitHub App 模式只长期保存 installation_id 和非密钥安装元数据。用于确认安装归属的 GitHub 用户凭据仅在短暂安装流程中加密保存，完成后立即清除；若用户中途退出，过期清理任务也会自动擦除。Coding Agent 每次操作再生成短期 installation token，不写入数据库、浏览器或 Android。</p>
     </section>
 
     <section class="card span-8 stack">
@@ -160,7 +160,7 @@
 
     <section class="card span-12">
         <h3>Phase 7.7 授权边界</h3>
-        <p>平台只配置一次 FDEX GitHub App 身份。每个 FDEX 用户必须亲自在 GitHub 官方安装页选择账号/组织和仓库范围；FDEX 长期只保留 installation_id，不长期保存用户 OAuth access token，也不保存 installation token。执行 Clone/Fetch 时生成仅当前仓库的只读短期凭据；Push 与 PR 再分别按当前项目权限生成更小权限的短期凭据。</p>
+        <p>平台只配置一次 FDEX GitHub App 身份。每个 FDEX 用户必须亲自在 GitHub 官方安装页选择账号/组织和仓库范围；FDEX 长期只保留 installation_id 与非密钥安装元数据，不长期保存用户 OAuth access token，也不保存 installation token。执行 Clone/Fetch 时生成仅当前仓库的只读短期凭据；Push 与 PR 再分别按当前项目权限生成更小权限的短期凭据。</p>
     </section>
 </div>
 {% endblock %}
