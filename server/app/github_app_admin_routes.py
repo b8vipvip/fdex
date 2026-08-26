@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
 import secrets
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Form, Request
@@ -47,14 +48,23 @@ def _ctx(request: Request, **extra: object) -> dict[str, object]:
 
 def _manifest(cfg) -> dict[str, object]:
     base = cfg.public_base_url.rstrip("/")
+    host = (urlsplit(base).hostname or "fdex").replace(".", "-")
+    digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:6]
+    app_name = f"FDEX-{host}-{digest}"[:34].rstrip("-")
     return {
-        "name": "FDEX",
+        "name": app_name,
+        "description": "FDEX user-owned GitHub repository integration for Coding Agent",
         "url": base + "/account/github",
         "redirect_url": base + "/admin/github-app/manifest/callback",
         "callback_urls": [base + "/account/github/app/oauth/callback"],
         "setup_url": base + "/account/github/app/setup",
         "setup_on_update": True,
-        "public": False,
+        # FDEX is a multi-user center service. Public here means other GitHub accounts may
+        # install this App; it does not publish it to Marketplace and does not bypass each
+        # user's explicit repository selection on GitHub's official installation page.
+        "public": True,
+        # FDEX intentionally performs an owner-bound OAuth+PKCE proof before installation;
+        # keeping this false preserves setup_url as the installation completion callback.
         "request_oauth_on_install": False,
         "hook_attributes": {
             "url": base + "/api/github/app/webhook",
@@ -197,7 +207,7 @@ def github_app_manifest_callback(request: Request, code: str = "", state: str = 
         )
         set_flash(
             request,
-            f"FDEX GitHub App 已初始化：{slug}。现在用户中心会出现“安装 / 连接 GitHub App”按钮。",
+            f"FDEX GitHub App 已初始化：{slug}。现在用户中心会出现“安装 / 连接 FDEX GitHub App”按钮。",
             "success",
         )
     except (httpx.HTTPError, ValueError, RuntimeError, OSError) as exc:
