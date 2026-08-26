@@ -37,9 +37,9 @@ class GitHubAppAgentProjectStore(AgentProjectStore):
             for name, ddl in additions.items():
                 if name not in existing:
                     conn.execute(f"ALTER TABLE github_connections ADD COLUMN {name} {ddl}")
-            # One GitHub App installation grants app-level authority independent of a human token.
-            # Until FDEX introduces a shared organization/workspace owner model, bind an installation
-            # to exactly one FDEX user so it cannot silently bridge isolated user accounts.
+            # One app installation is app-level authority rather than a human-scoped credential.
+            # Until FDEX has a shared workspace owner model, keep that authority bound to one
+            # canonical FDEX user so it cannot bridge isolated accounts.
             conn.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_github_app_installation
                    ON github_connections(github_app_installation_id)
@@ -56,8 +56,8 @@ class GitHubAppAgentProjectStore(AgentProjectStore):
         data["app_permissions"] = parsed if isinstance(parsed, dict) else {}
         data["is_github_app"] = str(data.get("auth_type") or "") == "github_app"
         if data["is_github_app"]:
-            # Installation tokens are deliberately never persisted, so token_configured=false is
-            # expected and must not be presented as a reconnect error.
+            # Installation tokens are intentionally never persisted. token_configured=false is
+            # expected and must not be treated as a reconnect failure.
             data["needs_reconnect"] = False
         return data
 
@@ -143,10 +143,50 @@ class GitHubAppAgentProjectStore(AgentProjectStore):
                         values[7],
                         values[8],
                         now,
+                        now,
                     ),
                 )
                 cid = int(cur.lastrowid)
         return self.get_connection(owner_id, cid)
+
+    def save_project(
+        self,
+        owner_id: str,
+        *,
+        name: str,
+        repo_full_name: str,
+        base_branch: str = "main",
+        connection_id: int | None = None,
+        allow_push: bool = False,
+        allow_pr: bool = False,
+        allow_network: bool = False,
+        sandbox_memory_mb: int = 2048,
+        sandbox_cpu_percent: int = 150,
+        enabled: bool = True,
+        project_id: int | None = None,
+    ) -> dict[str, Any]:
+        if connection_id is not None:
+            connection = self.get_connection(owner_id, int(connection_id))
+            if str(connection.get("auth_type") or "") == "github_app":
+                permissions = connection.get("app_permissions") if isinstance(connection.get("app_permissions"), dict) else {}
+                if (allow_push or allow_pr) and str(permissions.get("contents") or "") != "write":
+                    raise ValueError("GitHub App 未授予 Contents 写权限，不能启用 Push/PR")
+                if allow_pr and str(permissions.get("pull_requests") or "") != "write":
+                    raise ValueError("GitHub App 未授予 Pull requests 写权限，不能启用 PR")
+        return super().save_project(
+            owner_id,
+            name=name,
+            repo_full_name=repo_full_name,
+            base_branch=base_branch,
+            connection_id=connection_id,
+            allow_push=allow_push,
+            allow_pr=allow_pr,
+            allow_network=allow_network,
+            sandbox_memory_mb=sandbox_memory_mb,
+            sandbox_cpu_percent=sandbox_cpu_percent,
+            enabled=enabled,
+            project_id=project_id,
+        )
 
     def find_github_app_connection(self, owner_id: str, installation_id: int) -> dict[str, Any] | None:
         owner_id = _safe_scope(owner_id)
