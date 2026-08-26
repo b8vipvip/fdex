@@ -31,9 +31,6 @@ def install_employee_chat_runtime() -> None:
         history: list[dict[str, Any]],
         upload: UploadFile | None = None,
     ) -> str:
-        # Collect tools from the original user request. Do not feed external GitHub metadata into
-        # knowledge retrieval or employee-role selection; tool output is appended only to the final
-        # model prompt as a clearly delimited, non-instruction data block.
         tool_context = collect_employee_tool_context(owner_id, employee, prompt)
         request.scope["fdex_employee_tool_events"] = list(tool_context.events)
 
@@ -60,12 +57,20 @@ def install_employee_chat_runtime() -> None:
                 documents=documents,
             ),
         )
-        answer = result.content.strip()
+        model_answer = result.content.strip()
         if result.media:
             media_lines = [f"[{item.kind}] {item.url}" for item in result.media if item.url]
             if media_lines:
-                answer = (answer + "\n" + "\n".join(media_lines)).strip()
-        return answer
+                model_answer = (model_answer + "\n" + "\n".join(media_lines)).strip()
+
+        # Tool-derived facts are retained independently of model quality. The model is still used
+        # for analysis/explanation, but it can no longer replace a real GitHub check with a vague
+        # five-character answer such as “淘小宝检查”.
+        if tool_context.answer_prefix:
+            if model_answer:
+                return f"{tool_context.answer_prefix}\n\n【AI 分析】\n{model_answer}".strip()
+            return tool_context.answer_prefix.strip()
+        return model_answer
 
     tool_aware_ask_employee._fdex_agent_tools_installed = True  # type: ignore[attr-defined]
     tool_aware_ask_employee.__module__ = "app.employee_chat_runtime"
