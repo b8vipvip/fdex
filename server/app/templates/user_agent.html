@@ -2,8 +2,8 @@
 {% block title %}Coding Agent · FDEX{% endblock %}
 {% block content %}
 <section class="hero">
-  <div><h1>Coding Agent</h1><p>Web 端直接使用与你 Android 客户端相同的中心 Agent Runtime、GitHub 项目权限、沙箱和共享 AI 供应商池。</p></div>
-  <div class="row"><a class="button button-secondary" href="/account/github">GitHub / 项目权限</a>{% if view == 'task' %}<a class="button button-secondary" href="/account/agent">任务列表</a>{% endif %}</div>
+  <div><h1>Coding Agent</h1><p>GitHub App Installation 授权的仓库会自动出现在这里，不需要逐仓库“添加到 Coding Agent”。Web 与 Android 使用同一个中心 Agent Runtime、沙箱和共享 AI 供应商池。</p></div>
+  <div class="row"><a class="button button-secondary" href="/account/github">GitHub App / 仓库范围</a><a class="button button-secondary" href="/account/agent/runtime">运行策略</a>{% if view == 'task' %}<a class="button button-secondary" href="/account/agent">任务列表</a>{% endif %}</div>
 </section>
 
 {% if operation.busy %}<div class="alert alert-error">当前账号正在执行 {{ operation.operation }}，Coding Agent 暂停创建新操作。</div>{% endif %}
@@ -11,17 +11,18 @@
 {% if view == 'center' %}
 <div class="grid">
   <section class="card span-5 stack">
-    <div class="card-head"><div><h2>创建开发任务</h2><p>只允许选择当前 FDEX user_id 下已经配置的 GitHub Agent 项目。</p></div></div>
+    <div class="card-head"><div><h2>创建开发任务</h2><p>仓库列表直接来自当前 FDEX user_id 的 GitHub App 安装范围。</p></div></div>
     {% if projects %}
     <form action="/account/agent/tasks" method="post" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>项目<select name="project_id" required>{% for project in projects %}<option value="{{ project.id }}">{{ project.name }} · {{ project.repo_full_name }}</option>{% endfor %}</select></label>
+      <label>仓库<select name="project_id" required>{% for project in projects %}<option value="{{ project.id }}">{{ project.repo_full_name }} · {{ project.base_branch }}{% if project.allow_pr %} · Push + PR{% elif project.allow_push %} · Push{% else %} · 只读{% endif %}</option>{% endfor %}</select></label>
       <label>开发任务<textarea name="prompt" rows="10" maxlength="12000" required placeholder="例如：检查当前仓库失败的测试，定位根因，修复后运行测试并创建 PR。"></textarea></label>
       <label class="check"><input type="checkbox" name="run_now" checked>创建后立即执行</label>
       <button class="primary" type="submit" {% if operation.busy %}disabled{% endif %}>创建 Coding Agent 任务</button>
     </form>
+    <p class="fine">Push / PR 是否可用由 GitHub App permissions 自动决定；构建联网、内存和 CPU 使用账号级运行策略。</p>
     {% else %}
-    <div class="empty-state"><p>还没有启用的 Coding Agent 项目。</p><a class="button button-primary" href="/account/github">先连接 GitHub 并添加项目</a></div>
+    <div class="empty-state"><p>当前 GitHub App 没有可供 Coding Agent 使用的仓库，或仓库范围尚未同步。</p><div class="row"><a class="button button-primary" href="/account/github">连接 / 修改 GitHub App</a><a class="button button-secondary" href="/account/agent/runtime">刷新仓库</a></div></div>
     {% endif %}
   </section>
   <section class="card span-7 stack">
@@ -30,7 +31,7 @@
     {% for item in tasks %}<a class="conversation-card" href="/account/agent/tasks/{{ item.id }}"><div><strong>{{ item.project_name }}</strong><div class="fine">{{ item.repository }} · {{ item.updated_at }}</div></div><div><span class="badge {% if item.status == 'succeeded' %}ok{% elif item.status in ['failed','canceled'] %}warn{% endif %}">{{ item.status }}</span><div class="conversation-preview" style="margin-top:5px">{{ item.prompt }}</div></div></a>{% else %}<p class="muted">暂无 Coding Agent 任务。</p>{% endfor %}
   </section>
   <section class="card span-12">
-    <div class="row between"><div><h3>沙箱使用</h3><div class="fine">已使用 {{ usage.used_mb or 0 }} MB / {{ usage.limit_mb or 0 }} MB{% if usage.over_limit %} · 已超预算{% endif %}</div></div><form action="/account/agent/sandbox/cleanup" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">清理已完成任务工作区</button></form></div>
+    <div class="row between"><div><h3>沙箱使用</h3><div class="fine">已使用 {{ usage.used_mb or 0 }} MB / {{ usage.limit_mb or 0 }} MB{% if usage.over_limit %} · 已超预算{% endif %}</div></div><div class="row"><a class="button button-secondary" href="/account/agent/runtime">账号级运行策略</a><form action="/account/agent/sandbox/cleanup" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">清理已完成任务工作区</button></form></div></div>
   </section>
 </div>
 {% else %}
