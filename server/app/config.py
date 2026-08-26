@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     fdex_github_app_private_key_b64: str = ""
     fdex_github_app_flow_minutes: int = Field(default=10, ge=2, le=30)
 
+    # Outbound GitHub transport. Direct access remains the default. Operators whose center
+    # network has unreliable international egress can explicitly configure a trusted HTTP(S)
+    # proxy. OAuth/user/install tokens are sensitive, so FDEX never uses third-party mirrors.
+    fdex_github_http_proxy: str = ""
+    fdex_github_connect_timeout_seconds: float = Field(default=10.0, ge=2.0, le=120.0)
+    fdex_github_read_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    fdex_github_retry_attempts: int = Field(default=3, ge=1, le=5)
+
     fdex_memory_enabled: bool = True
     fdex_memory_managed_stack: bool = True
     fdex_memory_required: bool = False
