@@ -31,8 +31,7 @@ class Settings(BaseSettings):
     fdex_auth_reset_code_minutes: int = Field(default=10, ge=2, le=60)
     fdex_auth_reset_max_attempts: int = Field(default=5, ge=1, le=20)
 
-    # SMTP is used only for FDEX account-security mail such as password reset codes.
-    # If host/from are blank, reset requests fail closed without exposing whether an email exists.
+    # Outbound account-security mail. Password-reset codes fail closed when SMTP is absent.
     fdex_smtp_host: str = ""
     fdex_smtp_port: int = Field(default=587, ge=1, le=65535)
     fdex_smtp_username: str = ""
@@ -42,6 +41,17 @@ class Settings(BaseSettings):
     fdex_smtp_starttls: bool = True
     fdex_smtp_ssl: bool = False
     fdex_smtp_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
+
+    # Optional inbound mailbox configuration for the FDEX center. Password-reset does not
+    # depend on IMAP, but the admin console can verify the receive side of the mailbox too.
+    fdex_imap_host: str = ""
+    fdex_imap_port: int = Field(default=993, ge=1, le=65535)
+    fdex_imap_username: str = ""
+    fdex_imap_password: str = ""
+    fdex_imap_mailbox: str = "INBOX"
+    fdex_imap_ssl: bool = True
+    fdex_imap_starttls: bool = False
+    fdex_imap_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
     # Legacy one-provider fields are retained only for migration. Runtime AI traffic,
     # including Coding Agent, is routed through the encrypted provider pool.
@@ -164,6 +174,10 @@ class Settings(BaseSettings):
     @property
     def smtp_ready(self) -> bool:
         return bool(self.fdex_smtp_host.strip() and self.fdex_smtp_from_email.strip())
+
+    @property
+    def imap_ready(self) -> bool:
+        return bool(self.fdex_imap_host.strip() and self.fdex_imap_username.strip())
 
     @property
     def github_web_oauth_ready(self) -> bool:
