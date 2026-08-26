@@ -26,6 +26,7 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
+from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_github_app_flow_cleanup
 from app.github_app_portal_routes import router as github_app_portal_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
@@ -125,8 +126,14 @@ app.include_router(client_update_router)
 app.include_router(agent_router)
 
 
+@app.on_event("startup")
+async def start_security_cleanup_tasks() -> None:
+    await start_github_app_flow_cleanup()
+
+
 @app.on_event("shutdown")
 async def shutdown_memory_clients() -> None:
+    await stop_github_app_flow_cleanup()
     await close_memory_coordinator()
 
 
