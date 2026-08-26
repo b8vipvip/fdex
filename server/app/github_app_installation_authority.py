@@ -4,7 +4,6 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from app.agent_projects import DB_PATH, KEY_PATH, _safe_scope
@@ -18,7 +17,9 @@ def _now_dt() -> datetime:
 
 
 def _now() -> str:
-    return _now_dt().isoformat(timespec="seconds")
+    # Microseconds are intentional: consecutive permission syncs can happen within one second.
+    # A second-resolution marker could leave a just-removed repository falsely enabled.
+    return _now_dt().isoformat(timespec="microseconds")
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -30,15 +31,12 @@ def _parse_time(value: str) -> datetime | None:
 
 
 class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
-    """Use the GitHub App installation as the only repository/GitHub permission authority.
+    """Treat GitHub App Installation as the only repository/GitHub permission authority.
 
-    `agent_projects` remains an internal workspace index because the Agent runtime and durable task
-    history need a stable project_id. Users no longer create or authorize these rows one repository
-    at a time. FDEX synchronizes them from each GitHub App installation and derives Push/PR rights
-    from the installation permissions. Sandbox network/CPU/memory are account-level policy.
-
-    Security stays least-privilege at execution time: the inherited GitHub App implementation still
-    mints a short-lived token restricted to the current repository and requested operation.
+    `agent_projects` remains only a stable internal workspace/task-history index. Repository scope
+    comes from the GitHub installation. Push/PR rights come from the GitHub App permissions.
+    Network/memory/CPU are FDEX account-level runtime policy. Actual GitHub operations still mint
+    short-lived tokens restricted to the current repository and requested operation.
     """
 
     SYNC_TTL_SECONDS = 90
@@ -73,14 +71,14 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
                 );
                 """
             )
-            # Phase 7.7 rows that were manually added under a GitHub App become internal workspace
-            # rows. Their repository-specific switches stop being authority on the next sync.
+            # Migrate Phase 7.7 GitHub-App-backed manual projects into internal workspace rows.
             conn.execute(
                 """UPDATE agent_projects
                    SET managed_by_installation=1,
                        source_installation_id=COALESCE((
                            SELECT github_app_installation_id FROM github_connections c
-                           WHERE c.id=agent_projects.connection_id AND c.owner_id=agent_projects.owner_id
+                           WHERE c.id=agent_projects.connection_id
+                             AND c.owner_id=agent_projects.owner_id
                        ), source_installation_id)
                    WHERE connection_id IN (
                        SELECT id FROM github_connections WHERE auth_type='github_app'
@@ -144,7 +142,6 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
                        updated_at=excluded.updated_at""",
                 (owner_id, int(bool(allow_network)), memory_mb, cpu_percent, now),
             )
-            # Runtime settings belong to the FDEX account, not to individual repositories.
             conn.execute(
                 """UPDATE agent_projects
                    SET allow_network=?,sandbox_memory_mb=?,sandbox_cpu_percent=?,updated_at=?
@@ -179,7 +176,8 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
             return status
 
         connections = [
-            item for item in self.list_connections(owner_id)
+            item
+            for item in self.list_connections(owner_id)
             if str(item.get("auth_type") or "") == "github_app" and not bool(item.get("needs_reconnect"))
         ]
         if not connections:
@@ -270,9 +268,6 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
                         seen_at,
                     ),
                 )
-            # A repository removed from the GitHub installation must immediately stop being a
-            # target for new Agent tasks. Keep its internal row disabled so historical tasks retain
-            # a stable project_id and repository name.
             conn.execute(
                 """UPDATE agent_projects
                    SET enabled=0,allow_push=0,allow_pr=0,updated_at=?
@@ -299,13 +294,16 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
     def list_projects(self, owner_id: str, *, enabled_only: bool = False) -> list[dict[str, Any]]:
         self.init()
         owner_id = _safe_scope(owner_id)
-        # Repository visibility is installation-owned. Refresh opportunistically but retain the
-        # last known safe cache if GitHub is temporarily unreachable.
         try:
             self.sync_owner_installations(owner_id, force=False, strict=False)
         except (KeyError, ValueError, RuntimeError):
+            # Keep the last known safe local cache during transient GitHub transport failure.
             pass
-        sql = "SELECT * FROM agent_projects WHERE owner_id=?" + (" AND enabled=1" if enabled_only else "") + " ORDER BY name,id"
+        sql = (
+            "SELECT * FROM agent_projects WHERE owner_id=?"
+            + (" AND enabled=1" if enabled_only else "")
+            + " ORDER BY name,id"
+        )
         with self.db() as conn:
             rows = conn.execute(sql, (owner_id,)).fetchall()
         return [self._project_row(row) for row in rows]
@@ -358,13 +356,14 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
                 project_id=project_id,
             )
 
-        # Compatibility API calls are accepted, but per-repository switches are ignored. The
-        # installation and account policy determine the resulting internal workspace row.
+        # Compatibility API calls can still name a repository, but their per-repository flags are
+        # intentionally ignored. Installation permissions + account runtime policy are authority.
         self.sync_connection(owner_id, int(connection_id))
+        clean_repo = repo_full_name.strip().removesuffix(".git")
         with self.db() as conn:
             row = conn.execute(
                 "SELECT * FROM agent_projects WHERE owner_id=? AND repo_full_name=? AND connection_id=?",
-                (_safe_scope(owner_id), repo_full_name.strip().removesuffix(".git"), int(connection_id)),
+                (_safe_scope(owner_id), clean_repo, int(connection_id)),
             ).fetchone()
         if row is None:
             raise ValueError("该仓库不在当前 GitHub App 安装授权范围内")
@@ -384,30 +383,32 @@ class InstallationAuthorityProjectStore(GitHubAppAgentProjectStore):
 
         from app.agent_tasks import agent_task_store
 
-        if agent_task_store().active_count(owner_id):
-            raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再卸载 GitHub App")
         installation_id = str(connection.get("github_app_installation_id") or "")
         if not installation_id.isdigit():
             raise ValueError("GitHub App installation is invalid")
-        with self.db() as conn:
+
+        project_ids: list[int] = []
+        # Hold the owner mutation fence across active-task verification, remote revocation and the
+        # local delete. A new task cannot start in the revoke/delete gap.
+        with self.owner_db(owner_id, "github_app_disconnect") as conn:
+            if agent_task_store().active_count(owner_id):
+                raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再卸载 GitHub App")
             project_rows = conn.execute(
                 "SELECT id FROM agent_projects WHERE owner_id=? AND connection_id=?",
                 (owner_id, int(connection_id)),
             ).fetchall()
-        project_ids = [int(row[0]) for row in project_rows]
-
-        try:
-            GitHubAppClient().delete_installation(int(installation_id))
-        except GitHubAppError as exc:
-            raise ValueError(str(exc)) from exc
-
-        with self.owner_db(owner_id, "github_app_disconnect") as conn:
+            project_ids = [int(row[0]) for row in project_rows]
+            try:
+                GitHubAppClient().delete_installation(int(installation_id))
+            except GitHubAppError as exc:
+                raise ValueError(str(exc)) from exc
             conn.execute("DELETE FROM agent_projects WHERE owner_id=? AND connection_id=?", (owner_id, int(connection_id)))
             conn.execute(
                 "UPDATE github_device_flows SET connection_id=NULL WHERE owner_id=? AND connection_id=?",
                 (owner_id, int(connection_id)),
             )
             conn.execute("DELETE FROM github_connections WHERE id=? AND owner_id=?", (int(connection_id), owner_id))
+
         owner_root = self.owner_root(owner_id)
         for project_id in project_ids:
             target = (owner_root / "projects" / str(project_id)).resolve()
