@@ -4,7 +4,7 @@
 <section class="hero">
     <div>
         <h1>GitHub 与 Coding Agent</h1>
-        <p>由你本人在 GitHub 官方页面安装 FDEX GitHub App，并选择“全部仓库”或“仅指定仓库”。这个 GitHub App Installation 就是 Coding Agent 的仓库访问边界，不需要再逐仓库添加项目或重复配置 Push / PR 权限。</p>
+        <p>由你本人在 GitHub 官方页面安装 FDEX GitHub App，并选择“全部仓库”或“仅指定仓库”。这个 GitHub App Installation 就是 Coding Agent 的仓库访问边界，不需要再逐仓库添加项目或重复配置 Push / PR 权限，也不要求你粘贴 GitHub Token。</p>
     </div>
     <div class="stack">
         {% if settings.github_app_ready %}
@@ -22,7 +22,7 @@
 
 {% if not settings.github_app_ready %}
 <section class="card danger-zone" style="margin-bottom:16px">
-    <div class="card-head"><div><h2>当前 GitHub App 安装功能尚不可用</h2><p>平台管理员需要先在服务端管理后台完成一次 FDEX GitHub App 初始化。</p></div><span class="badge warn">需要平台管理员初始化</span></div>
+    <div class="card-head"><div><h2>当前 GitHub App 安装功能尚不可用</h2><p>平台管理员需要先在 FDEX 服务端管理后台的 GitHub App 页面完成一次初始化。</p></div><span class="badge warn">需要平台管理员初始化</span></div>
 </section>
 {% endif %}
 
@@ -60,7 +60,7 @@
 
     <section class="card span-8 stack">
         <div class="card-head">
-            <div><h2>Coding Agent 可访问仓库</h2><p>这里直接展示 GitHub App Installation 授权的仓库。所有这些仓库都会自动出现在 Coding Agent，不再需要“添加到 Coding Agent”。</p></div>
+            <div><h2>Coding Agent 可访问仓库</h2><p>这里直接展示 GitHub App Installation 授权的仓库。所有这些仓库都会自动出现在 Coding Agent，无需逐仓库手工启用。</p></div>
             {% if selected_connection %}<span class="badge ok">{{ selected_connection.login or selected_connection.name }}</span>{% endif %}
         </div>
         {% if selected_connection %}
