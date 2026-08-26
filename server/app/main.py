@@ -34,6 +34,7 @@ from app.mail_admin_routes import router as mail_admin_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
+from app.provider_protocol_runtime import install_provider_protocol_runtime
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
 from app.realtime_voice import router as realtime_voice_router
 from app.request_trace import log_ai_event, request_id_for
@@ -42,7 +43,14 @@ from app.update_monitor_routes import router as update_monitor_router
 from app.user_account_auth_routes import router as user_account_auth_router
 from app.user_admin_routes import router as user_admin_router
 from app.user_agent_task_routes import router as user_agent_task_router
+
+# The legacy provider manager already stored protocol_order, but the text runtime previously ignored
+# it and always called /chat/completions. Install the protocol-aware runtime before Web app routes
+# import and start invoking client_ai().
+install_provider_protocol_runtime()
+
 from app.user_app_routes import router as user_app_router
+from app.user_chat_api_routes import router as user_chat_api_router
 from app.user_home_routes import router as user_home_router
 from app.user_login_routes import router as user_login_router
 from app.user_portal_routes import router as user_portal_router
@@ -123,6 +131,7 @@ app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
 app.include_router(user_home_router)
 app.include_router(user_app_router)
+app.include_router(user_chat_api_router)
 app.include_router(user_agent_task_router)
 app.include_router(agent_policy_portal_router)
 app.include_router(user_portal_router)
