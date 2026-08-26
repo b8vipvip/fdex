@@ -1,0 +1,56 @@
+{% extends "user_base.html" %}
+{% block title %}Coding Agent · FDEX{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><h1>Coding Agent</h1><p>Web 端直接使用与你 Android 客户端相同的中心 Agent Runtime、GitHub 项目权限、沙箱和共享 AI 供应商池。</p></div>
+  <div class="row"><a class="button button-secondary" href="/account/github">GitHub / 项目权限</a>{% if view == 'task' %}<a class="button button-secondary" href="/account/agent">任务列表</a>{% endif %}</div>
+</section>
+
+{% if operation.busy %}<div class="alert alert-error">当前账号正在执行 {{ operation.operation }}，Coding Agent 暂停创建新操作。</div>{% endif %}
+
+{% if view == 'center' %}
+<div class="grid">
+  <section class="card span-5 stack">
+    <div class="card-head"><div><h2>创建开发任务</h2><p>只允许选择当前 FDEX user_id 下已经配置的 GitHub Agent 项目。</p></div></div>
+    {% if projects %}
+    <form action="/account/agent/tasks" method="post" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>项目<select name="project_id" required>{% for project in projects %}<option value="{{ project.id }}">{{ project.name }} · {{ project.repo_full_name }}</option>{% endfor %}</select></label>
+      <label>开发任务<textarea name="prompt" rows="10" maxlength="12000" required placeholder="例如：检查当前仓库失败的测试，定位根因，修复后运行测试并创建 PR。"></textarea></label>
+      <label class="check"><input type="checkbox" name="run_now" checked>创建后立即执行</label>
+      <button class="primary" type="submit" {% if operation.busy %}disabled{% endif %}>创建 Coding Agent 任务</button>
+    </form>
+    {% else %}
+    <div class="empty-state"><p>还没有启用的 Coding Agent 项目。</p><a class="button button-primary" href="/account/github">先连接 GitHub 并添加项目</a></div>
+    {% endif %}
+  </section>
+  <section class="card span-7 stack">
+    <div class="card-head"><div><h2>任务历史</h2><p>任务和事件持久化在服务端，浏览器关闭后仍可回来查看。</p></div><span class="badge">{{ tasks|length }}</span></div>
+    <form action="/account/agent" method="get" class="row"><label style="min-width:180px">状态<select name="status"><option value="" {% if not status_filter %}selected{% endif %}>全部</option><option value="queued" {% if status_filter == 'queued' %}selected{% endif %}>排队</option><option value="running" {% if status_filter == 'running' %}selected{% endif %}>执行中</option><option value="succeeded" {% if status_filter == 'succeeded' %}selected{% endif %}>成功</option><option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>失败</option><option value="canceled" {% if status_filter == 'canceled' %}selected{% endif %}>已取消</option></select></label><button class="secondary" type="submit" style="margin-top:20px">筛选</button></form>
+    {% for item in tasks %}<a class="conversation-card" href="/account/agent/tasks/{{ item.id }}"><div><strong>{{ item.project_name }}</strong><div class="fine">{{ item.repository }} · {{ item.updated_at }}</div></div><div><span class="badge {% if item.status == 'succeeded' %}ok{% elif item.status in ['failed','canceled'] %}warn{% endif %}">{{ item.status }}</span><div class="conversation-preview" style="margin-top:5px">{{ item.prompt }}</div></div></a>{% else %}<p class="muted">暂无 Coding Agent 任务。</p>{% endfor %}
+  </section>
+  <section class="card span-12">
+    <div class="row between"><div><h3>沙箱使用</h3><div class="fine">已使用 {{ usage.used_mb or 0 }} MB / {{ usage.limit_mb or 0 }} MB{% if usage.over_limit %} · 已超预算{% endif %}</div></div><form action="/account/agent/sandbox/cleanup" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">清理已完成任务工作区</button></form></div>
+  </section>
+</div>
+{% else %}
+{% if task.status in ['queued','running'] %}<meta http-equiv="refresh" content="4">{% endif %}
+<div class="grid">
+  <section class="card span-8 stack">
+    <div class="row between"><div><h2>{{ task.project_name }}</h2><div class="mono muted">{{ task.repository }}</div></div><span class="badge {% if task.status == 'succeeded' %}ok{% elif task.status in ['failed','canceled'] %}warn{% endif %}">{{ task.status }}</span></div>
+    <div class="repo"><strong>用户任务</strong><div class="report-content" style="margin-top:7px">{{ task.prompt }}</div></div>
+    {% if task.result %}<div class="repo"><strong>Agent 最终结果</strong><div class="report-content" style="margin-top:7px">{{ task.result }}</div></div>{% endif %}
+    {% if task.error %}<div class="alert alert-error" style="margin:0">{{ task.error }}</div>{% endif %}
+    <div class="row">
+      {% if task.status == 'queued' %}<form action="/account/agent/tasks/{{ task.id }}/run" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="primary" type="submit">开始执行</button></form>{% endif %}
+      {% if task.status in ['queued','running'] %}<form action="/account/agent/tasks/{{ task.id }}/cancel" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger-button" type="submit">取消任务</button></form>{% endif %}
+      {% if task.status in ['succeeded','failed','canceled'] %}<form action="/account/agent/tasks/{{ task.id }}/retry" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="run_now" value="true"><button class="secondary" type="submit">重试任务</button></form>{% endif %}
+      {% if task.pr_url %}<a class="button button-primary" href="{{ task.pr_url }}" target="_blank" rel="noopener">打开 Pull Request</a>{% endif %}
+    </div>
+    <div class="grid"><div class="span-4 repo"><div class="fine">分支</div><strong class="mono">{{ task.branch or '-' }}</strong></div><div class="span-4 repo"><div class="fine">Commit</div><strong class="mono">{{ task.commit_sha or '-' }}</strong></div><div class="span-4 repo"><div class="fine">Push</div><strong>{% if task.pushed %}已推送{% else %}未推送{% endif %}</strong></div></div>
+    {% if task.changed_files %}<div class="repo"><strong>变更文件</strong><div class="mono" style="margin-top:6px">{% for path in task.changed_files %}{{ path }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>{% endif %}
+  </section>
+  <section class="card span-4 stack"><div class="card-head"><h2>执行事件</h2><span class="badge">{{ task.events|length }}</span></div>{% for event in task.events|reverse %}<div class="repo"><strong>{{ event.type }}</strong><p>{{ event.message }}</p><div class="fine">{{ event.created_at }}</div></div>{% else %}<p class="muted">暂无事件。</p>{% endfor %}</section>
+</div>
+{% endif %}
+{% endblock %}
