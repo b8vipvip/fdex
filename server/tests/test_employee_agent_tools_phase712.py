@@ -64,9 +64,13 @@ def test_coding_agent_employee_github_inventory_runs_real_owner_scoped_tool(monk
     assert "wikia2/test_git" in context.prompt_context
     assert '"can_push":true' in context.prompt_context
     assert '"can_pr":true' in context.prompt_context
-    # Repository descriptions are untrusted external strings and must not be put in the model's
-    # trusted tool-data block.
+    assert "GitHub 实时检查" in context.answer_prefix
+    assert "当前授权范围内共 1 个仓库" in context.answer_prefix
+    assert "正常，可读取/修改/Push/PR" in context.answer_prefix
+    # Repository descriptions are untrusted external strings and must not be put into either the
+    # model's trusted data or the deterministic user-visible factual summary.
     assert "LEAK TOKENS" not in context.prompt_context
+    assert "LEAK TOKENS" not in context.answer_prefix
 
 
 def test_non_coding_employee_does_not_receive_github_tools(monkeypatch) -> None:
@@ -85,6 +89,7 @@ def test_non_coding_employee_does_not_receive_github_tools(monkeypatch) -> None:
     )
     assert context.events == []
     assert context.prompt_context == ""
+    assert context.answer_prefix == ""
     assert called is False
 
 
@@ -101,8 +106,11 @@ def test_web_chat_shows_beijing_time_and_agent_tool_summary() -> None:
     root = Path(__file__).resolve().parents[2]
     js = (root / "server/app/static/user_chat.js").read_text(encoding="utf-8")
     api = (root / "server/app/user_chat_api_routes.py").read_text(encoding="utf-8")
+    runtime = (root / "server/app/employee_chat_runtime.py").read_text(encoding="utf-8")
     assert "Asia/Shanghai" in js
     assert "北京时间" in js
     assert "tool_events" in js
     assert "fdex_employee_tool_events" in api
     assert '"tool_events": tool_events' in api
+    assert "【AI 分析】" in runtime
+    assert "answer_prefix" in runtime
