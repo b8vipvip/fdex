@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
+from app.web_workspace import web_workspace_store
 
 
 def _safe_owner_path(root: Path, user_id: str) -> Path:
@@ -26,6 +28,22 @@ def _validate_user_id(user_id: str) -> str:
     if not clean.startswith("usr_") or len(clean) < 12:
         raise ValueError("invalid FDEX user id")
     return clean
+
+
+def _purge_web_workspace(user_id: str) -> dict[str, int]:
+    clean = _validate_user_id(user_id)
+    settings = fresh_settings()
+    removed_records = web_workspace_store().clear_owner(clean)
+    owner_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
+    assets_root = (Path(settings.app_dir).expanduser().resolve() / "server" / "data" / "web-assets").resolve()
+    target = (assets_root / owner_hash).resolve()
+    if assets_root not in target.parents or target == assets_root:
+        raise ValueError("invalid FDEX Web asset owner path")
+    removed_asset_dir = 0
+    if target.exists():
+        shutil.rmtree(target)
+        removed_asset_dir = 1
+    return {"records": removed_records, "asset_directories": removed_asset_dir}
 
 
 def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
@@ -94,13 +112,17 @@ def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
     task/worktree state. This guard runs before remote-memory erasure so a rejected deletion
     attempt does not partially erase the user's data. Once no task is active, memory erasure
     remains fail-closed and durable Agent task/event rows are removed with the other resources.
+    Web workspace rows and uploaded assets are also erased so account deletion has identical
+    privacy semantics whether it is initiated from Android, Web or the JSON API.
     """
     clean = _validate_user_id(user_id)
     if agent_task_store().active_count(clean):
         raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再注销账号")
     memory_cleanup = asyncio.run(erase_account_memory(clean))
     agent_cleanup = _purge_agent_resources_only(clean)
+    web_cleanup = _purge_web_workspace(clean)
     return {
         **agent_cleanup,
         "memory": memory_cleanup,
+        "web_workspace": web_cleanup,
     }

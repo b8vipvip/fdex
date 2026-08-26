@@ -26,6 +26,7 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
+from app.github_app_admin_routes import router as github_app_admin_router
 from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_github_app_flow_cleanup
 from app.github_app_portal_routes import router as github_app_portal_router
 from app.mail_admin_routes import router as mail_admin_router
@@ -39,6 +40,10 @@ from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
 from app.user_account_auth_routes import router as user_account_auth_router
 from app.user_admin_routes import router as user_admin_router
+from app.user_agent_task_routes import router as user_agent_task_router
+from app.user_app_routes import router as user_app_router
+from app.user_home_routes import router as user_home_router
+from app.user_login_routes import router as user_login_router
 from app.user_portal_routes import router as user_portal_router
 
 settings = get_settings()
@@ -113,10 +118,15 @@ generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
+app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
+app.include_router(user_home_router)
+app.include_router(user_app_router)
+app.include_router(user_agent_task_router)
 app.include_router(user_portal_router)
 app.include_router(github_app_portal_router)
 app.include_router(admin_router)
+app.include_router(github_app_admin_router)
 app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)

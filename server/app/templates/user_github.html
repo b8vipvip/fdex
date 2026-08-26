@@ -10,25 +10,34 @@
         {% if settings.github_app_ready %}
         <form action="/account/github/app/connect" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="primary" type="submit">安装 / 连接 GitHub App</button>
+            <button class="primary" type="submit">安装 / 连接 FDEX GitHub App</button>
         </form>
+        <span class="fine">点击后会先验证当前 GitHub 用户身份，再进入 FDEX GitHub App 官方安装页；完成安装后 GitHub 会自动返回这里并显示连接结果。</span>
         {% elif oauth_ready %}
         <form action="/account/github/connect" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="secondary" type="submit">兼容方式连接 GitHub OAuth</button>
         </form>
-        <span class="badge warn">GitHub App 尚未初始化，暂用旧版 OAuth</span>
+        <span class="badge warn">FDEX GitHub App 尚未初始化，暂用旧版 OAuth</span>
         {% else %}
-        <span class="badge warn">平台 GitHub App 尚未初始化</span>
+        <span class="badge warn">平台 FDEX GitHub App 尚未初始化</span>
         {% endif %}
     </div>
 </section>
+
+{% if not settings.github_app_ready %}
+<section class="card danger-zone" style="margin-bottom:16px">
+    <div class="card-head"><div><h2>当前 GitHub App 安装功能尚不可用</h2><p>这正是页面显示“平台 FDEX GitHub App 尚未初始化”的含义。</p></div><span class="badge warn">需要平台管理员初始化</span></div>
+    <p>此前的“GitHub App 安装管理”按钮只是打开 GitHub 的通用 <code>/settings/installations</code> 列表。那个页面只管理<strong>已经存在、已经安装</strong>的 GitHub Apps，不能自动创建 FDEX GitHub App，所以你会看到其它 App 而没有 FDEX，也不会收到安装完成提示。</p>
+    <p>平台管理员需要先在 FDEX 服务端管理后台的 <strong>GitHub App</strong> 页面完成一次初始化。初始化成功后，本页会自动出现“安装 / 连接 FDEX GitHub App”按钮；用户点击后才会进入真正的 FDEX 官方安装页，安装成功会自动回到 FDEX 并绑定当前 user_id。</p>
+</section>
+{% endif %}
 
 <div class="grid">
     <section class="card span-4 stack">
         <div class="card-head"><div><h2>已连接账号</h2><p>每个连接都绑定当前 FDEX user_id。</p></div><span class="badge">{{ connections|length }}</span></div>
         {% if not connections %}
-            <p>还没有 GitHub 连接。点击“安装 / 连接 GitHub App”，GitHub 会让你选择账号/组织和可访问仓库。</p>
+            {% if settings.github_app_ready %}<p>还没有 GitHub 连接。点击上方“安装 / 连接 FDEX GitHub App”，GitHub 会让你选择账号/组织和可访问仓库。</p>{% else %}<p>平台 GitHub App 初始化完成前，普通用户无法安装 FDEX GitHub App。</p>{% endif %}
         {% endif %}
         {% for connection in connections %}
         <div class="repo">
@@ -36,7 +45,7 @@
                 <div>
                     <strong>{{ connection.login or connection.name }}</strong>
                     {% if connection.auth_type == 'github_app' %}
-                    <div class="fine">GitHub App 安装 · {% if connection.github_app_repository_selection == 'selected' %}仅指定仓库{% else %}全部仓库{% endif %} · #{{ connection.github_app_installation_id }}</div>
+                    <div class="fine">FDEX GitHub App 安装 · {% if connection.github_app_repository_selection == 'selected' %}仅指定仓库{% else %}全部仓库{% endif %} · #{{ connection.github_app_installation_id }}</div>
                     {% else %}
                     <div class="fine">兼容 {{ connection.auth_type }}{% if connection.scope %} · {{ connection.scope }}{% endif %}</div>
                     {% endif %}
@@ -49,7 +58,7 @@
             <div class="row" style="margin-top:10px">
                 <a class="button button-secondary" href="/account/github?connection_id={{ connection.id }}">查看仓库</a>
                 {% if connection.auth_type == 'github_app' %}
-                <a class="button button-secondary" href="https://github.com/settings/installations/{{ connection.github_app_installation_id }}" target="_blank" rel="noopener">在 GitHub 修改仓库范围</a>
+                <a class="button button-secondary" href="https://github.com/settings/installations/{{ connection.github_app_installation_id }}" target="_blank" rel="noopener">在 GitHub 修改这个 FDEX 安装</a>
                 <form action="/account/github/app/connections/{{ connection.id }}/refresh" method="post">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button class="secondary" type="submit">刷新权限</button>
@@ -62,8 +71,7 @@
             </div>
         </div>
         {% endfor %}
-        <div class="divider"></div>
-        <a class="button button-secondary" href="https://github.com/settings/installations" target="_blank" rel="noopener">GitHub App 安装管理</a>
+        {% if connections %}<div class="divider"></div><a class="button button-secondary" href="https://github.com/settings/installations" target="_blank" rel="noopener">查看 GitHub 已安装 Apps</a>{% endif %}
         {% if oauth_ready %}
         <form action="/account/github/connect" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -117,11 +125,11 @@
                 {% endif %}
             </article>
         {% else %}
-            <p class="muted">当前 GitHub App 安装没有匹配仓库。若刚刚在 GitHub 修改了仓库范围，请返回后点击“刷新权限”。</p>
+            <p class="muted">当前 FDEX GitHub App 安装没有匹配仓库。若刚刚在 GitHub 修改了仓库范围，请返回后点击“刷新权限”。</p>
         {% endfor %}
         </div>
         {% else %}
-            <p>先安装 GitHub App。安装时由你在 GitHub 官方页面决定 FDEX 可以看到哪些仓库。</p>
+            {% if settings.github_app_ready %}<p>点击上方“安装 / 连接 FDEX GitHub App”。安装时由你在 GitHub 官方页面决定 FDEX 可以看到哪些仓库；成功后 GitHub 会自动返回本页。</p>{% else %}<p>平台 FDEX GitHub App 尚未初始化，因此当前没有可以安装和选择仓库的官方 FDEX App。</p>{% endif %}
         {% endif %}
     </section>
 
@@ -159,8 +167,8 @@
     </section>
 
     <section class="card span-12">
-        <h3>Phase 7.7 授权边界</h3>
-        <p>平台只配置一次 FDEX GitHub App 身份。每个 FDEX 用户必须亲自在 GitHub 官方安装页选择账号/组织和仓库范围；FDEX 长期只保留 installation_id 与非密钥安装元数据，不长期保存用户 OAuth access token，也不保存 installation token。执行 Clone/Fetch 时生成仅当前仓库的只读短期凭据；Push 与 PR 再分别按当前项目权限生成更小权限的短期凭据。</p>
+        <h3>授权边界</h3>
+        <p>平台管理员只需要初始化一次 FDEX GitHub App 身份。之后每个 FDEX 用户必须亲自在 GitHub 官方安装页选择账号/组织和仓库范围；FDEX 长期只保留 installation_id 与非密钥安装元数据，不长期保存用户 OAuth access token，也不保存 installation token。执行 Clone/Fetch 时生成仅当前仓库的只读短期凭据；Push 与 PR 再分别按当前项目权限生成更小权限的短期凭据。</p>
     </section>
 </div>
 {% endblock %}

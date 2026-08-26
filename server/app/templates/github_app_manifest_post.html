@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>正在前往 GitHub · FDEX</title>
+<style>body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#0b0f14;color:#edf4ff;display:grid;place-items:center;min-height:100vh;margin:0}.card{max-width:560px;padding:28px;border:1px solid #253244;border-radius:16px;background:#111823}.muted{color:#91a0b7;line-height:1.6}button{border:0;border-radius:10px;padding:12px 16px;background:#28c28b;color:#04120d;font-weight:700;cursor:pointer}</style>
+</head>
+<body>
+<div class="card">
+<h1>正在前往 GitHub</h1>
+<p class="muted">下一页是 GitHub 官方 GitHub App 创建页面。请确认创建 FDEX App，完成后 GitHub 会自动返回 FDEX 管理后台。</p>
+<form id="manifest-form" method="post" action="{{ github_manifest_url }}">
+<input type="hidden" name="state" value="{{ state }}">
+<input type="hidden" name="manifest" value='{{ manifest|e }}'>
+<button type="submit">继续到 GitHub</button>
+</form>
+</div>
+<script>window.setTimeout(function(){document.getElementById('manifest-form').submit();},250);</script>
+</body>
+</html>
