@@ -6,7 +6,7 @@ import pytest
 
 from app import mail_service
 from app.config import Settings
-from app.mail_service import MailServiceError, send_test_email, test_imap_connection
+from app.mail_service import MailServiceError, send_test_email, test_imap_connection as check_imap_connection
 from app.user_account_auth_routes import router as user_auth_router
 
 
@@ -142,7 +142,7 @@ def test_imap_test_is_readonly_and_reports_counts_without_fetching_content(monke
             return "BYE", [b"bye"]
 
     monkeypatch.setattr(mail_service.imaplib, "IMAP4_SSL", FakeIMAP)
-    result = test_imap_connection(settings=_imap_settings())
+    result = check_imap_connection(settings=_imap_settings())
 
     assert ("select", "INBOX", True) in calls
     assert not any(item and item[0] == "fetch" for item in calls)
@@ -174,4 +174,4 @@ def test_mail_service_fails_closed_when_transport_is_not_configured() -> None:
     with pytest.raises(MailServiceError, match="SMTP 尚未配置完整"):
         send_test_email("owner@example.test", settings=Settings(_env_file=None, fdex_smtp_host="", fdex_smtp_from_email=""))
     with pytest.raises(MailServiceError, match="IMAP 尚未配置完整"):
-        test_imap_connection(settings=Settings(_env_file=None, fdex_imap_host="", fdex_imap_username=""))
+        check_imap_connection(settings=Settings(_env_file=None, fdex_imap_host="", fdex_imap_username=""))
