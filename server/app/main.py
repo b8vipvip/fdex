@@ -26,6 +26,7 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
+from app.github_app_admin_routes import router as github_app_admin_router
 from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_github_app_flow_cleanup
 from app.github_app_portal_routes import router as github_app_portal_router
 from app.mail_admin_routes import router as mail_admin_router
@@ -117,6 +118,7 @@ app.include_router(user_account_auth_router)
 app.include_router(user_portal_router)
 app.include_router(github_app_portal_router)
 app.include_router(admin_router)
+app.include_router(github_app_admin_router)
 app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
