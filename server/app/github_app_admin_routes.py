@@ -15,8 +15,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from app.audit import write_audit
-from app.config import SERVER_DIR, fresh_settings
+from app.config import SERVER_DIR, fresh_settings, get_settings
 from app.env_manager import write_env
+from app.github_app import GitHubAppClient, GitHubAppError
 from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, verify_csrf
 
 router = APIRouter(prefix="/admin/github-app", include_in_schema=False)
@@ -79,6 +80,38 @@ def _manifest(cfg) -> dict[str, object]:
     }
 
 
+def _float_setting(value: str, name: str, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} 必须是数字") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name} 必须在 {minimum:g}-{maximum:g} 秒之间")
+    return parsed
+
+
+def _int_setting(value: str, name: str, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} 必须是整数") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name} 必须在 {minimum}-{maximum} 之间")
+    return parsed
+
+
+def _validate_proxy(value: str) -> str:
+    clean = (value or "").strip()
+    if not clean:
+        return ""
+    if len(clean) > 1000:
+        raise ValueError("GitHub 出站代理地址过长")
+    parsed = urlsplit(clean)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("GitHub 出站代理必须是完整的 http:// 或 https:// 地址")
+    return clean
+
+
 @router.get("", response_class=HTMLResponse, response_model=None)
 def github_app_settings(request: Request) -> Response:
     if not is_admin(request):
@@ -96,8 +129,114 @@ def github_app_settings(request: Request) -> Response:
     )
     return templates.TemplateResponse(
         "github_app_settings.html",
-        _ctx(request, app_settings_url=app_settings_url, install_url=install_url),
+        _ctx(
+            request,
+            app_settings_url=app_settings_url,
+            install_url=install_url,
+            github_proxy_configured=bool(cfg.fdex_github_http_proxy.strip()),
+        ),
     )
+
+
+@router.post("/network", response_model=None)
+def github_network_settings(
+    request: Request,
+    csrf_token: str = Form(...),
+    http_proxy: str = Form(""),
+    clear_proxy: str | None = Form(None),
+    connect_timeout_seconds: str = Form("10"),
+    read_timeout_seconds: str = Form("60"),
+    retry_attempts: str = Form("3"),
+) -> Response:
+    if not is_admin(request):
+        return _guard()
+    verify_csrf(request, csrf_token)
+    current = fresh_settings()
+    try:
+        connect_timeout = _float_setting(connect_timeout_seconds, "GitHub 连接超时", 2, 120)
+        read_timeout = _float_setting(read_timeout_seconds, "GitHub 读取超时", 5, 300)
+        retries = _int_setting(retry_attempts, "GitHub 重试次数", 1, 5)
+        proxy = _validate_proxy(http_proxy)
+    except ValueError as exc:
+        write_audit(request, "save_github_network", success=False, error=str(exc))
+        set_flash(request, str(exc), "error")
+        return RedirectResponse("/admin/github-app#network", status_code=303)
+
+    updates: dict[str, str] = {
+        "FDEX_GITHUB_CONNECT_TIMEOUT_SECONDS": f"{connect_timeout:g}",
+        "FDEX_GITHUB_READ_TIMEOUT_SECONDS": f"{read_timeout:g}",
+        "FDEX_GITHUB_RETRY_ATTEMPTS": str(retries),
+    }
+    proxy_changed = False
+    if clear_proxy:
+        updates["FDEX_GITHUB_HTTP_PROXY"] = ""
+        proxy_changed = bool(current.fdex_github_http_proxy.strip())
+    elif proxy:
+        updates["FDEX_GITHUB_HTTP_PROXY"] = proxy
+        proxy_changed = proxy != current.fdex_github_http_proxy.strip()
+
+    backup = write_env(updates)
+    get_settings.cache_clear()
+    after = fresh_settings()
+    # Never audit or render the proxy URL because it may contain credentials.
+    write_audit(
+        request,
+        "save_github_network",
+        proxy_changed=proxy_changed,
+        proxy_configured=bool(after.fdex_github_http_proxy.strip()),
+        connect_timeout_seconds=after.fdex_github_connect_timeout_seconds,
+        read_timeout_seconds=after.fdex_github_read_timeout_seconds,
+        retry_attempts=after.fdex_github_retry_attempts,
+        backup=str(backup) if backup else "",
+    )
+    set_flash(
+        request,
+        "GitHub 网络出口配置已保存。新 OAuth / GitHub App 请求会立即使用新配置，无需重启服务。",
+        "success",
+    )
+    return RedirectResponse("/admin/github-app#network", status_code=303)
+
+
+@router.post("/network/test", response_model=None)
+def github_network_test(request: Request, csrf_token: str = Form(...)) -> Response:
+    if not is_admin(request):
+        return _guard()
+    verify_csrf(request, csrf_token)
+    try:
+        result = GitHubAppClient().network_probe()
+        targets = result.get("targets") if isinstance(result.get("targets"), list) else []
+        descriptions: list[str] = []
+        all_ok = bool(targets)
+        audit_targets: list[dict[str, object]] = []
+        for item in targets:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "GitHub")
+            ok = bool(item.get("ok"))
+            all_ok = all_ok and ok
+            elapsed = int(item.get("elapsed_ms") or 0)
+            status = int(item.get("status_code") or 0)
+            error = str(item.get("error") or "")
+            if ok:
+                descriptions.append(f"{name}: HTTP {status} · {elapsed} ms")
+            else:
+                descriptions.append(f"{name}: {error or '连接失败'} · {elapsed} ms")
+            audit_targets.append(
+                {"name": name, "ok": ok, "status_code": status, "elapsed_ms": elapsed, "error": error[:80]}
+            )
+        write_audit(
+            request,
+            "test_github_network",
+            success=all_ok,
+            proxy_configured=bool(result.get("proxy_configured")),
+            targets=audit_targets,
+        )
+        prefix = "GitHub 网络连通正常" if all_ok else "GitHub 网络连通异常"
+        set_flash(request, f"{prefix}：{'；'.join(descriptions) or '没有测试结果'}", "success" if all_ok else "error")
+    except (GitHubAppError, ValueError, RuntimeError) as exc:
+        write_audit(request, "test_github_network", success=False, error=str(exc)[:500])
+        set_flash(request, f"GitHub 网络测试失败：{exc}", "error")
+    return RedirectResponse("/admin/github-app#network", status_code=303)
 
 
 @router.post("/manifest/start", response_class=HTMLResponse, response_model=None)
@@ -197,6 +336,7 @@ def github_app_manifest_callback(request: Request, code: str = "", state: str = 
                 "FDEX_GITHUB_APP_PRIVATE_KEY_B64": "",
             }
         )
+        get_settings.cache_clear()
         write_audit(
             request,
             "github_app_manifest_completed",
