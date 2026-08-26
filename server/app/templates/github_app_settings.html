@@ -31,6 +31,41 @@
   {% endif %}
 </section>
 
+<section class="panel form-section" id="network">
+  <div class="panel-header">
+    <div>
+      <h2>GitHub 网络出口</h2>
+      <p>用户浏览器能打开 GitHub，不代表 FDEX 中心服务器也能稳定访问 GitHub API。OAuth 回调后的临时凭据交换、身份读取和仓库访问都由中心服务器发起。</p>
+    </div>
+    <span class="badge {% if github_proxy_configured %}success{% endif %}">{% if github_proxy_configured %}已配置可信代理{% else %}服务器直连{% endif %}</span>
+  </div>
+  <div class="inline-note">
+    如果用户授权后提示 <code>ReadTimeout</code>，通常代表 <strong>中心服务器 → github.com / api.github.com</strong> 的国际网络出口读取超时，而不是 GitHub App 权限配置错误。先运行下方“测试 GitHub 网络”。
+  </div>
+  <form method="post" action="/admin/github-app/network" class="settings-form" style="margin-top:16px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid three">
+      <label class="field">
+        <span>可信 HTTP(S) 出站代理（可选）</span>
+        <input type="password" name="http_proxy" autocomplete="new-password" placeholder="{% if github_proxy_configured %}已保存；留空保持现有代理{% else %}例如 http://127.0.0.1:7890{% endif %}">
+        <small>只允许你自己控制或完全信任的代理。用户 OAuth 临时凭据和 installation token 会经过该网络出口；FDEX 不使用第三方 GitHub 镜像。</small>
+      </label>
+      <label class="field"><span>连接超时（秒）</span><input type="number" step="0.1" name="connect_timeout_seconds" min="2" max="120" value="{{ settings.fdex_github_connect_timeout_seconds }}" required></label>
+      <label class="field"><span>读取超时（秒）</span><input type="number" step="0.1" name="read_timeout_seconds" min="5" max="300" value="{{ settings.fdex_github_read_timeout_seconds }}" required></label>
+      <label class="field"><span>可安全重试次数</span><input type="number" name="retry_attempts" min="1" max="5" value="{{ settings.fdex_github_retry_attempts }}" required><small>仅 GET、安装信息读取等安全操作自动重试。一次性 OAuth code 的读取超时不会盲目重放。</small></label>
+      <label class="checkbox-field aligned"><input type="checkbox" name="clear_proxy" value="true"><span>清除已保存 GitHub 出站代理，恢复服务器直连</span></label>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="button primary" type="submit">保存 GitHub 网络配置</button>
+    </div>
+  </form>
+  <form method="post" action="/admin/github-app/network/test" style="margin-top:12px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button secondary" type="submit">测试 GitHub 网络</button>
+  </form>
+  <p class="path-note">测试只请求 <code>github.com</code> 与 <code>api.github.com</code> 的公开接口，不使用任何用户 OAuth Token，也不会显示或记录代理密码。</p>
+</section>
+
 <section class="panel form-section">
   <div class="panel-header"><div><h2>应使用的 GitHub 地址</h2><p>Manifest 初始化会自动写入这些配置。</p></div></div>
   <div class="code-block">
