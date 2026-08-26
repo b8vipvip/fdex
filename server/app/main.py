@@ -11,14 +11,15 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-# Phase 7.7 must install the GitHub App-aware project-store factory before route/runtime
-# modules import `agent_project_store` from the legacy compatibility module.
+# Install the GitHub App installation-authority project store before route/runtime modules import
+# `agent_project_store` from the compatibility module.
 from app.github_app_bootstrap import install_github_app_project_store
 
 install_github_app_project_store()
 
 from app.admin_routes import router as admin_router
 from app.agent_admin_routes import router as agent_admin_router
+from app.agent_policy_portal_routes import router as agent_policy_portal_router
 from app.agent_routes import router as agent_router
 from app.auth_routes import router as auth_router
 from app.center_auth_middleware import CenterUserAuthMiddleware
@@ -123,6 +124,7 @@ app.include_router(user_account_auth_router)
 app.include_router(user_home_router)
 app.include_router(user_app_router)
 app.include_router(user_agent_task_router)
+app.include_router(agent_policy_portal_router)
 app.include_router(user_portal_router)
 app.include_router(github_app_portal_router)
 app.include_router(admin_router)

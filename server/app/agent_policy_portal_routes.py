@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
+
+from app.agent_projects import agent_project_store
+from app.config import SERVER_DIR
+from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
+
+router = APIRouter(prefix="/account/agent/runtime", include_in_schema=False)
+templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
+
+
+def _authority_store():
+    store = agent_project_store()
+    if not all(hasattr(store, name) for name in ("account_policy", "save_account_policy", "sync_owner_installations")):
+        raise RuntimeError("当前服务尚未启用 GitHub App Installation 权限模型")
+    return store
+
+
+@router.get("", response_class=HTMLResponse, response_model=None)
+def runtime_policy_page(request: Request) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        store = _authority_store()
+        policy = store.account_policy(owner_id)
+        sync_status = store.sync_status(owner_id)
+        projects = store.list_projects(owner_id, enabled_only=True)
+    except (ValueError, RuntimeError) as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse("/account/agent", status_code=303)
+    return templates.TemplateResponse(
+        "user_agent_settings.html",
+        _ctx(
+            request,
+            user,
+            policy=policy,
+            sync_status=sync_status,
+            repository_count=len(projects),
+        ),
+    )
+
+
+@router.post("/policy", response_model=None)
+def runtime_policy_save(
+    request: Request,
+    csrf_token: str = Form(...),
+    allow_network: bool = Form(default=False),
+    sandbox_memory_mb: int = Form(default=2048),
+    sandbox_cpu_percent: int = Form(default=150),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        policy = _authority_store().save_account_policy(
+            str(user["id"]),
+            allow_network=allow_network,
+            sandbox_memory_mb=sandbox_memory_mb,
+            sandbox_cpu_percent=sandbox_cpu_percent,
+        )
+        _flash(
+            request,
+            f"Coding Agent 运行策略已保存：内存 {policy['sandbox_memory_mb']} MB · "
+            f"CPU {policy['sandbox_cpu_percent']}% · 构建联网{'允许' if policy['allow_network'] else '隔离'}",
+            "success",
+        )
+    except (ValueError, RuntimeError) as exc:
+        _flash(request, str(exc), "error")
+    return RedirectResponse("/account/agent/runtime", status_code=303)
+
+
+@router.post("/sync", response_model=None)
+def runtime_repository_sync(request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        status = _authority_store().sync_owner_installations(owner_id, force=True, strict=True)
+        _flash(
+            request,
+            f"GitHub App 仓库已刷新：当前 Coding Agent 自动可用 {int(status.get('repository_count') or 0)} 个仓库",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"GitHub 仓库刷新失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime", status_code=303)
