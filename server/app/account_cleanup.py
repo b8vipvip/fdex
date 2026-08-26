@@ -77,6 +77,15 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         project_count = int(conn.execute("SELECT COUNT(*) FROM agent_projects WHERE owner_id=?", (clean,)).fetchone()[0])
         connection_count = int(conn.execute("SELECT COUNT(*) FROM github_connections WHERE owner_id=?", (clean,)).fetchone()[0])
         device_flow_count = int(conn.execute("SELECT COUNT(*) FROM github_device_flows WHERE owner_id=?", (clean,)).fetchone()[0])
+        policy_count = 0
+        sync_state_count = 0
+        tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "agent_account_policies" in tables:
+            policy_count = int(conn.execute("SELECT COUNT(*) FROM agent_account_policies WHERE owner_id=?", (clean,)).fetchone()[0])
+            conn.execute("DELETE FROM agent_account_policies WHERE owner_id=?", (clean,))
+        if "github_installation_project_sync" in tables:
+            sync_state_count = int(conn.execute("SELECT COUNT(*) FROM github_installation_project_sync WHERE owner_id=?", (clean,)).fetchone()[0])
+            conn.execute("DELETE FROM github_installation_project_sync WHERE owner_id=?", (clean,))
         conn.execute("DELETE FROM agent_projects WHERE owner_id=?", (clean,))
         conn.execute("DELETE FROM github_device_flows WHERE owner_id=?", (clean,))
         conn.execute("DELETE FROM github_connections WHERE owner_id=?", (clean,))
@@ -100,6 +109,8 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         "github_web_oauth_flows": web_oauth_flow_count,
         "github_app_flows": github_app_flow_count,
         "github_app_installations_revoked": len(installation_ids),
+        "agent_account_policies": policy_count,
+        "github_installation_sync_states": sync_state_count,
         "agent_tasks": task_count,
         "owner_directories": removed_dirs,
     }
