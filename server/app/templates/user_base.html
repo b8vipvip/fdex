@@ -11,12 +11,19 @@
 <body>
 <div class="user-shell">
     <header class="user-topbar">
-        <a class="user-brand" href="/account/github">
+        <a class="user-brand" href="/account/messages">
             <span class="user-brand-mark">F</span>
             <span>FDEX 用户中心</span>
         </a>
         <nav class="user-nav" aria-label="用户中心导航">
-            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub 与 Coding Agent</a>
+            <a href="/account/messages" class="{% if current_path.startswith('/account/messages') or current_path.startswith('/account/chat/') %}active{% endif %}">消息</a>
+            <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
+            <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
+            <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
+            <a href="/account/agent" class="{% if current_path.startswith('/account/agent') %}active{% endif %}">Coding Agent</a>
+            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
+            <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
+            <a href="/account/me" class="{% if current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') or current_path.startswith('/account/deleted') or current_path.startswith('/account/info/') or current_path.startswith('/account/employees') %}active{% endif %}">我的</a>
         </nav>
         {% if user %}
         <div class="account-chip">
