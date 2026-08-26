@@ -49,7 +49,8 @@ class GitHubAppInstallationFlowStore:
     GitHub warns that installation_id arriving at a setup URL is untrusted. FDEX therefore first
     performs a GitHub App user authorization and keeps that user token encrypted only for the
     short installation window. The setup callback is accepted only if /user/installations proves
-    that the same GitHub user can access the installation. The user token is then erased.
+    that the same GitHub user can access the installation. The user token is then erased. Expired
+    or abandoned flows are scrubbed by `init()` and by the server's periodic flow janitor.
     """
 
     def __init__(
@@ -103,11 +104,29 @@ class GitHubAppInstallationFlowStore:
                     ON github_app_flows(owner_id,created_at DESC);
                 """
             )
+            self._scrub_expired(conn)
         try:
             os.chmod(self.path.parent, 0o700)
             os.chmod(self.path, 0o600)
         except OSError:
             pass
+
+    def scrub_expired(self) -> int:
+        """Clear PKCE/user-token ciphertext from abandoned flows after their short TTL."""
+        self.init()
+        with self.db() as conn:
+            return self._scrub_expired(conn)
+
+    @staticmethod
+    def _scrub_expired(conn: sqlite3.Connection) -> int:
+        cur = conn.execute(
+            """UPDATE github_app_flows
+               SET status='expired',verifier_cipher='',user_token_cipher='',
+                   error=CASE WHEN error='' THEN 'expired' ELSE error END
+               WHERE status IN ('oauth_pending','install_pending') AND expires_at<=?""",
+            (_iso(_now()),),
+        )
+        return max(0, int(cur.rowcount or 0))
 
     def start(self, owner_id: str) -> dict[str, str]:
         self.client.ensure_ready()
