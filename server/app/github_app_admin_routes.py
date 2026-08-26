@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Form, Request
@@ -114,18 +114,19 @@ def github_app_manifest_start(request: Request, csrf_token: str = Form(...)) -> 
     request.session[_MANIFEST_STATE] = state
     manifest = json.dumps(_manifest(cfg), ensure_ascii=False, separators=(",", ":"))
     write_audit(
+        request,
         "github_app_manifest_started",
-        {
-            "public_base_url": cfg.public_base_url,
-            "callback_url": cfg.public_base_url.rstrip("/") + "/admin/github-app/manifest/callback",
-        },
+        public_base_url=cfg.public_base_url,
+        callback_url=cfg.public_base_url.rstrip("/") + "/admin/github-app/manifest/callback",
     )
+    # GitHub documents the manifest-flow CSRF state as a query parameter on the registration
+    # endpoint. Keep it out of the POST body so GitHub reliably echoes it to redirect_url.
+    github_manifest_url = f"{_MANIFEST_ENDPOINT}?{urlencode({'state': state})}"
     return templates.TemplateResponse(
         "github_app_manifest_post.html",
         {
             "request": request,
-            "github_manifest_url": _MANIFEST_ENDPOINT,
-            "state": state,
+            "github_manifest_url": github_manifest_url,
             "manifest": manifest,
         },
     )
@@ -197,13 +198,12 @@ def github_app_manifest_callback(request: Request, code: str = "", state: str = 
             }
         )
         write_audit(
+            request,
             "github_app_manifest_completed",
-            {
-                "app_id": app_id,
-                "slug": slug,
-                "client_id_suffix": client_id[-6:],
-                "private_key_path": str(pem_path),
-            },
+            app_id=app_id,
+            slug=slug,
+            client_id_suffix=client_id[-6:],
+            private_key_path=str(pem_path),
         )
         set_flash(
             request,
@@ -211,6 +211,11 @@ def github_app_manifest_callback(request: Request, code: str = "", state: str = 
             "success",
         )
     except (httpx.HTTPError, ValueError, RuntimeError, OSError) as exc:
-        write_audit("github_app_manifest_failed", {"error": str(exc)[:500]})
+        write_audit(
+            request,
+            "github_app_manifest_failed",
+            success=False,
+            error=str(exc)[:500],
+        )
         set_flash(request, f"GitHub App 初始化失败：{exc}", "error")
     return RedirectResponse("/admin/github-app", status_code=303)
