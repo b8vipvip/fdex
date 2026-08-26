@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import time
 from pathlib import Path
@@ -155,6 +156,21 @@ class GitHubAppClient:
             raise GitHubAppError("GitHub App 安装信息返回格式错误")
         return result
 
+    def delete_installation(self, installation_id: int) -> None:
+        """Uninstall the FDEX GitHub App so server-side repository authority is revoked."""
+        try:
+            self._request(
+                "DELETE",
+                f"{GITHUB_API_URL}/app/installations/{int(installation_id)}",
+                token=self.app_jwt(),
+            )
+        except GitHubAppError as exc:
+            # DELETE is idempotent from FDEX's perspective: if GitHub already removed it,
+            # delegated repository access is already revoked.
+            if "GitHub HTTP 404" in str(exc):
+                return
+            raise
+
     def installation_token(
         self,
         installation_id: int,
@@ -209,7 +225,7 @@ class GitHubAppClient:
         if encoded:
             try:
                 return base64.b64decode(encoded, validate=True)
-            except ValueError as exc:
+            except (ValueError, binascii.Error) as exc:
                 raise GitHubAppError("GitHub App 私钥 Base64 无效") from exc
         path_value = self.settings.fdex_github_app_private_key_path.strip()
         if not path_value:
@@ -245,6 +261,8 @@ class GitHubAppClient:
         if response.status_code >= 400:
             detail = response.text[:500].strip()
             raise GitHubAppError(f"GitHub HTTP {response.status_code}{': ' + detail if detail else ''}")
+        if response.status_code == 204 or not response.content:
+            return {}
         try:
             return response.json()
         except ValueError as exc:
