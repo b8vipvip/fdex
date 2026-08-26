@@ -73,12 +73,17 @@ class Settings(BaseSettings):
     # worktrees and build caches; users can release completed workspaces from the client.
     fdex_agent_account_disk_mb: int = Field(default=20480, ge=512, le=204800)
 
-    # Per-account GitHub authorization uses OAuth Device Flow. The client secret is
-    # deliberately not needed by the device flow; access/refresh tokens stay encrypted
-    # in the server-side Agent project store and are never returned to Android.
+    # Phase 7.5 Device OAuth remains a compatibility path for old/native clients.
     fdex_github_oauth_client_id: str = ""
     fdex_github_oauth_scope: str = "repo read:user offline_access"
     fdex_github_oauth_refresh_skew_seconds: int = Field(default=300, ge=30, le=3600)
+    # Phase 7.6 moves the primary GitHub connection UX to the FDEX user web center.
+    # These are service-level OAuth application credentials configured once by the operator;
+    # they are never per-user tokens and are never sent to Android or the browser.
+    fdex_github_web_oauth_client_id: str = ""
+    fdex_github_web_oauth_client_secret: str = ""
+    fdex_github_web_oauth_scope: str = "repo read:user"
+    fdex_github_web_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
 
     fdex_memory_enabled: bool = True
     fdex_memory_managed_stack: bool = True
@@ -147,6 +152,10 @@ class Settings(BaseSettings):
     @property
     def smtp_ready(self) -> bool:
         return bool(self.fdex_smtp_host.strip() and self.fdex_smtp_from_email.strip())
+
+    @property
+    def github_web_oauth_ready(self) -> bool:
+        return bool(self.fdex_github_web_oauth_client_id.strip() and self.fdex_github_web_oauth_client_secret.strip())
 
     @property
     def github_owner_repo(self) -> tuple[str, str]:
