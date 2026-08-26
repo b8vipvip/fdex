@@ -4,7 +4,7 @@
 <section class="hero">
     <div>
         <h1>GitHub 与 Coding Agent</h1>
-        <p>由你本人在 GitHub 官方页面安装 FDEX GitHub App，并直接选择“全部仓库”或“仅指定仓库”。FDEX 不要求你粘贴 GitHub Token，也不依赖管理员后台替你连接账号。</p>
+        <p>由你本人在 GitHub 官方页面安装 FDEX GitHub App，并选择“全部仓库”或“仅指定仓库”。这个 GitHub App Installation 就是 Coding Agent 的仓库访问边界，不需要再逐仓库添加项目或重复配置 Push / PR 权限。</p>
     </div>
     <div class="stack">
         {% if settings.github_app_ready %}
@@ -12,78 +12,55 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="primary" type="submit">安装 / 连接 FDEX GitHub App</button>
         </form>
-        <span class="fine">点击后会先验证当前 GitHub 用户身份，再进入 FDEX GitHub App 官方安装页；完成安装后 GitHub 会自动返回这里并显示连接结果。</span>
+        <a class="button button-secondary" href="/account/agent">打开 Coding Agent</a>
         {% elif oauth_ready %}
-        <form action="/account/github/connect" method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="secondary" type="submit">兼容方式连接 GitHub OAuth</button>
-        </form>
+        <form action="/account/github/connect" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">兼容方式连接 GitHub OAuth</button></form>
         <span class="badge warn">FDEX GitHub App 尚未初始化，暂用旧版 OAuth</span>
-        {% else %}
-        <span class="badge warn">平台 FDEX GitHub App 尚未初始化</span>
-        {% endif %}
+        {% else %}<span class="badge warn">平台 FDEX GitHub App 尚未初始化</span>{% endif %}
     </div>
 </section>
 
 {% if not settings.github_app_ready %}
 <section class="card danger-zone" style="margin-bottom:16px">
-    <div class="card-head"><div><h2>当前 GitHub App 安装功能尚不可用</h2><p>这正是页面显示“平台 FDEX GitHub App 尚未初始化”的含义。</p></div><span class="badge warn">需要平台管理员初始化</span></div>
-    <p>此前的“GitHub App 安装管理”按钮只是打开 GitHub 的通用 <code>/settings/installations</code> 列表。那个页面只管理<strong>已经存在、已经安装</strong>的 GitHub Apps，不能自动创建 FDEX GitHub App，所以你会看到其它 App 而没有 FDEX，也不会收到安装完成提示。</p>
-    <p>平台管理员需要先在 FDEX 服务端管理后台的 <strong>GitHub App</strong> 页面完成一次初始化。初始化成功后，本页会自动出现“安装 / 连接 FDEX GitHub App”按钮；用户点击后才会进入真正的 FDEX 官方安装页，安装成功会自动回到 FDEX 并绑定当前 user_id。</p>
+    <div class="card-head"><div><h2>当前 GitHub App 安装功能尚不可用</h2><p>平台管理员需要先在服务端管理后台完成一次 FDEX GitHub App 初始化。</p></div><span class="badge warn">需要平台管理员初始化</span></div>
 </section>
 {% endif %}
 
 <div class="grid">
     <section class="card span-4 stack">
-        <div class="card-head"><div><h2>已连接账号</h2><p>每个连接都绑定当前 FDEX user_id。</p></div><span class="badge">{{ connections|length }}</span></div>
-        {% if not connections %}
-            {% if settings.github_app_ready %}<p>还没有 GitHub 连接。点击上方“安装 / 连接 FDEX GitHub App”，GitHub 会让你选择账号/组织和可访问仓库。</p>{% else %}<p>平台 GitHub App 初始化完成前，普通用户无法安装 FDEX GitHub App。</p>{% endif %}
-        {% endif %}
+        <div class="card-head"><div><h2>已连接 GitHub</h2><p>每个安装只绑定当前 FDEX user_id。</p></div><span class="badge">{{ connections|length }}</span></div>
+        {% if not connections %}<p>还没有 GitHub 连接。安装 FDEX GitHub App 时直接在 GitHub 决定 FDEX 可以访问哪些仓库。</p>{% endif %}
         {% for connection in connections %}
         <div class="repo">
             <div class="row between">
                 <div>
                     <strong>{{ connection.login or connection.name }}</strong>
                     {% if connection.auth_type == 'github_app' %}
-                    <div class="fine">FDEX GitHub App 安装 · {% if connection.github_app_repository_selection == 'selected' %}仅指定仓库{% else %}全部仓库{% endif %} · #{{ connection.github_app_installation_id }}</div>
-                    {% else %}
-                    <div class="fine">兼容 {{ connection.auth_type }}{% if connection.scope %} · {{ connection.scope }}{% endif %}</div>
-                    {% endif %}
+                    <div class="fine">FDEX GitHub App · {% if connection.github_app_repository_selection == 'selected' %}仅指定仓库{% else %}全部仓库{% endif %} · #{{ connection.github_app_installation_id }}</div>
+                    {% else %}<div class="fine">兼容 {{ connection.auth_type }}</div>{% endif %}
                 </div>
                 {% if connection.needs_reconnect %}<span class="badge warn">需重新授权</span>{% else %}<span class="badge ok">已连接</span>{% endif %}
             </div>
             {% if connection.auth_type == 'github_app' %}
             <div class="fine" style="margin-top:8px">Contents：{{ connection.app_permissions.get('contents','未授予') }} · Pull requests：{{ connection.app_permissions.get('pull_requests','未授予') }}</div>
-            {% endif %}
             <div class="row" style="margin-top:10px">
-                <a class="button button-secondary" href="/account/github?connection_id={{ connection.id }}">查看仓库</a>
-                {% if connection.auth_type == 'github_app' %}
-                <a class="button button-secondary" href="https://github.com/settings/installations/{{ connection.github_app_installation_id }}" target="_blank" rel="noopener">在 GitHub 修改这个 FDEX 安装</a>
-                <form action="/account/github/app/connections/{{ connection.id }}/refresh" method="post">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button class="secondary" type="submit">刷新权限</button>
-                </form>
-                {% endif %}
-                <form action="/account/github/connections/{{ connection.id }}/disconnect" method="post" onsubmit="return confirm('{% if connection.auth_type == 'github_app' %}确认卸载 FDEX GitHub App 并撤销该安装的仓库访问？请先移除使用此连接的 Agent 项目。{% else %}确认从 FDEX 移除此 GitHub 连接？仍被 Agent 项目使用时不会删除。{% endif %}')">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button class="danger-button" type="submit">{% if connection.auth_type == 'github_app' %}卸载并断开{% else %}从 FDEX 移除{% endif %}</button>
-                </form>
+                <a class="button button-secondary" href="/account/github?connection_id={{ connection.id }}">查看可用仓库</a>
+                <a class="button button-secondary" href="https://github.com/settings/installations/{{ connection.github_app_installation_id }}" target="_blank" rel="noopener">在 GitHub 修改仓库范围</a>
+                <form action="/account/github/app/connections/{{ connection.id }}/refresh" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">刷新仓库</button></form>
+                <form action="/account/github/connections/{{ connection.id }}/disconnect" method="post" onsubmit="return confirm('确认卸载 FDEX GitHub App 并撤销该安装的仓库访问？正在执行中的 Coding Agent 任务需要先停止。')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger-button" type="submit">卸载并断开</button></form>
             </div>
+            {% else %}
+            <form action="/account/github/connections/{{ connection.id }}/disconnect" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger-button" type="submit">从 FDEX 移除</button></form>
+            {% endif %}
         </div>
         {% endfor %}
-        {% if connections %}<div class="divider"></div><a class="button button-secondary" href="https://github.com/settings/installations" target="_blank" rel="noopener">查看 GitHub 已安装 Apps</a>{% endif %}
-        {% if oauth_ready %}
-        <form action="/account/github/connect" method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="secondary" type="submit">兼容旧版 OAuth 连接</button>
-        </form>
-        {% endif %}
-        <p class="fine">GitHub App 模式只长期保存 installation_id 和非密钥安装元数据。用于确认安装归属的 GitHub 用户凭据仅在短暂安装流程中加密保存，完成后立即清除；若用户中途退出，过期清理任务也会自动擦除。Coding Agent 每次操作再生成短期 installation token，不写入数据库、浏览器或 Android。断开 GitHub App 时会先在 GitHub 撤销安装权限，再删除 FDEX 本地连接。</p>
+        {% if connections %}<a class="button button-secondary" href="https://github.com/settings/installations" target="_blank" rel="noopener">查看 GitHub 已安装 Apps</a>{% endif %}
+        <p class="fine">FDEX 长期只保存 installation_id 和非密钥安装元数据。Coding Agent 每次实际操作时才生成当前仓库、当前操作所需的短期 installation token，不写入数据库、浏览器或 Android。</p>
     </section>
 
     <section class="card span-8 stack">
         <div class="card-head">
-            <div><h2>选择仓库</h2><p>第一层由 GitHub App 安装页限定仓库；第二层再由 FDEX 限定 Coding Agent 实际可以做什么。</p></div>
+            <div><h2>Coding Agent 可访问仓库</h2><p>这里直接展示 GitHub App Installation 授权的仓库。所有这些仓库都会自动出现在 Coding Agent，不再需要“添加到 Coding Agent”。</p></div>
             {% if selected_connection %}<span class="badge ok">{{ selected_connection.login or selected_connection.name }}</span>{% endif %}
         </div>
         {% if selected_connection %}
@@ -97,78 +74,28 @@
         {% for repo in repositories %}
             <article class="repo">
                 <div class="row between">
-                    <div>
-                        <strong>{{ repo.full_name }}</strong>
-                        <div class="fine">{% if repo.private %}私有仓库{% else %}公开仓库{% endif %} · 默认分支 {{ repo.default_branch }}{% if repo.archived %} · 已归档{% endif %}</div>
-                    </div>
-                    {% if repo.can_pr %}<span class="badge ok">可 Push + PR</span>{% elif repo.can_push %}<span class="badge ok">可 Push</span>{% else %}<span class="badge">只读</span>{% endif %}
+                    <div><strong>{{ repo.full_name }}</strong><div class="fine">{% if repo.private %}私有仓库{% else %}公开仓库{% endif %} · 默认分支 {{ repo.default_branch }}{% if repo.archived %} · 已归档{% endif %}</div></div>
+                    {% if repo.archived %}<span class="badge warn">只保留历史</span>{% elif repo.can_pr %}<span class="badge ok">读取 · 修改 · Push · PR</span>{% elif repo.can_push %}<span class="badge ok">读取 · 修改 · Push</span>{% else %}<span class="badge">只读</span>{% endif %}
                 </div>
                 {% if repo.description %}<p>{{ repo.description }}</p>{% endif %}
-                {% if not repo.archived %}
-                <form action="/account/github/projects" method="post" class="stack">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="hidden" name="connection_id" value="{{ selected_connection.id }}">
-                    <input type="hidden" name="repo_full_name" value="{{ repo.full_name }}">
-                    <div class="grid">
-                        <div class="span-5"><label>项目名称</label><input type="text" name="name" value="{{ repo.name }}" required></div>
-                        <div class="span-4"><label>基础分支</label><input type="text" name="base_branch" value="{{ repo.default_branch }}" required></div>
-                        <div class="span-3"><label>单任务内存 MB</label><input type="number" name="sandbox_memory_mb" min="128" max="16384" value="2048"></div>
-                    </div>
-                    <div class="row">
-                        <label class="check"><input type="checkbox" name="allow_push" {% if not repo.can_push %}disabled{% endif %}>允许推送 Agent 分支</label>
-                        <label class="check"><input type="checkbox" name="allow_pr" {% if not repo.can_pr %}disabled{% endif %}>允许创建 Pull Request</label>
-                        <label class="check"><input type="checkbox" name="allow_network">允许构建任务联网</label>
-                        <input type="hidden" name="sandbox_cpu_percent" value="150">
-                    </div>
-                    <button type="submit" class="primary">添加到 Coding Agent</button>
-                </form>
-                {% endif %}
             </article>
-        {% else %}
-            <p class="muted">当前 FDEX GitHub App 安装没有匹配仓库。若刚刚在 GitHub 修改了仓库范围，请返回后点击“刷新权限”。</p>
-        {% endfor %}
+        {% else %}<p class="muted">当前安装没有匹配仓库。若刚刚在 GitHub 修改了仓库范围，请点击左侧“刷新仓库”。</p>{% endfor %}
         </div>
-        {% else %}
-            {% if settings.github_app_ready %}<p>点击上方“安装 / 连接 FDEX GitHub App”。安装时由你在 GitHub 官方页面决定 FDEX 可以看到哪些仓库；成功后 GitHub 会自动返回本页。</p>{% else %}<p>平台 FDEX GitHub App 尚未初始化，因此当前没有可以安装和选择仓库的官方 FDEX App。</p>{% endif %}
-        {% endif %}
-    </section>
-
-    <section class="card span-12 stack">
-        <div class="card-head"><div><h2>已配置的 Agent 项目与实际权限</h2><p>这里是 FDEX 自己的第二层权限闸门。即使 GitHub App 有写权限，你仍可以把某个项目限制成只读。</p></div><span class="badge">{{ projects|length }}</span></div>
-        {% for project in projects %}
-        <article class="project">
-            <div class="row between">
-                <div><strong>{{ project.name }}</strong><div class="mono muted">{{ project.repo_full_name }}</div></div>
-                {% if project.enabled %}<span class="badge ok">已启用</span>{% else %}<span class="badge">已停用</span>{% endif %}
-            </div>
-            <form action="/account/github/projects/{{ project.id }}" method="post" class="stack" style="margin-top:12px">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <div class="grid">
-                    <div class="span-5"><label>项目名称</label><input type="text" name="name" value="{{ project.name }}" required></div>
-                    <div class="span-4"><label>基础分支</label><input type="text" name="base_branch" value="{{ project.base_branch }}" required></div>
-                    <div class="span-3"><label>单任务内存 MB</label><input type="number" name="sandbox_memory_mb" min="128" max="16384" value="{{ project.sandbox_memory_mb }}"></div>
-                </div>
-                <input type="hidden" name="sandbox_cpu_percent" value="{{ project.sandbox_cpu_percent }}">
-                <div class="row">
-                    <label class="check"><input type="checkbox" name="enabled" {% if project.enabled %}checked{% endif %}>启用项目</label>
-                    <label class="check"><input type="checkbox" name="allow_push" {% if project.allow_push %}checked{% endif %}>允许推送 Agent 分支</label>
-                    <label class="check"><input type="checkbox" name="allow_pr" {% if project.allow_pr %}checked{% endif %}>允许创建 PR</label>
-                    <label class="check"><input type="checkbox" name="allow_network" {% if project.allow_network %}checked{% endif %}>允许构建联网</label>
-                </div>
-                <div class="row">
-                    <button class="primary" type="submit">保存权限</button>
-                    <button class="danger-button" type="submit" formaction="/account/github/projects/{{ project.id }}/delete" onclick="return confirm('确认移除此 Agent 项目？不会删除 GitHub 远端仓库、Commit 或 PR。')">移除项目</button>
-                </div>
-            </form>
-        </article>
-        {% else %}
-            <p class="muted">当前 FDEX 账号还没有 Agent 项目。</p>
-        {% endfor %}
+        {% else %}<p>安装 FDEX GitHub App 后，GitHub 授权范围内的仓库会自动出现在这里和 Coding Agent。</p>{% endif %}
     </section>
 
     <section class="card span-12">
-        <h3>授权边界</h3>
-        <p>平台管理员只需要初始化一次 FDEX GitHub App 身份。之后每个 FDEX 用户必须亲自在 GitHub 官方安装页选择账号/组织和仓库范围；FDEX 长期只保留 installation_id 与非密钥安装元数据，不长期保存用户 OAuth access token，也不保存 installation token。执行 Clone/Fetch 时生成仅当前仓库的只读短期凭据；Push 与 PR 再分别按当前项目权限生成更小权限的短期凭据。</p>
+        <div class="row between">
+            <div><h2>统一权限模型</h2><p>仓库访问和 GitHub 权限不再按仓库重复配置；沙箱运行策略按 FDEX 账号统一配置一次。</p></div>
+            <a class="button button-secondary" href="/account/agent/runtime">Coding Agent 运行策略</a>
+        </div>
+        <p><strong>GitHub 仓库范围：</strong>完全由 GitHub App 的“全部仓库 / 仅指定仓库”决定。<strong>读取、Push、PR：</strong>完全继承 GitHub App permissions。<strong>构建联网、内存、CPU：</strong>在 FDEX 的账号级运行策略中统一设置。</p>
+        <p class="fine">FDEX 内部仍保留 project_id 作为稳定工作区和任务历史索引，但它不再是用户需要手工维护的权限对象。仓库从 GitHub App 范围移除后会停止接受新任务；重新加入后会自动恢复。</p>
+    </section>
+
+    <section class="card span-12">
+        <h3>最小权限执行</h3>
+        <p>即使 GitHub App 安装覆盖多个仓库，某个 Coding Agent 任务也不会拿到一个“全仓库长期 Token”。Clone/Fetch 时生成只限制当前仓库的 Contents read 短期凭据；Push 时生成当前仓库的 Contents write；创建 PR 时生成当前仓库的 Pull requests write。</p>
     </section>
 </div>
 {% endblock %}
