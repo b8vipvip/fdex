@@ -70,7 +70,7 @@
     const name = employeeName(form);
     const display = [message, attachmentName ? `[附件：${attachmentName}]` : ''].filter(Boolean).join('\n');
     const mine = textBubble('user', `我 · ${beijingTime()}`, display);
-    const pending = textBubble('assistant', `${name} · 正在处理`, '正在判断是否需要调用 FDEX Agent / GitHub 工具…');
+    const pending = textBubble('assistant', `${name} · 正在处理`, '正在连接 FDEX AI 线路；同时判断是否需要调用 FDEX Agent / GitHub 工具…');
     history.append(mine.article, pending.article);
     scrollHistory(history);
 
