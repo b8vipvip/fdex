@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}GitHub App · FDEX{% endblock %}
+{% block heading %}GitHub App 平台初始化{% endblock %}
+{% block subheading %}先初始化一次 FDEX GitHub App，之后每个用户自行在 GitHub 官方页面安装并选择仓库{% endblock %}
+{% block actions %}<a class="button secondary" href="/account/github" target="_blank" rel="noopener">打开用户端</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+  <div class="panel-header">
+    <div><h2>平台状态</h2><p>这里配置的是 FDEX 自己的 GitHub App 身份，不是某个用户的仓库授权。</p></div>
+    <span class="badge {% if settings.github_app_ready %}success{% endif %}">{% if settings.github_app_ready %}已初始化{% else %}尚未初始化{% endif %}</span>
+  </div>
+  {% if settings.github_app_ready %}
+  <div class="info-grid">
+    <div><span>App ID</span><strong>{{ settings.fdex_github_app_id }}</strong></div>
+    <div><span>Slug</span><strong>{{ settings.fdex_github_app_slug }}</strong></div>
+    <div><span>Client ID</span><strong>{{ settings.fdex_github_app_client_id }}</strong></div>
+    <div><span>私钥</span><strong>已安全保存</strong></div>
+  </div>
+  <div class="row" style="margin-top:16px">
+    {% if app_settings_url %}<a class="button secondary" href="{{ app_settings_url }}" target="_blank" rel="noopener">在 GitHub 查看 App 设置</a>{% endif %}
+    {% if install_url %}<a class="button secondary" href="{{ install_url }}" target="_blank" rel="noopener">打开官方安装页</a>{% endif %}
+  </div>
+  {% else %}
+  <div class="inline-note">当前用户页面显示“平台 GitHub App 尚未初始化”，因此不会出现真正的 FDEX 安装流程。直接打开 <code>github.com/settings/installations</code> 只能看到已经安装的其他 App，并不会自动创建 FDEX GitHub App。</div>
+  <form method="post" action="/admin/github-app/manifest/start" style="margin-top:16px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button primary" type="submit">在 GitHub 创建并初始化 FDEX GitHub App</button>
+  </form>
+  <p class="path-note">点击后会跳到 GitHub 官方创建页面。GitHub 会显示 FDEX App 名称、回调地址和仓库权限，你确认创建后会自动回到这里，服务端自动保存 App ID、Client ID、Client Secret 和 PEM 私钥。</p>
+  {% endif %}
+</section>
+
+<section class="panel form-section">
+  <div class="panel-header"><div><h2>应使用的 GitHub 地址</h2><p>Manifest 初始化会自动写入这些配置。</p></div></div>
+  <div class="code-block">
+    <div>用户 OAuth Callback：<code>{{ callback_url }}</code></div>
+    <div>安装 Setup URL：<code>{{ setup_url }}</code></div>
+    <div>Manifest Callback：<code>{{ manifest_callback_url }}</code></div>
+    <div>用户入口：<code>{{ settings.public_base_url.rstrip('/') }}/account/github</code></div>
+  </div>
+</section>
+
+<section class="panel form-section">
+  <div class="panel-header"><div><h2>权限边界</h2><p>GitHub 负责第一层仓库选择，FDEX 再负责第二层 Coding Agent 项目权限。</p></div></div>
+  <ul class="plain-list">
+    <li>Contents：read/write（安装层最大权限；实际 Clone/Fetch/Push 时会再下缩）</li>
+    <li>Pull requests：read/write（只有 FDEX 项目明确允许创建 PR 才会使用）</li>
+    <li>Metadata：read</li>
+    <li>用户 Token 只在短暂安装身份校验阶段使用，完成后清除；安装 Token 每次操作临时生成，不落库。</li>
+  </ul>
+</section>
+{% endblock %}
