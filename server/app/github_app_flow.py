@@ -148,7 +148,7 @@ class GitHubAppInstallationFlowStore:
                 "SELECT * FROM github_app_flows WHERE owner_id=? AND oauth_state_hash=?",
                 (owner_id, state_hash),
             ).fetchone()
-            row = self._pending(row, "oauth_pending")
+            row = self._require_pending(conn, row, "oauth_pending")
             verifier = self.projects.decrypt(str(row["verifier_cipher"] or ""))
 
         try:
@@ -222,7 +222,7 @@ class GitHubAppInstallationFlowStore:
                 "SELECT * FROM github_app_flows WHERE owner_id=? AND install_state_hash=?",
                 (owner_id, install_state_hash),
             ).fetchone()
-            row = self._pending(row, "install_pending")
+            row = self._require_pending(conn, row, "install_pending")
             user_token = self.projects.decrypt(str(row["user_token_cipher"] or ""))
             if not user_token:
                 raise GitHubAppFlowError("GitHub 临时身份凭据已失效，请重新连接")
@@ -262,19 +262,24 @@ class GitHubAppInstallationFlowStore:
             conn.execute("DELETE FROM github_app_flows WHERE owner_id=?", (owner_id,))
         return count
 
-    def _pending(self, row: sqlite3.Row | None, expected_status: str) -> sqlite3.Row:
+    @staticmethod
+    def _require_pending(
+        conn: sqlite3.Connection,
+        row: sqlite3.Row | None,
+        expected_status: str,
+    ) -> sqlite3.Row:
         if row is None:
             raise GitHubAppFlowError("GitHub 授权状态无效，请重新连接")
         if str(row["status"] or "") != expected_status:
             raise GitHubAppFlowError("该 GitHub 授权流程已经使用或失效")
         expires = _parse(str(row["expires_at"] or ""))
         if expires is None or expires <= _now():
-            with self.db() as conn:
-                conn.execute(
-                    """UPDATE github_app_flows SET status='expired',verifier_cipher='',user_token_cipher='',error='expired'
-                       WHERE id=?""",
-                    (row["id"],),
-                )
+            conn.execute(
+                """UPDATE github_app_flows
+                   SET status='expired',verifier_cipher='',user_token_cipher='',error='expired'
+                   WHERE id=?""",
+                (row["id"],),
+            )
             raise GitHubAppFlowError("GitHub 授权已过期，请重新连接")
         return row
 
