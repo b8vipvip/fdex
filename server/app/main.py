@@ -124,7 +124,7 @@ async def shutdown_memory_clients() -> None:
 
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/account", status_code=302)
+    return RedirectResponse(url="/admin", status_code=302)
 
 
 @app.get(f"{settings.api_prefix}/info")
