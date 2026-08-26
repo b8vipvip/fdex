@@ -55,9 +55,9 @@
                     <button class="secondary" type="submit">刷新权限</button>
                 </form>
                 {% endif %}
-                <form action="/account/github/connections/{{ connection.id }}/disconnect" method="post" onsubmit="return confirm('确认从 FDEX 移除此 GitHub 连接？仍被 Agent 项目使用时不会删除。GitHub App 本身需要在 GitHub 设置中卸载。')">
+                <form action="/account/github/connections/{{ connection.id }}/disconnect" method="post" onsubmit="return confirm('{% if connection.auth_type == 'github_app' %}确认卸载 FDEX GitHub App 并撤销该安装的仓库访问？请先移除使用此连接的 Agent 项目。{% else %}确认从 FDEX 移除此 GitHub 连接？仍被 Agent 项目使用时不会删除。{% endif %}')">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button class="danger-button" type="submit">从 FDEX 移除</button>
+                    <button class="danger-button" type="submit">{% if connection.auth_type == 'github_app' %}卸载并断开{% else %}从 FDEX 移除{% endif %}</button>
                 </form>
             </div>
         </div>
@@ -70,7 +70,7 @@
             <button class="secondary" type="submit">兼容旧版 OAuth 连接</button>
         </form>
         {% endif %}
-        <p class="fine">GitHub App 模式只长期保存 installation_id 和非密钥安装元数据。用于确认安装归属的 GitHub 用户凭据仅在短暂安装流程中加密保存，完成后立即清除；若用户中途退出，过期清理任务也会自动擦除。Coding Agent 每次操作再生成短期 installation token，不写入数据库、浏览器或 Android。</p>
+        <p class="fine">GitHub App 模式只长期保存 installation_id 和非密钥安装元数据。用于确认安装归属的 GitHub 用户凭据仅在短暂安装流程中加密保存，完成后立即清除；若用户中途退出，过期清理任务也会自动擦除。Coding Agent 每次操作再生成短期 installation token，不写入数据库、浏览器或 Android。断开 GitHub App 时会先在 GitHub 撤销安装权限，再删除 FDEX 本地连接。</p>
     </section>
 
     <section class="card span-8 stack">
