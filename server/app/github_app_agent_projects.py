@@ -201,6 +201,35 @@ class GitHubAppAgentProjectStore(AgentProjectStore):
             None,
         )
 
+    def delete_connection(self, owner_id: str, connection_id: int) -> None:
+        owner_id = _safe_scope(owner_id)
+        connection = self.get_connection(owner_id, connection_id)
+        if str(connection.get("auth_type") or "") != "github_app":
+            return super().delete_connection(owner_id, connection_id)
+        installation_id = str(connection.get("github_app_installation_id") or "")
+        if not installation_id.isdigit():
+            raise ValueError("GitHub App installation is invalid")
+        # Hold the per-owner mutation guard across the remote revoke and local delete so a project
+        # cannot be created against this connection between the two operations.
+        with self.owner_db(owner_id, "github_app_disconnect") as conn:
+            used = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM agent_projects WHERE owner_id=? AND connection_id=?",
+                    (owner_id, connection_id),
+                ).fetchone()[0]
+            )
+            if used:
+                raise ValueError("GitHub connection is still used by a project")
+            try:
+                GitHubAppClient().delete_installation(int(installation_id))
+            except GitHubAppError as exc:
+                raise ValueError(str(exc)) from exc
+            conn.execute(
+                "UPDATE github_device_flows SET connection_id=NULL WHERE owner_id=? AND connection_id=?",
+                (owner_id, connection_id),
+            )
+            conn.execute("DELETE FROM github_connections WHERE id=? AND owner_id=?", (connection_id, owner_id))
+
     def connection_token(
         self,
         owner_id: str,
