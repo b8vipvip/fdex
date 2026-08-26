@@ -15,17 +15,17 @@ class MailServiceError(RuntimeError):
 
 def _smtp_connection(cfg: Settings):
     context = ssl.create_default_context()
-    smtp_cls = smtplib.SMTP_SSL if cfg.fdex_smtp_ssl else smtplib.SMTP
+    smtp = None
     try:
         if cfg.fdex_smtp_ssl:
-            smtp = smtp_cls(
+            smtp = smtplib.SMTP_SSL(
                 cfg.fdex_smtp_host.strip(),
                 cfg.fdex_smtp_port,
                 timeout=cfg.fdex_smtp_timeout_seconds,
                 context=context,
             )
         else:
-            smtp = smtp_cls(
+            smtp = smtplib.SMTP(
                 cfg.fdex_smtp_host.strip(),
                 cfg.fdex_smtp_port,
                 timeout=cfg.fdex_smtp_timeout_seconds,
@@ -35,8 +35,33 @@ def _smtp_connection(cfg: Settings):
         if cfg.fdex_smtp_username.strip():
             smtp.login(cfg.fdex_smtp_username.strip(), cfg.fdex_smtp_password)
         return smtp
+    except (OSError, smtplib.SMTPException, ssl.SSLError) as exc:
+        if smtp is not None:
+            try:
+                smtp.close()
+            except (OSError, smtplib.SMTPException):
+                pass
+        raise MailServiceError("SMTP 连接、TLS 或登录失败") from exc
+
+
+def send_message(message: EmailMessage, *, settings: Settings | None = None) -> None:
+    """Send one prepared message without exposing SMTP credentials to callers."""
+    cfg = settings or fresh_settings()
+    if not cfg.smtp_ready:
+        raise MailServiceError("SMTP 尚未配置完整")
+    smtp = _smtp_connection(cfg)
+    try:
+        smtp.send_message(message)
     except (OSError, smtplib.SMTPException) as exc:
-        raise MailServiceError("SMTP 连接或登录失败") from exc
+        raise MailServiceError("SMTP 邮件发送失败") from exc
+    finally:
+        try:
+            smtp.quit()
+        except (OSError, smtplib.SMTPException):
+            try:
+                smtp.close()
+            except (OSError, smtplib.SMTPException):
+                pass
 
 
 def send_test_email(recipient: str, *, settings: Settings | None = None) -> dict[str, object]:
@@ -55,19 +80,7 @@ def send_test_email(recipient: str, *, settings: Settings | None = None) -> dict
         "这是一封来自 FDEX 中心服务端的 SMTP 测试邮件。\n\n"
         "收到此邮件说明发件服务器、认证和发件人配置可用。\n"
     )
-    try:
-        smtp = _smtp_connection(cfg)
-        try:
-            smtp.send_message(message)
-        finally:
-            try:
-                smtp.quit()
-            except smtplib.SMTPException:
-                smtp.close()
-    except (OSError, smtplib.SMTPException, MailServiceError) as exc:
-        if isinstance(exc, MailServiceError):
-            raise
-        raise MailServiceError("SMTP 测试邮件发送失败") from exc
+    send_message(message, settings=cfg)
     return {"ok": True, "recipient": target, "host": cfg.fdex_smtp_host.strip(), "port": cfg.fdex_smtp_port}
 
 
