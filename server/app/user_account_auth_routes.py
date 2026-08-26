@@ -57,7 +57,7 @@ def _expand_reset_code(email: str, code: str) -> str:
 @router.get("/register", response_class=HTMLResponse, response_model=None)
 def register_page(request: Request) -> Response:
     if _current_user(request) is not None:
-        return RedirectResponse("/account/github", status_code=303)
+        return RedirectResponse("/account/messages", status_code=303)
     return templates.TemplateResponse(
         "user_register.html",
         _ctx(request, error="", registration_enabled=fresh_settings().fdex_auth_registration_enabled),
@@ -105,13 +105,13 @@ def register_submit(
         )
     request.session[_USER_SESSION] = str(result["session_id"])
     request.session[_USER_CSRF] = secrets.token_urlsafe(32)
-    return RedirectResponse("/account/github", status_code=303)
+    return RedirectResponse("/account/messages", status_code=303)
 
 
 @router.get("/password/forgot", response_class=HTMLResponse, response_model=None)
 def forgot_password_page(request: Request, email: str = "") -> Response:
     if _current_user(request) is not None:
-        return RedirectResponse("/account/github", status_code=303)
+        return RedirectResponse("/account/messages", status_code=303)
     cfg = fresh_settings()
     return templates.TemplateResponse(
         "user_forgot_password.html",
@@ -164,7 +164,7 @@ def forgot_password_submit(
 @router.get("/password/reset", response_class=HTMLResponse, response_model=None)
 def reset_password_page(request: Request, email: str = "") -> Response:
     if _current_user(request) is not None:
-        return RedirectResponse("/account/github", status_code=303)
+        return RedirectResponse("/account/messages", status_code=303)
     return templates.TemplateResponse(
         "user_reset_password.html",
         _ctx(request, error="", email=email[:254]),
