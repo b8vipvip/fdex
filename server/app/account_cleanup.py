@@ -7,6 +7,7 @@ from pathlib import Path
 from app.agent_projects import agent_project_store
 from app.agent_tasks import agent_task_store
 from app.config import fresh_settings
+from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
 
@@ -39,6 +40,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         conn.execute("DELETE FROM github_connections WHERE owner_id=?", (clean,))
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
+    github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
     task_count = agent_task_store().delete_owner(clean)
     settings = fresh_settings()
     removed_dirs = 0
@@ -54,6 +56,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         "github_connections": connection_count,
         "github_device_flows": device_flow_count,
         "github_web_oauth_flows": web_oauth_flow_count,
+        "github_app_flows": github_app_flow_count,
         "agent_tasks": task_count,
         "owner_directories": removed_dirs,
     }
