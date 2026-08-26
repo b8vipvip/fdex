@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +32,7 @@ _TASK_HINTS = ("agent任务", "agent 任务", "coding agent任务", "coding agen
 class EmployeeToolContext:
     prompt_context: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
+    answer_prefix: str = ""
 
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -46,9 +46,6 @@ def _should_collect_github_inventory(employee: dict[str, Any], prompt: str) -> b
     clean = (prompt or "").strip()
     if not clean:
         return False
-    # “仓库” alone is intentionally sufficient when the employee is explicitly granted Coding
-    # Agent capability. This lets natural Chinese requests such as “我现在有哪几个仓库？” work
-    # without needing the literal word GitHub in every turn.
     githubish = _contains_any(clean, _GITHUB_HINTS)
     inventoryish = _contains_any(clean, _INVENTORY_HINTS)
     return githubish and inventoryish
@@ -59,9 +56,8 @@ def _should_collect_agent_tasks(employee: dict[str, Any], prompt: str) -> bool:
 
 
 def _safe_repo_payload(repo: dict[str, Any]) -> dict[str, Any]:
-    # Tool output is data, not instructions. Keep only operational metadata needed to answer the
-    # user and deliberately omit repository descriptions/readme text to reduce prompt-injection
-    # surface when the result is passed to the final model for synthesis.
+    # Repository descriptions/readmes are external text and can contain prompt injection. Only
+    # operational metadata is admitted into the trusted tool-data block.
     return {
         "full_name": str(repo.get("full_name") or "")[:300],
         "private": bool(repo.get("private")),
@@ -129,6 +125,34 @@ def _collect_repositories(owner_id: str) -> tuple[dict[str, Any], dict[str, Any]
     return payload, event
 
 
+def _inventory_fact_summary(payload: dict[str, Any]) -> str:
+    lines = [f"【GitHub 实时检查】当前授权范围内共 {int(payload.get('repository_count') or 0)} 个仓库。"]
+    for account in payload.get("accounts") or []:
+        login = str(account.get("login") or "GitHub")
+        selection = "仅指定仓库" if str(account.get("repository_selection") or "") == "selected" else "全部仓库"
+        lines.append(f"账号/组织：{login}（{selection}）")
+        for repo in account.get("repositories") or []:
+            if not isinstance(repo, dict):
+                continue
+            if bool(repo.get("archived")):
+                state = "已归档"
+            elif bool(repo.get("can_pr")):
+                state = "正常，可读取/修改/Push/PR"
+            elif bool(repo.get("can_push")):
+                state = "正常，可读取/修改/Push"
+            else:
+                state = "只读"
+            visibility = "私有" if bool(repo.get("private")) else "公开"
+            updated = str(repo.get("updated_at") or "未知")
+            lines.append(
+                f"- {repo.get('full_name')}：{visibility}，默认分支 {repo.get('default_branch') or 'main'}，{state}，GitHub 更新时间 {updated}"
+            )
+    sync_error = str((payload.get("sync_status") or {}).get("last_error") or "")
+    if sync_error:
+        lines.append(f"同步提示：{sync_error}")
+    return "\n".join(lines)[:12000]
+
+
 def _collect_task_status(owner_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     tasks = agent_task_store().list(owner_id, limit=20)
     rows = [
@@ -159,20 +183,23 @@ def _collect_task_status(owner_id: str) -> tuple[dict[str, Any], dict[str, Any]]
 def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], prompt: str) -> EmployeeToolContext:
     """Run deterministic, owner-scoped tools before the final AI synthesis.
 
-    This is intentionally not an LLM planner. Clear capability requests are routed by server-side
-    rules so a model cannot invent tool execution or cross the current FDEX user_id boundary. The
-    actual GitHub data comes from the user's GitHub App installation using short-lived credentials.
-    The final model receives only the resulting facts and is instructed to treat them as data.
+    Clear capability requests are routed by server-side rules so a model cannot invent tool
+    execution or cross the current FDEX user_id boundary. GitHub facts come from the user's GitHub
+    App installation using short-lived credentials. One final AI request is then used only to
+    analyze/summarize those facts; the deterministic fact block is retained even if the model gives
+    a poor or suspiciously short answer.
     """
 
     blocks: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
+    answer_prefixes: list[str] = []
 
     if _should_collect_github_inventory(employee, prompt):
         try:
             payload, event = _collect_repositories(owner_id)
             blocks.append({"tool": event["tool"], "result": payload})
             events.append(event)
+            answer_prefixes.append(_inventory_fact_summary(payload))
         except (KeyError, ValueError, RuntimeError) as exc:
             events.append(
                 {
@@ -181,12 +208,8 @@ def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], promp
                     "summary": f"GitHub 仓库检查失败：{exc}",
                 }
             )
-            blocks.append(
-                {
-                    "tool": "github.installation.repositories",
-                    "error": str(exc)[:1000],
-                }
-            )
+            blocks.append({"tool": "github.installation.repositories", "error": str(exc)[:1000]})
+            answer_prefixes.append(f"【GitHub 实时检查失败】{str(exc)[:800]}")
 
     if _should_collect_agent_tasks(employee, prompt):
         try:
@@ -215,4 +238,8 @@ def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], promp
         f"{serialized[:24000]}\n"
         "[/FDEX_TRUSTED_TOOL_DATA]"
     )
-    return EmployeeToolContext(prompt_context=context, events=events)
+    return EmployeeToolContext(
+        prompt_context=context,
+        events=events,
+        answer_prefix="\n\n".join(answer_prefixes)[:14000],
+    )
