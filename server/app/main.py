@@ -26,6 +26,7 @@ from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
+from app.github_app_portal_routes import router as github_app_portal_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
@@ -110,6 +111,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(user_portal_router)
+app.include_router(github_app_portal_router)
 app.include_router(admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
