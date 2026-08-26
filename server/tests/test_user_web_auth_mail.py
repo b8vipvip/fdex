@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app import mail_service
+from app import auth_email, mail_service
 from app.config import Settings
 from app.mail_service import MailServiceError, send_test_email, test_imap_connection as check_imap_connection
 from app.user_account_auth_routes import router as user_auth_router
@@ -149,6 +149,19 @@ def test_imap_test_is_readonly_and_reports_counts_without_fetching_content(monke
     assert result["messages"] == 12
     assert result["unseen"] == 3
     assert "password" not in result
+
+
+def test_reset_email_transport_failure_is_hidden_from_public_reset_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_delivery(message, *, settings=None):
+        raise MailServiceError("transport down")
+
+    monkeypatch.setattr(auth_email, "send_message", fail_delivery)
+    delivered = auth_email.send_password_reset_code(
+        "owner@example.test",
+        "123456",
+        settings=_smtp_settings(),
+    )
+    assert delivered is False
 
 
 def test_mail_configuration_ui_masks_saved_passwords_and_has_real_tests() -> None:
