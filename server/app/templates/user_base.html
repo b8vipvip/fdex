@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>{% block title %}FDEX 用户中心{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/user_portal.css">
+</head>
+<body>
+<div class="user-shell">
+    <header class="user-topbar">
+        <a class="user-brand" href="/account/github">
+            <span class="user-brand-mark">F</span>
+            <span>FDEX 用户中心</span>
+        </a>
+        <nav class="user-nav" aria-label="用户中心导航">
+            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub 与 Coding Agent</a>
+        </nav>
+        {% if user %}
+        <div class="account-chip">
+            <div><strong>{{ user.name }}</strong><small>{{ user.email }}</small></div>
+            <form action="/account/logout" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="secondary">退出</button>
+            </form>
+        </div>
+        {% endif %}
+    </header>
+    {% if flash %}
+    <div class="alert alert-{{ flash.category }}">{{ flash.message }}</div>
+    {% endif %}
+    <main class="page">
+        {% block content %}{% endblock %}
+    </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>
