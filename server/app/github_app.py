@@ -97,9 +97,9 @@ class GitHubAppClient:
 
     def exchange_user_code(self, *, code: str, verifier: str) -> dict[str, Any]:
         self.ensure_ready()
-        # An OAuth authorization code is single-use. A read timeout after the request was sent
-        # is ambiguous, so this POST is deliberately not replayed. We instead give it a generous
-        # configurable read timeout and return an actionable transport error if it still fails.
+        # An OAuth authorization code is single-use. A timeout after the request has begun is
+        # ambiguous, so this POST is deliberately never replayed. Give it a generous configurable
+        # read timeout and return an actionable transport error if it still fails.
         payload = self._request(
             "POST",
             GITHUB_TOKEN_URL,
@@ -351,43 +351,27 @@ class GitHubAppClient:
         if auth == "bearer" and token:
             headers["Authorization"] = f"Bearer {token}"
 
+        # Never replay the single-use OAuth code exchange. Retry-safe calls get bounded retries.
         attempts = int(self.settings.fdex_github_retry_attempts) if retry_safe else 1
-        last_exc: httpx.HTTPError | None = None
+        response: httpx.Response | None = None
         for attempt in range(1, attempts + 1):
             try:
                 with self._client(follow_redirects=False) as client:
                     response = client.request(method, url, headers=headers, data=form, json=json_body)
                 break
-            except httpx.ConnectTimeout as exc:
-                last_exc = exc
-                # A connection timeout occurs before a usable connection is established; retry is
-                # allowed even for OAuth code exchange because the request was not delivered.
-                if attempt < max(attempts, 2) and not retry_safe:
-                    attempts = min(2, int(self.settings.fdex_github_retry_attempts))
-                    time.sleep(0.35 * attempt)
-                    continue
-                if attempt < attempts:
-                    time.sleep(0.35 * attempt)
-                    continue
-                raise self._transport_error(operation, exc) from exc
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
-                last_exc = exc
-                # Read/write timeouts on a single-use OAuth code are not replayed. GETs and other
-                # explicitly retry-safe GitHub operations get bounded backoff retries.
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
                 if retry_safe and attempt < attempts:
                     time.sleep(0.35 * attempt)
                     continue
                 raise self._transport_error(operation, exc) from exc
             except httpx.HTTPError as exc:
-                last_exc = exc
                 if retry_safe and attempt < attempts:
                     time.sleep(0.35 * attempt)
                     continue
                 raise self._transport_error(operation, exc) from exc
-        else:  # pragma: no cover - loop always returns or raises
-            assert last_exc is not None
-            raise self._transport_error(operation, last_exc) from last_exc
 
+        if response is None:  # pragma: no cover - defensive; request loop either assigns or raises
+            raise GitHubAppError(f"{operation}失败：未获得 GitHub 响应")
         if response.status_code >= 400:
             detail = response.text[:500].strip()
             raise GitHubAppError(f"GitHub HTTP {response.status_code}{': ' + detail if detail else ''}")
