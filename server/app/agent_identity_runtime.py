@@ -28,10 +28,7 @@ def _general_preferences(self: WebWorkspaceStore, owner_id: str) -> dict[str, An
             owner_id,
             "preferences",
             1,
-            {
-                "professional_level": "auto",
-                "default_home": "messages",
-            },
+            {"professional_level": "auto", "default_home": "messages"},
             sort_key="preferences",
         )
 
@@ -147,6 +144,17 @@ def _install_account_identity_model() -> None:
         conn.execute("UPDATE users SET company_name='' WHERE company_name<>''")
 
 
+def _install_general_memory_context_protocol() -> None:
+    """Accept the neutral wrapper from new clients while retaining old-client compatibility."""
+    import re
+
+    from app import memory_middleware
+
+    memory_middleware._LOCAL_CONTEXT = re.compile(
+        r"(?s)\s*<fdex_(?:agent|company)_context>\s*(.*?)\s*</fdex_(?:agent|company)_context>\s*"
+    )
+
+
 def _install_general_web_render() -> None:
     from app import user_app_routes as routes
 
@@ -201,5 +209,6 @@ def _install_employee_system_prompt() -> None:
 def install_agent_identity_runtime() -> None:
     _install_account_identity_model()
     _install_web_workspace_model()
+    _install_general_memory_context_protocol()
     _install_general_web_render()
     _install_employee_system_prompt()
