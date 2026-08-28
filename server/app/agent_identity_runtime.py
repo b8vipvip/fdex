@@ -129,6 +129,28 @@ def _install_account_identity_model() -> None:
         conn.execute("UPDATE users SET company_name='' WHERE company_name<>''")
 
 
+def _install_general_web_render() -> None:
+    from app import user_app_routes as routes
+
+    if getattr(routes._render, "_fdex_agent_identity_v1", False):
+        return
+
+    def generalized_render(request: Any, user: dict[str, object], page: str, **extra: object) -> Any:
+        return routes.templates.TemplateResponse(
+            "user_web_app_general.html",
+            routes._ctx(
+                request,
+                user,
+                page=page,
+                preferences=routes.web_workspace_store().preferences(routes._owner(user)),
+                **extra,
+            ),
+        )
+
+    generalized_render._fdex_agent_identity_v1 = True  # type: ignore[attr-defined]
+    routes._render = generalized_render
+
+
 def _install_employee_system_prompt() -> None:
     from app import user_app_routes as routes
 
@@ -161,4 +183,5 @@ def _install_employee_system_prompt() -> None:
 def install_agent_identity_runtime() -> None:
     _install_account_identity_model()
     _install_web_workspace_model()
+    _install_general_web_render()
     _install_employee_system_prompt()
