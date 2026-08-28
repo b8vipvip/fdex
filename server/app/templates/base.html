@@ -48,7 +48,7 @@
         </header>
 
         {% if flash %}
-        <div class="alert alert-{{ flash.category }}" role="alert">
+        <div class="alert alert-{{ flash.category }}" role="alert" style="position:sticky;top:12px;z-index:1000">
             <span>{{ flash.message }}</span>
             <button type="button" onclick="this.parentElement.remove()" aria-label="关闭">×</button>
         </div>
