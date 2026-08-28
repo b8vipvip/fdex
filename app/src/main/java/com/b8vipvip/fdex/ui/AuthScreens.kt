@@ -2,6 +2,7 @@ package com.b8vipvip.fdex.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -99,7 +100,7 @@ internal fun LoginScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
         return
     }
 
-    AuthFrame("登录 FDEX", "登录中心账号，进入你的 AI 虚拟公司") {
+    AuthFrame("登录 FDEX", "进入你的智体、知识与工作空间") {
         OutlinedTextField(email, { email = it }, label = { Text("邮箱") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
         OutlinedTextField(password, { password = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy)
         if (resetMessage.isNotBlank()) Text(resetMessage, color = Emerald)
@@ -115,7 +116,7 @@ internal fun LoginScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
         }, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "登录中…" else "登录") }
         TextButton(onClick = { forgotMode = true; error = "" }, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("忘记密码？用邮箱验证码找回") }
         TextButton(onClick = onRegister, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("还没有 FDEX 账号？注册") }
-        Text("账号身份保存在 FDEX 中心服务器；本机业务数据按 user_id 使用独立数据库空间。", style = MaterialTheme.typography.bodySmall, color = Muted)
+        Text("账号身份保存在 FDEX 中心服务器；本机数据按 user_id 使用独立数据库空间。", style = MaterialTheme.typography.bodySmall, color = Muted)
     }
 }
 
@@ -126,20 +127,20 @@ internal fun RegisterScreen(onDone: () -> Unit, onLogin: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
-    var company by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    AuthFrame("创建 FDEX 中心账号", "一个账号对应独立 GitHub、项目、沙箱和本机数据空间") {
+    AuthFrame("创建 FDEX 中心账号", "一个账号对应独立智体、知识、GitHub、项目、沙箱和本机数据空间") {
         OutlinedTextField(name, { name = it }, label = { Text("你的名字") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
         OutlinedTextField(email, { email = it }, label = { Text("邮箱") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
-        OutlinedTextField(company, { company = it }, label = { Text("公司名称（可选）") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
         OutlinedTextField(password, { password = it }, label = { Text("密码（至少 8 位）") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy)
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         Button(enabled = !busy && name.isNotBlank() && email.isNotBlank() && password.length >= 8, onClick = {
             busy = true; error = ""
             scope.launch {
-                when (val result = CentralAuthApi.register(name, email, password, company)) {
+                // The center API retains a legacy company argument for protocol compatibility; new
+                // clients intentionally send it empty and never expose it as user identity.
+                when (val result = CentralAuthApi.register(name, email, password, "")) {
                     is CentralAuthResult.Success -> { sessions.save(result.value); password = ""; busy = false; onDone() }
                     is CentralAuthResult.Failure -> { error = result.message; busy = false }
                 }

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.Project
 import com.b8vipvip.fdex.data.ProjectAsset
+import com.b8vipvip.fdex.data.createGeneralProject
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.ChatAttachment
 import com.b8vipvip.fdex.network.ClientAiApi
@@ -52,10 +53,10 @@ internal fun WorkScreen(repo: AppRepository, revision: Int, onOpen: (Long) -> Un
         item {
             Text("工作区", color = Blue, fontWeight = FontWeight.SemiBold)
             Text("让 AI 帮你分析资料并生成可执行方案", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("把业务问题、任务、流程或想法持续沉淀成一项工作。", color = Muted, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+            Text("把问题、任务、流程或想法持续沉淀成一项工作。", color = Muted, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
         }
         if (projects.isEmpty()) {
-            item { EmptyCard("🚀", "你还没有工作", "先创建一个工作，告诉 AI 你想解决什么业务问题。", "创建第一个工作", onNew) }
+            item { EmptyCard("🚀", "你还没有工作", "先创建一个工作，告诉 AI 你想解决什么问题。", "创建第一个工作", onNew) }
         }
         items(projects, key = { it.id }) { project -> ProjectCard(project) { onOpen(project.id) } }
     }
@@ -88,18 +89,18 @@ internal fun NewProjectScreen(repo: AppRepository, onDone: (Long) -> Unit) {
     var retention by remember { mutableStateOf("keep_forever") }
     var allowAi by remember { mutableStateOf(true) }
     var desensitize by remember { mutableStateOf(true) }
-    var auto by remember { mutableStateOf(repo.profile().autoCompanyMode) }
+    var auto by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("新增工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("把一个业务问题、任务、流程或想法创建成工作，后续持续补充资料并让 AI 生成方案。", color = Muted)
+        Text("把一个问题、任务、流程或想法创建成工作，后续持续补充资料并让 AI 生成方案。", color = Muted)
         OutlinedTextField(title, { title = it }, label = { Text("工作名称") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(description, { description = it }, label = { Text("用大白话描述需求") }, minLines = 5, modifier = Modifier.fillMaxWidth())
         SelectorCard(
-            "专业程度",
-            listOf("beginner" to "完全小白", "business" to "懂业务不懂技术", "product" to "产品/项目经理", "developer" to "技术人员", "auto" to "AI 自动判断"),
+            "回答专业程度",
+            listOf("beginner" to "更易理解", "business" to "实用清晰", "product" to "结构化分析", "developer" to "技术细节优先", "auto" to "AI 自动判断"),
             level,
         ) { level = it }
         SelectorCard(
@@ -114,11 +115,11 @@ internal fun NewProjectScreen(repo: AppRepository, onDone: (Long) -> Unit) {
         ) { retention = it }
         ToggleRow("允许第三方 AI 分析", allowAi) { allowAi = it }
         ToggleRow("自动脱敏后再分析", desensitize) { desensitize = it }
-        ToggleRow("创建后启动公司自动运营", auto) { auto = it }
+        ToggleRow("创建后启动自动协作", auto) { auto = it }
         Button(
             enabled = title.isNotBlank(),
             onClick = {
-                onDone(repo.createProject(title, description, level, storage, retention, allowAi, desensitize, auto).id)
+                onDone(repo.createGeneralProject(title, description, level, storage, retention, allowAi, desensitize, auto).id)
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("创建工作") }
@@ -240,8 +241,8 @@ internal fun ProjectDetailScreen(
                 if (group != null) {
                     Card {
                         Column(Modifier.padding(16.dp)) {
-                            Text("公司自动运营", color = Emerald, fontWeight = FontWeight.Bold)
-                            Text("工作群已创建，AI 团队可以在群里协同推进。", color = Muted)
+                            Text("自动协作", color = Emerald, fontWeight = FontWeight.Bold)
+                            Text("工作群已创建，多个智体可以在群里协同推进。", color = Muted)
                             Button(onClick = { onGroup(group.id) }, modifier = Modifier.padding(top = 8.dp)) { Text("进入工作群") }
                         }
                     }
@@ -258,7 +259,7 @@ private suspend fun analyzeAsset(
     context: Context,
     snackbar: SnackbarHostState,
 ) {
-    val system = "你是企业资料分析助手。请基于实际读取到的资料正文或画面，输出关键事实、与工作相关的需求、风险、下一步建议。无法读取的部分必须明确说明，禁止只凭文件名猜内容。"
+    val system = "你是资料分析助手。请基于实际读取到的资料正文或画面，输出关键事实、与当前工作相关的需求、风险、下一步建议。无法读取的部分必须明确说明，禁止只凭文件名猜内容。"
     val prompt = "工作：${project.title}\n需求：${project.description}\n请读取并分析这份真实附件：${asset.name}。"
     val content = encodeChatContent(
         prompt,
@@ -286,7 +287,7 @@ private suspend fun generateProjectReport(repo: AppRepository, project: Project,
     val analyses = repo.assets(project.id).filter { it.analysis.isNotBlank() }.joinToString("\n\n") { "${it.name}: ${it.analysis}" }
     val prompt = "工作名称：${project.title}\n原始需求：${project.description}\n补充信息：$notes\n资料分析：$analyses"
     when (val result = ClientAiApi.ask(
-        "你是企业项目顾问。生成结构清晰的中文执行方案，包含目标、现状判断、关键问题、行动步骤、优先级、风险与检查指标。",
+        "你是项目顾问。生成结构清晰的中文执行方案，包含目标、现状判断、关键问题、行动步骤、优先级、风险与检查指标。",
         prompt,
         1800,
     )) {

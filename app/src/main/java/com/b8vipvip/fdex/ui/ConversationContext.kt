@@ -27,7 +27,7 @@ internal fun recentEmployeeConversationContext(
         .filterNot { it.deleted }
         .filterNot { excludeMessageId != null && it.id == excludeMessageId }
         .map { message ->
-            val author = if (message.role == "user") "用户" else "员工"
+            val author = if (message.role == "user") "用户" else "智体"
             historyLine(author, message.content)
         }
         .filter { it.isNotBlank() }
@@ -49,7 +49,7 @@ internal fun recentGroupConversationContext(
             val author = when (message.role) {
                 "user" -> "用户"
                 "system" -> "群系统"
-                else -> message.employeeName.ifBlank { "员工" }
+                else -> message.employeeName.ifBlank { "智体" }
             }
             historyLine(author, message.content)
         }

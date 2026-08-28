@@ -50,12 +50,18 @@ from app.user_agent_task_routes import router as user_agent_task_router
 install_provider_protocol_runtime()
 
 from app.user_app_routes import router as user_app_router
+from app.agent_identity_runtime import install_agent_identity_runtime
+
+# Generalize the old company/employee presentation into user-defined 智体 while retaining the old
+# storage kinds and URLs for backward-compatible data migration.
+install_agent_identity_runtime()
+
 from app.employee_chat_runtime import install_employee_chat_runtime
 
-# The Web employee route exposes a Coding Agent permission flag. Install the owner-scoped tool
-# runtime after user_app_routes exists but before user_chat_api_routes imports `_ask_employee`.
+# Coding Agent tooling wraps the generalized responder after its identity prompt is installed.
 install_employee_chat_runtime()
 
+from app.agent_identity_routes import router as agent_identity_router
 from app.user_chat_api_routes import router as user_chat_api_router
 from app.user_home_routes import router as user_home_router
 from app.user_login_routes import router as user_login_router
@@ -136,6 +142,9 @@ app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
 app.include_router(user_home_router)
+# The generalized create/update handlers intentionally precede the compatibility router so legacy
+# URLs keep working without exposing the retired company/industry/department/position contract.
+app.include_router(agent_identity_router)
 app.include_router(user_app_router)
 app.include_router(user_chat_api_router)
 app.include_router(user_agent_task_router)

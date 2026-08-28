@@ -199,8 +199,8 @@ internal fun AgentCenterScreen(
         }
 
         item { SectionTitle("启用 Coding Agent") }
-        items(repo.employees(), key = { "agent-employee-${it.id}" }) { employee ->
-            val enabled = agentPrefs.isCodingAgent(employee.id)
+        items(repo.employees(), key = { "agent-employee-${it.id}" }) { agent ->
+            val enabled = agentPrefs.isCodingAgent(agent.id)
             Card(Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.fillMaxWidth().padding(14.dp),
@@ -208,18 +208,18 @@ internal fun AgentCenterScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(employee.name, fontWeight = FontWeight.SemiBold)
-                        Text(if (enabled) "已启用 · 点击员工后直接进入 Coding Agent" else "普通 AI 员工", color = Muted)
+                        Text(agent.name, fontWeight = FontWeight.SemiBold)
+                        Text(if (enabled) "已启用 · 打开智体后直接进入 Coding Agent" else "普通智体", color = Muted)
                     }
                     Switch(
                         checked = enabled,
                         onCheckedChange = {
-                            agentPrefs.setCodingAgent(employee.id, it)
+                            agentPrefs.setCodingAgent(agent.id, it)
                             onChanged()
-                            scope.launch { snackbar.showSnackbar(if (it) "${employee.name} 已启用 Coding Agent" else "${employee.name} 已恢复普通 AI") }
+                            scope.launch { snackbar.showSnackbar(if (it) "${agent.name} 已启用 Coding Agent" else "${agent.name} 已恢复普通智体") }
                         },
                     )
-                    Button(onClick = { onOpenEmployee(employee.id) }) { Text("打开") }
+                    Button(onClick = { onOpenEmployee(agent.id) }) { Text("打开") }
                 }
             }
         }
@@ -238,7 +238,7 @@ internal fun AgentCenterScreen(
         } else {
             item {
                 Card(Modifier.fillMaxWidth()) {
-                    Text("当前账号还没有 GitHub Agent 项目，请到 FDEX 用户 Web 中心连接 GitHub 并添加仓库。", modifier = Modifier.padding(14.dp), color = Muted)
+                    Text("当前账号还没有 GitHub Agent 项目，请到 FDEX 用户 Web 中心连接 GitHub 并选择仓库。", modifier = Modifier.padding(14.dp), color = Muted)
                 }
             }
         }

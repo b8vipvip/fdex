@@ -112,7 +112,7 @@ internal fun ActionableGroupChatMessage(
                 val author = when (message.role) {
                     "user" -> "我"
                     "system" -> "群系统"
-                    else -> message.employeeName.ifBlank { "员工" }
+                    else -> message.employeeName.ifBlank { "智体" }
                 }
                 onQuote(author, message.content)
             },

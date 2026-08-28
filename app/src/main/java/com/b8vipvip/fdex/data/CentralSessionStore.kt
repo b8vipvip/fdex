@@ -6,7 +6,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 
-/** Stores only FDEX Center session material. Passwords are never persisted on Android. */
+/** Stores only FDEX Center session material. Passwords and legacy company metadata are not persisted. */
 class CentralSessionStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -18,7 +18,9 @@ class CentralSessionStore(context: Context) {
     fun refreshExpiresAt(): String = prefs.getString(KEY_REFRESH_EXPIRES, "").orEmpty()
     fun email(): String = prefs.getString(KEY_EMAIL, "").orEmpty()
     fun name(): String = prefs.getString(KEY_NAME, "").orEmpty()
-    fun companyName(): String = prefs.getString(KEY_COMPANY, "").orEmpty()
+
+    /** Legacy API compatibility. New clients never expose or persist company identity. */
+    fun companyName(): String = ""
 
     fun accessExpiresWithin(seconds: Long, now: Instant = Instant.now()): Boolean =
         sessionExpiresWithin(accessExpiresAt(), seconds, now)
@@ -31,7 +33,7 @@ class CentralSessionStore(context: Context) {
             .putString(KEY_USER_ID, session.user.id)
             .putString(KEY_EMAIL, session.user.email)
             .putString(KEY_NAME, session.user.name)
-            .putString(KEY_COMPANY, session.user.companyName)
+            .remove(KEY_COMPANY)
             .putString(KEY_ACCESS_TOKEN, session.accessToken)
             .putString(KEY_REFRESH_TOKEN, session.refreshToken)
             .putString(KEY_ACCESS_EXPIRES, session.accessExpiresAt)

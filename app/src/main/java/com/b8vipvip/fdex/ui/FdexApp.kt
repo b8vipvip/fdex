@@ -36,6 +36,7 @@ import com.b8vipvip.fdex.data.AgentEmployeePreferences
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.CentralSessionStore
 import com.b8vipvip.fdex.data.ClientPreferences
+import com.b8vipvip.fdex.data.scrubLegacyBusinessMetadata
 import com.b8vipvip.fdex.network.CentralAuthApi
 import com.b8vipvip.fdex.network.ServerApi
 import com.b8vipvip.fdex.network.ServerCheckResult
@@ -95,7 +96,9 @@ fun FdexApp() {
     val context = LocalContext.current
     val sessions = remember { CentralSessionStore(context) }
     var identityRevision by remember { mutableIntStateOf(0) }
-    val repo = remember(identityRevision) { AppRepository(context) }
+    val repo = remember(identityRevision) {
+        AppRepository(context).also { it.scrubLegacyBusinessMetadata() }
+    }
     val clientPreferences = remember { ClientPreferences(context) }
     val agentPreferences = remember { AgentEmployeePreferences(context) }
     val scope = rememberCoroutineScope()
@@ -146,7 +149,7 @@ fun FdexApp() {
         Route.Login -> "登录"; Route.Register -> "注册"; Route.Messages -> "消息"; Route.Work -> "知识库"
         Route.Discover -> "发现"; Route.Me -> "我的"; Route.AgentCenter -> "Coding Agent / GitHub"
         is Route.EmployeeChat -> repo.employee(current.id)?.name?.let { if (agentPreferences.isCodingAgent(current.id)) "💻 $it" else it } ?: "聊天"
-        Route.Employees -> "AI 员工管理"; Route.AddEmployee -> "添加员工"; is Route.EditEmployee -> "编辑员工"
+        Route.Employees -> "智体管理"; Route.AddEmployee -> "添加智体"; is Route.EditEmployee -> "编辑智体"
         Route.NewProject -> "新增工作"; is Route.ProjectDetail -> repo.project(current.id)?.title ?: "工作详情"
         Route.NewGroup -> "创建工作群"; is Route.GroupChat -> repo.group(current.id)?.name ?: "工作群"
         Route.Account -> "账号信息"; Route.PrivacySecurity -> "隐私与安全"; Route.Settings -> "设置"
@@ -170,17 +173,17 @@ fun FdexApp() {
                             is Route.EmployeeChat -> Box {
                                 TextButton(onClick = { employeeMenu = true }) { Text("•••", fontSize = 20.sp) }
                                 DropdownMenu(expanded = employeeMenu, onDismissRequest = { employeeMenu = false }) {
-                                    DropdownMenuItem(text = { Text("编辑员工") }, onClick = { employeeMenu = false; go(Route.EditEmployee(current.id)) })
+                                    DropdownMenuItem(text = { Text("编辑智体") }, onClick = { employeeMenu = false; go(Route.EditEmployee(current.id)) })
                                     DropdownMenuItem(
-                                        text = { Text(if (agentPreferences.isCodingAgent(current.id)) "切换为普通 AI 员工" else "设为 Coding Agent") },
+                                        text = { Text(if (agentPreferences.isCodingAgent(current.id)) "切换为普通智体" else "设为 Coding Agent") },
                                         onClick = {
                                             val enabled = !agentPreferences.isCodingAgent(current.id)
                                             agentPreferences.setCodingAgent(current.id, enabled); employeeMenu = false; touch()
-                                            scope.launch { snackbar.showSnackbar(if (enabled) "已切换为 Coding Agent" else "已切换为普通 AI 员工") }
+                                            scope.launch { snackbar.showSnackbar(if (enabled) "已切换为 Coding Agent" else "已切换为普通智体") }
                                         },
                                     )
                                     DropdownMenuItem(text = { Text("Coding Agent / GitHub 管理") }, onClick = { employeeMenu = false; go(Route.AgentCenter) })
-                                    DropdownMenuItem(text = { Text("员工管理") }, onClick = { employeeMenu = false; go(Route.Employees) })
+                                    DropdownMenuItem(text = { Text("智体管理") }, onClick = { employeeMenu = false; go(Route.Employees) })
                                     DropdownMenuItem(text = { Text("清空聊天记录") }, onClick = { repo.clearMessages(current.id); employeeMenu = false; touch() })
                                 }
                             }
@@ -214,8 +217,8 @@ fun FdexApp() {
                 )
                 Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
                 Route.Work -> KnowledgeScreen(repo = repo, revision = revision, onOpenProject = { go(Route.ProjectDetail(it)) }, onNewProject = { go(Route.NewProject) }, onChanged = { touch() }, snackbar = snackbar)
-                Route.Discover -> DiscoverScreen()
-                Route.Me -> MeScreen(
+                Route.Discover -> GeneralDiscoverScreen()
+                Route.Me -> GeneralMeScreen(
                     repo, revision, onAccount = { go(Route.Account) }, onPrivacy = { go(Route.PrivacySecurity) }, onEmployees = { go(Route.Employees) },
                     onDeleted = { go(Route.Deleted) }, onSettings = { go(Route.Settings) }, onUpdate = { go(Route.Update) }, onGuide = { go(Route.Guide) },
                     onPrivacyPolicy = { go(Route.PrivacyPolicy) }, onContact = { go(Route.Contact) },
@@ -240,10 +243,10 @@ fun FdexApp() {
                     snackbar = snackbar,
                     onRequireLogin = { sessions.clear(); agentPreferences.clearAccountCredential(); history.clear(); route = Route.Login; reloadIdentity() },
                 )
-                Route.Settings -> SettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
-                Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
-                Route.Update -> UpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
-                Route.Guide -> UsageGuideScreen(); Route.PrivacyPolicy -> PrivacyPolicyScreen(); Route.Contact -> ContactScreen()
+                Route.Settings -> GeneralSettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
+                Route.Deleted -> GeneralDeletedScreen(repo, revision, onChanged = { touch() })
+                Route.Update -> GeneralUpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
+                Route.Guide -> GeneralUsageGuideScreen(); Route.PrivacyPolicy -> GeneralPrivacyPolicyScreen(); Route.Contact -> ContactScreen()
             }
         }
     }
