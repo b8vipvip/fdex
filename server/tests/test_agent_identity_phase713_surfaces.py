@@ -21,6 +21,10 @@ def test_runtime_uses_general_web_surface() -> None:
 def test_android_project_surface_is_not_company_specific() -> None:
     root = Path(__file__).resolve().parents[2]
     source = (root / "app/src/main/java/com/b8vipvip/fdex/ui/WorkScreens.kt").read_text(encoding="utf-8")
+    identity = (root / "app/src/main/java/com/b8vipvip/fdex/data/AgentIdentity.kt").read_text(encoding="utf-8")
     for retired in ("公司自动运营", "企业资料分析助手", "企业项目顾问", "行业", "部门"):
         assert retired not in source
     assert "自动协作" in source
+    assert "repo.createGeneralProject" in source
+    assert "自动协作已启动" in identity
+    assert "startAuto = false" in identity
