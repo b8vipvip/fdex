@@ -16,7 +16,7 @@ class ConversationContextTest {
         )
         val context = recentEmployeeConversationContext(messages, excludeMessageId = 3)
         assertTrue(context.contains("用户：第一问"))
-        assertTrue(context.contains("员工：第一答"))
+        assertTrue(context.contains("智体：第一答"))
         assertFalse(context.contains("那第二个呢"))
         assertTrue(context.indexOf("第一问") < context.indexOf("第一答"))
     }
