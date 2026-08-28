@@ -20,6 +20,43 @@ fun AppRepository.addAgent(identityPrompt: String = ""): Employee {
     )
 }
 
+/**
+ * Compatibility wrapper around the historical project API. It preserves the stored autoOperation
+ * flag and group behavior without creating company-oriented descriptions or system messages.
+ */
+fun AppRepository.createGeneralProject(
+    title: String,
+    description: String,
+    professionalLevel: String,
+    storageMode: String,
+    retentionPolicy: String,
+    allowAi: Boolean,
+    autoDesensitize: Boolean,
+    startAuto: Boolean,
+): Project {
+    val created = createProject(
+        title = title,
+        description = description,
+        professionalLevel = professionalLevel,
+        storageMode = storageMode,
+        retentionPolicy = retentionPolicy,
+        allowAi = allowAi,
+        autoDesensitize = autoDesensitize,
+        startAuto = false,
+    )
+    if (!startAuto) return created
+
+    val group = createGroup(
+        name = "${created.title} · 工作群",
+        description = "自动协作工作群",
+        projectId = created.id,
+        memberIds = employees().map { it.id },
+        autoMode = true,
+    )
+    addGroupMessage(group.id, "system", "", "自动协作已启动，当前智体可以围绕这项工作共同推进。")
+    return created.copy(autoOperation = true).also(::updateProject)
+}
+
 fun AppRepository.scrubLegacyBusinessMetadata() {
     val current = profile()
     if (current.companyName.isNotBlank() || current.industry.isNotBlank() || current.autoCompanyMode) {
