@@ -61,6 +61,25 @@ def _general_preferences(self: WebWorkspaceStore, owner_id: str) -> dict[str, An
     return current
 
 
+def _general_save_preferences(self: WebWorkspaceStore, owner_id: str, **values: Any) -> dict[str, Any]:
+    current = _general_preferences(self, owner_id)
+    parent_id = current.pop("_parent_id", None)
+    deleted = bool(current.pop("_deleted", False))
+    for key in _LEGACY_PREFERENCE_FIELDS:
+        current.pop(key, None)
+        values.pop(key, None)
+    current.update(values)
+    return self.upsert(
+        owner_id,
+        "preferences",
+        1,
+        current,
+        parent_id=parent_id,
+        sort_key="preferences",
+        deleted=deleted,
+    )
+
+
 def _general_ensure_defaults(self: WebWorkspaceStore, owner_id: str) -> None:
     """Stop seeding company-style employees and scrub obsolete taxonomy from Web records.
 
@@ -103,6 +122,7 @@ def _install_web_workspace_model() -> None:
     if getattr(WebWorkspaceStore, "_fdex_agent_identity_v1", False):
         return
     WebWorkspaceStore.preferences = _general_preferences  # type: ignore[assignment]
+    WebWorkspaceStore.save_preferences = _general_save_preferences  # type: ignore[assignment]
     WebWorkspaceStore.ensure_defaults = _general_ensure_defaults  # type: ignore[assignment]
     WebWorkspaceStore._fdex_agent_identity_v1 = True  # type: ignore[attr-defined]
 
@@ -121,8 +141,6 @@ def _install_account_identity_model() -> None:
         CentralAuthStore.register = register_without_company  # type: ignore[assignment]
         CentralAuthStore._fdex_general_identity_v1 = True  # type: ignore[attr-defined]
 
-    # Existing accounts may contain a value from the old company-oriented product model. The
-    # column remains for backward-compatible clients, but the value is intentionally scrubbed.
     store = central_auth_store()
     store.init()
     with store.db() as conn:
