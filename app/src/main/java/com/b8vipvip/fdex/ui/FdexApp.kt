@@ -217,8 +217,8 @@ fun FdexApp() {
                 )
                 Route.Messages -> MessagesScreen(repo, revision, onEmployee = { go(Route.EmployeeChat(it)) }, onGroup = { go(Route.GroupChat(it)) }, onAddEmployee = { go(Route.AddEmployee) })
                 Route.Work -> KnowledgeScreen(repo = repo, revision = revision, onOpenProject = { go(Route.ProjectDetail(it)) }, onNewProject = { go(Route.NewProject) }, onChanged = { touch() }, snackbar = snackbar)
-                Route.Discover -> DiscoverScreen()
-                Route.Me -> MeScreen(
+                Route.Discover -> GeneralDiscoverScreen()
+                Route.Me -> GeneralMeScreen(
                     repo, revision, onAccount = { go(Route.Account) }, onPrivacy = { go(Route.PrivacySecurity) }, onEmployees = { go(Route.Employees) },
                     onDeleted = { go(Route.Deleted) }, onSettings = { go(Route.Settings) }, onUpdate = { go(Route.Update) }, onGuide = { go(Route.Guide) },
                     onPrivacyPolicy = { go(Route.PrivacyPolicy) }, onContact = { go(Route.Contact) },
@@ -243,10 +243,10 @@ fun FdexApp() {
                     snackbar = snackbar,
                     onRequireLogin = { sessions.clear(); agentPreferences.clearAccountCredential(); history.clear(); route = Route.Login; reloadIdentity() },
                 )
-                Route.Settings -> SettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
-                Route.Deleted -> DeletedScreen(repo, revision, onChanged = { touch() })
-                Route.Update -> UpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
-                Route.Guide -> UsageGuideScreen(); Route.PrivacyPolicy -> PrivacyPolicyScreen(); Route.Contact -> ContactScreen()
+                Route.Settings -> GeneralSettingsScreen(repo, revision, onChanged = { touch() }, snackbar = snackbar)
+                Route.Deleted -> GeneralDeletedScreen(repo, revision, onChanged = { touch() })
+                Route.Update -> GeneralUpdateScreen(serverStatus, updateChecking) { scope.launch { checkUpdate(true) } }
+                Route.Guide -> GeneralUsageGuideScreen(); Route.PrivacyPolicy -> GeneralPrivacyPolicyScreen(); Route.Contact -> ContactScreen()
             }
         }
     }
