@@ -107,6 +107,28 @@ def _install_web_workspace_model() -> None:
     WebWorkspaceStore._fdex_agent_identity_v1 = True  # type: ignore[attr-defined]
 
 
+def _install_account_identity_model() -> None:
+    """Keep old auth wire fields compatible, but permanently retire company identity values."""
+    from app.central_auth import CentralAuthStore, central_auth_store
+
+    if not getattr(CentralAuthStore, "_fdex_general_identity_v1", False):
+        original_register = CentralAuthStore.register
+
+        def register_without_company(self: CentralAuthStore, *args: Any, **kwargs: Any) -> dict[str, object]:
+            kwargs["company_name"] = ""
+            return original_register(self, *args, **kwargs)
+
+        CentralAuthStore.register = register_without_company  # type: ignore[assignment]
+        CentralAuthStore._fdex_general_identity_v1 = True  # type: ignore[attr-defined]
+
+    # Existing accounts may contain a value from the old company-oriented product model. The
+    # column remains for backward-compatible clients, but the value is intentionally scrubbed.
+    store = central_auth_store()
+    store.init()
+    with store.db() as conn:
+        conn.execute("UPDATE users SET company_name='' WHERE company_name<>''")
+
+
 def _install_employee_system_prompt() -> None:
     from app import user_app_routes as routes
 
@@ -137,5 +159,6 @@ def _install_employee_system_prompt() -> None:
 
 
 def install_agent_identity_runtime() -> None:
+    _install_account_identity_model()
     _install_web_workspace_model()
     _install_employee_system_prompt()
