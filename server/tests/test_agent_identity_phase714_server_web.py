@@ -27,7 +27,6 @@ def test_general_web_surface_covers_work_deleted_and_info_without_dom_rewrites()
         "部门",
         "岗位",
         "行业",
-        "企业知识库",
         "自动公司模式",
         "自动运营模式",
     ):
@@ -52,14 +51,19 @@ def test_server_runtime_uses_neutral_agent_prompt_and_general_template() -> None
     assert "可参考的当前账号知识" in runtime
 
 
-def test_general_identity_routes_own_create_update_settings_and_info() -> None:
+def test_general_identity_routes_own_core_web_agent_contract() -> None:
     routes = _read("server/app/agent_identity_routes.py")
+    assert '@router.get("/messages"' in routes
+    assert '@router.get("/employees"' in routes
     assert '@router.post("/employees"' in routes
     assert '@router.post("/employees/{employee_id}"' in routes
+    assert '@router.get("/groups"' in routes
+    assert '@router.post("/groups"' in routes
     assert '@router.post("/settings"' in routes
     assert '@router.get("/info/{slug}"' in routes
     assert "智体已创建" in routes
     assert "智体设置已保存" in routes
+    assert "至少选择 1 个智体" in routes
 
 
 def test_general_routes_precede_legacy_compat_router() -> None:
