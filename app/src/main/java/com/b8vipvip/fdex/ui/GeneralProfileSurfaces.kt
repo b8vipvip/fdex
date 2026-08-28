@@ -288,11 +288,24 @@ internal fun GeneralUpdateScreen(serverStatus: String, updateChecking: Boolean, 
 @Composable
 internal fun GeneralUsageGuideScreen() {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { GuideCard("1", "创建智体", "在“消息”或“我的 → 智体管理”中添加智体。创建时只需填写身份定义提示词，也可以留空。") }
-        item { GuideCard("2", "定义任意身份", "智体可以是语文老师、数学老师、体育老师、学习伙伴、生活助手、创作伙伴或其他你需要的角色。") }
-        item { GuideCard("3", "私聊与工作群", "可以单独与智体聊天，也可以把多个智体加入工作群协作。聊天支持文字、图片、文档和实时语音。") }
-        item { GuideCard("4", "使用知识与记忆", "聊天可整理为摘要和关键词；每个智体能读取哪些知识和其他智体聊天，由权限单独控制。") }
-        item { GuideCard("5", "Coding Agent", "需要处理代码与 GitHub 时，可把指定智体启用为 Coding Agent；普通智体不会因此获得代码仓库权限。") }
+        item { GeneralGuideCard("1", "创建智体", "在“消息”或“我的 → 智体管理”中添加智体。创建时只需填写身份定义提示词，也可以留空。") }
+        item { GeneralGuideCard("2", "定义任意身份", "智体可以是语文老师、数学老师、体育老师、学习伙伴、生活助手、创作伙伴或其他你需要的角色。") }
+        item { GeneralGuideCard("3", "私聊与工作群", "可以单独与智体聊天，也可以把多个智体加入工作群协作。聊天支持文字、图片、文档和实时语音。") }
+        item { GeneralGuideCard("4", "使用知识与记忆", "聊天可整理为摘要和关键词；每个智体能读取哪些知识和其他智体聊天，由权限单独控制。") }
+        item { GeneralGuideCard("5", "Coding Agent", "需要处理代码与 GitHub 时，可把指定智体启用为 Coding Agent；普通智体不会因此获得代码仓库权限。") }
+    }
+}
+
+@Composable
+private fun GeneralGuideCard(step: String, title: String, description: String) {
+    Card {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Top) {
+            Text(step, color = Emerald, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(description, color = Muted, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
     }
 }
 
