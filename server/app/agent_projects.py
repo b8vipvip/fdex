@@ -39,6 +39,11 @@ _RETRYABLE_GIT_ERRORS = (
     "connection closed",
     "remote end hung up",
 )
+_GIT_PROXY_HOSTS = (
+    "github.com",
+    "githubusercontent.com",
+    "githubassets.com",
+)
 
 
 def github_proxy_url() -> str:
@@ -53,10 +58,11 @@ def github_proxy_url() -> str:
 
 
 def apply_github_proxy_to_git_env(env: dict[str, str]) -> dict[str, str]:
-    """Add process-local Git config so only github.com uses the FDEX proxy.
+    """Add process-local Git config for GitHub-owned HTTPS hosts only.
 
     This intentionally does not set HTTP_PROXY/HTTPS_PROXY on the FDEX process, so AI providers,
-    SMTP and other outbound services keep their own network path.
+    SMTP and other outbound services keep their own network path. GitHub redirects/assets remain
+    inside the same dedicated FDEX proxy path without turning the proxy into a global Git setting.
     """
     proxy = github_proxy_url()
     if not proxy:
@@ -67,13 +73,17 @@ def apply_github_proxy_to_git_env(env: dict[str, str]) -> dict[str, str]:
     except ValueError:
         count = 0
     settings = fresh_settings()
-    entries = (
-        ("http.https://github.com.proxy", proxy),
-        ("http.https://github.com.lowSpeedLimit", "1"),
-        (
-            "http.https://github.com.lowSpeedTime",
-            str(max(5, int(settings.fdex_github_read_timeout_seconds))),
-        ),
+    entries: list[tuple[str, str]] = []
+    for host in _GIT_PROXY_HOSTS:
+        entries.append((f"http.https://{host}.proxy", proxy))
+    entries.extend(
+        [
+            ("http.https://github.com.lowSpeedLimit", "1"),
+            (
+                "http.https://github.com.lowSpeedTime",
+                str(max(5, int(settings.fdex_github_read_timeout_seconds))),
+            ),
+        ]
     )
     for key, value in entries:
         env[f"GIT_CONFIG_KEY_{count}"] = key
@@ -111,8 +121,8 @@ class AgentProjectStore(_core.AgentProjectStore):
     """Transport-aware Agent project store.
 
     The durable/account-scoping implementation remains in ``agent_projects_core``. Phase 7.15
-    centralizes every GitHub network path here so GitHub App, legacy OAuth/PAT and Git CLI honor
-    the same dedicated FDEX GitHub proxy without changing AI/SMTP or other outbound traffic.
+    centralizes every GitHub network path here; Phase 7.16 can point that path at a managed,
+    loopback-only authenticated Xray/VLESS gateway without changing AI/SMTP or other traffic.
     """
 
     def _git_env(self, owner_id: str, connection_id: Any, *, required: bool = False) -> dict[str, str]:

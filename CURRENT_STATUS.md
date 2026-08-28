@@ -5,10 +5,10 @@ Last updated: 2026-08-28
 ## Current baseline
 
 - Default branch: `main`
-- Current code baseline: **Phase 7.15**
+- Current code baseline: **Phase 7.16**
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 and Phase 7.15 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.16 are server/Web/infrastructure changes and do not require an Android release by themselves.
 
 The authoritative verification source for a concrete commit is the repository Build and Test workflow. Every merge must pass FastAPI Tests, Android unit tests and Android Debug APK before it becomes the accepted `main` baseline.
 
@@ -29,7 +29,7 @@ Completed account features include registration, login, rotating refresh session
 
 GitHub, Coding Agent, Web workspace, remote memory, tasks and sandboxes are isolated by the current FDEX `user_id`.
 
-## GitHub App and Coding Agent
+## GitHub App, Coding Agent and dedicated egress
 
 The preferred GitHub architecture is **GitHub App Installation**.
 
@@ -51,15 +51,23 @@ Completed capabilities include:
 - No direct Agent write to `main`
 - Real GitHub tool retrieval for Coding-Agent-enabled Web 智体 chat
 - Dedicated operator-controlled GitHub HTTP(S) egress via `FDEX_GITHUB_HTTP_PROXY`
-- The same dedicated GitHub egress for GitHub REST/OAuth and Coding Agent Git HTTPS `clone` / `fetch` / `push`
+- The same dedicated GitHub egress for GitHub REST/OAuth, version-maintenance reads and Coding Agent Git HTTPS `clone` / `fetch` / `push`
 - Git proxy configuration injected only into the Git subprocess, without forcing AI providers, SMTP or unrelated FDEX traffic through that proxy
 - Bounded retry for transient GitHub `clone` / `fetch` / `push` transport failures
 - Safe cleanup of a controlled partial clone directory before clone retry
 - Shared GitHub transport timeouts and actionable proxy/direct-path network errors
+- Admin `/admin/github-egress` page for direct, custom HTTP(S) proxy and managed VLESS modes
+- Managed `vless://` parsing for TLS/Reality and common Xray transports
+- FDEX-managed Xray loopback HTTP inbound with generated authentication
+- GitHub-domain allowlist plus blackhole fallback inside the managed Xray
+- No system `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`, host routing, DNS, firewall or global Git changes
+- Managed Xray startup restoration through the FDEX bootstrap path
+- Live GitHub egress and local-proxy authentication isolation tests
+- Version/maintenance GitHub API reads now use the dedicated FDEX GitHub proxy and optional `GITHUB_TOKEN`
 
 Earlier PAT / Device OAuth / per-project permission paths are compatibility layers rather than the recommended flow. Phase 7.15 routes those compatibility HTTP/API paths through the same dedicated GitHub transport policy so they no longer bypass operator egress settings.
 
-For mainland-China deployments with an operator-owned Xray/VLESS overseas gateway, see `docs/GITHUB_EGRESS.md`. FDEX expects an HTTP(S) proxy endpoint, such as a loopback HTTP/mixed inbound exposed by Xray; it does not accept a raw VLESS URL as `FDEX_GITHUB_HTTP_PROXY`.
+For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For the Phase 7.16 admin-managed VLESS path see `docs/GITHUB_MANAGED_VLESS.md`.
 
 ## Recent completed phases
 
@@ -78,10 +86,11 @@ For mainland-China deployments with an operator-owned Xray/VLESS overseas gatewa
 - **Phase 7.13** — generalize old AI employees into universal 智体 across Android/Web/server while keeping data compatibility.
 - **Phase 7.14** — synchronize server/Web routes and UI with the 智体 model and remove DOM-based legacy terminology rewriting.
 - **Phase 7.15** — unify GitHub API/OAuth and Coding Agent Git HTTPS behind a dedicated operator-controlled GitHub egress, with scoped proxy injection, bounded network retry and deployment diagnostics/documentation for unreliable international routes.
+- **Phase 7.16** — add a server-admin managed VLESS/Xray GitHub egress with loopback authentication, GitHub-only Xray routing, application-scoped lifecycle/test controls and maintenance-page proxy/token reuse.
 
 ## What repository CI does not prove
 
-Repository CI verifies source compatibility, server tests and Android builds. It does **not** prove that a production server has already deployed the latest `main`, that a local Xray HTTP/mixed inbound is listening, or that production GitHub App, SMTP, Provider and proxy configuration is correct. Production deployment/configuration requires runtime inspection of the actual FDEX server.
+Repository CI verifies source compatibility, server tests and Android builds. It does **not** prove that a production server has already deployed the latest `main`, that Xray-core is installed on that server, that a supplied VLESS node is reachable, or that production GitHub App, SMTP and Provider configuration is correct. Production VLESS application requires runtime testing from `/admin/github-egress`.
 
 ## Development rules going forward
 
@@ -90,10 +99,11 @@ Repository CI verifies source compatibility, server tests and Android builds. It
 3. Treat GitHub App Installation as the repository-permission authority.
 4. Keep GitHub installation tokens short-lived and downscoped.
 5. Never allow Coding Agent to write directly to `main`.
-6. When `FDEX_GITHUB_HTTP_PROXY` is configured, keep it scoped to GitHub traffic rather than implicitly proxying unrelated FDEX services.
-7. Route AI inference through the shared FDEX Provider pool.
-8. Keep destructive account/data cleanup fail-closed.
-9. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
+6. Keep GitHub egress application-scoped. Do not modify system proxy variables, host default routes, DNS, firewall policy or global Git proxy as a side effect of FDEX GitHub configuration.
+7. Managed Xray must bind loopback only, require generated authentication and blackhole non-GitHub destinations.
+8. Route AI inference through the shared FDEX Provider pool.
+9. Keep destructive account/data cleanup fail-closed.
+10. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
 
 ## Historical progress file
 

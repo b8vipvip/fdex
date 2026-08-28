@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}GitHub / VLESS 出站 · FDEX{% endblock %}
+{% block heading %}GitHub / VLESS 专用出站{% endblock %}
+{% block subheading %}只代理 FDEX 自己的 GitHub API 与 Coding Agent Git；服务器其它服务继续使用原网络{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/maintenance">版本与维护</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+  <div class="panel-header">
+    <div>
+      <h2>隔离状态</h2>
+      <p>这里配置的是 FDEX 应用级 GitHub 出站，不是服务器全局代理。</p>
+    </div>
+    <span class="badge success">FDEX 专用</span>
+  </div>
+  <div class="info-grid">
+    <div>
+      <span>当前模式</span>
+      <strong>
+        {% if status.mode == 'managed_vless' %}托管 VLESS
+        {% elif status.mode == 'http_proxy' %}自定义 HTTP(S) 代理
+        {% else %}服务器直连{% endif %}
+      </strong>
+    </div>
+    <div><span>GitHub 代理</span><strong>{% if status.proxy_configured %}已配置（密钥隐藏）{% else %}未配置{% endif %}</strong></div>
+    <div><span>专用 Xray</span><strong>{{ status.unit_state }}</strong></div>
+    <div><span>本地监听</span><strong>{% if status.listener_ready %}127.0.0.1:{{ status.local_port }}{% else %}未监听{% endif %}</strong></div>
+    <div><span>VLESS</span><strong>{{ status.vless_summary }}</strong></div>
+    <div><span>隔离边界</span><strong>{{ status.isolation }}</strong></div>
+  </div>
+  <div class="inline-note" style="margin-top:16px">
+    <strong>不会修改：</strong>系统 <code>HTTP_PROXY / HTTPS_PROXY / ALL_PROXY</code>、服务器默认路由、DNS、iptables、其它服务的 systemd 环境或全局 Git 配置。
+    托管模式下 Xray 仅监听 <code>127.0.0.1</code>，本地 HTTP 入口使用 FDEX 自动生成的随机认证，并且 Xray 路由只允许
+    <code>github.com</code>、<code>*.githubusercontent.com</code>、<code>*.githubassets.com</code>，其它目标直接黑洞阻断。
+  </div>
+  <div class="inline-note warning-note" style="margin-top:12px">
+    这是应用级隔离：普通同机服务既不会继承代理，也拿不到 FDEX 自动生成的代理认证。拥有服务器 <code>root</code> 权限的进程始终具有系统最高权限，不属于应用级隔离可以防护的范围。
+  </div>
+</section>
+
+<section class="panel form-section">
+  <div class="panel-header">
+    <div>
+      <h2>出站配置</h2>
+      <p>推荐使用“托管 VLESS”：直接粘贴你自己美国 VPS 的 <code>vless://</code> 分享链接，FDEX 自动生成专用 Xray 配置。</p>
+    </div>
+    <span class="badge {% if status.mode == 'managed_vless' and status.listener_ready %}success{% endif %}">
+      {% if status.mode == 'managed_vless' and status.listener_ready %}运行中{% else %}可配置{% endif %}
+    </span>
+  </div>
+
+  <form method="post" action="/admin/github-egress/save" class="settings-form" data-confirm="保存后会立即切换 FDEX 的 GitHub 出站路径。服务器其它服务网络不会被修改。确定继续吗？">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid three">
+      <label class="field">
+        <span>出站模式</span>
+        <select name="mode">
+          <option value="direct" {% if effective_mode == 'direct' %}selected{% endif %}>服务器直连</option>
+          <option value="managed_vless" {% if effective_mode == 'managed_vless' %}selected{% endif %}>托管 VLESS（推荐）</option>
+          <option value="http_proxy" {% if effective_mode == 'http_proxy' %}selected{% endif %}>自定义 HTTP(S) 代理</option>
+        </select>
+        <small>托管 VLESS 只为 FDEX 的 GitHub 流量启动一个独立 Xray。</small>
+      </label>
+
+      <label class="field">
+        <span>VLESS 分享链接</span>
+        <input type="password" name="vless_uri" autocomplete="new-password"
+               placeholder="{% if vless_configured %}已安全保存；留空保持现有 VLESS{% else %}vless://UUID@host:443?...{% endif %}">
+        <small>支持 TLS / Reality 与 TCP / WS / gRPC / HTTPUpgrade / XHTTP。链接不会回显，也不会写入审计日志。</small>
+      </label>
+
+      <label class="field">
+        <span>Xray 可执行文件</span>
+        <input name="xray_binary" value="{{ status.xray_binary_setting }}" maxlength="240" required>
+        <small>{% if status.xray_binary %}已找到：{{ status.xray_binary }}{% else %}当前未找到 Xray；请先安装 Xray-core。{% endif %}</small>
+      </label>
+
+      <label class="field">
+        <span>FDEX 专用本地端口</span>
+        <input type="number" name="xray_local_port" min="1024" max="65535" value="{{ status.local_port }}" required>
+        <small>仅绑定 127.0.0.1，并启用随机用户名/密码认证。</small>
+      </label>
+
+      <label class="field">
+        <span>自定义 HTTP(S) 代理</span>
+        <input type="password" name="http_proxy" autocomplete="new-password"
+               placeholder="{% if custom_proxy_configured %}已保存；留空保持现有代理{% else %}例如 http://user:pass@127.0.0.1:7890{% endif %}">
+        <small>仅在“自定义 HTTP(S) 代理”模式使用。不要在这里粘贴 vless://。</small>
+      </label>
+
+      <label class="field"><span>连接超时（秒）</span><input type="number" step="0.1" name="connect_timeout_seconds" min="2" max="120" value="{{ settings.fdex_github_connect_timeout_seconds }}" required></label>
+      <label class="field"><span>读取超时（秒）</span><input type="number" step="0.1" name="read_timeout_seconds" min="5" max="300" value="{{ settings.fdex_github_read_timeout_seconds }}" required></label>
+      <label class="field"><span>安全重试次数</span><input type="number" name="retry_attempts" min="1" max="5" value="{{ settings.fdex_github_retry_attempts }}" required><small>只对可安全重放的 GitHub 读取、clone/fetch/push 网络故障执行有限重试。</small></label>
+
+      <label class="checkbox-field aligned">
+        <input type="checkbox" name="clear_saved_vless" value="true">
+        <span>同时清除已保存的 VLESS 链接与本地代理认证</span>
+      </label>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button class="button primary" type="submit">保存并立即应用</button>
+      <span class="muted">配置文件与 VLESS 密钥均只保存在 FDEX 服务端权限受限文件中。</span>
+    </div>
+  </form>
+</section>
+
+<div class="content-grid equal">
+  <section class="panel">
+    <div class="panel-header"><div><h2>运行状态</h2><p>托管 Xray 与 FDEX 之间的本机隔离状态。</p></div></div>
+    <div class="info-grid">
+      <div><span>systemd</span><strong>{% if status.systemd_ready %}可用{% else %}不可用{% endif %}</strong></div>
+      <div><span>Xray 版本</span><strong>{{ status.xray_version or '未检测到' }}</strong></div>
+      <div><span>配置文件</span><strong>{{ status.config_path }}</strong></div>
+      <div><span>代理身份</span><strong>{% if status.managed_proxy_matches %}FDEX 专用认证匹配{% else %}未匹配/不适用{% endif %}</strong></div>
+    </div>
+    {% if status.mode == 'managed_vless' %}
+    <form method="post" action="/admin/github-egress/restart" style="margin-top:16px" data-confirm="确定重新加载 FDEX 专用 Xray 吗？">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button secondary full" type="submit">重新加载专用 Xray</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><div><h2>GitHub 出站测试</h2><p>验证真实 GitHub 路径和本地代理认证隔离。</p></div></div>
+    <p class="muted">测试会通过当前 FDEX GitHub 出站请求 <code>github.com</code> 和 <code>api.github.com</code>。托管 VLESS 模式还会验证“不带 FDEX 认证访问本地代理会被拒绝”。</p>
+    <form method="post" action="/admin/github-egress/test">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button primary full" type="submit">测试当前 GitHub 专用出口</button>
+    </form>
+    <div class="inline-note warning-note" style="margin-top:12px">
+      版本维护页出现 <code>403 rate limit exceeded</code> 表示 GitHub API 配额耗尽，不等同于 VLESS 连接失败。FDEX 版本检查会优先使用已配置的 <code>GITHUB_TOKEN</code>，并使用本页设置的专用 GitHub 出站。
+    </div>
+  </section>
+</div>
+
+<section class="panel form-section">
+  <div class="panel-header"><div><h2>工作原理</h2><p>服务器其它服务不会被代理。</p></div></div>
+  <div class="code-block">
+    <div>FDEX GitHub API / OAuth / Installation Token → FDEX 专用 HTTP 代理 → Xray VLESS → 美国 VPS → GitHub</div>
+    <div>Coding Agent git clone / fetch / push → Git 子进程专用 GitHub proxy → 同一 Xray VLESS → GitHub</div>
+    <div>AI Provider / SMTP / Letta / Qdrant / 服务器其它服务 → 原有服务器网络（不经过该 VLESS）</div>
+  </div>
+</section>
+{% endblock %}
