@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.agent_identity_runtime import install_agent_identity_runtime
+from app.memory_middleware import extract_local_context
 from app.web_workspace import WebWorkspaceStore
 
 OWNER = "usr_abcdef1234567890abcdef12"
@@ -21,6 +22,13 @@ def test_runtime_uses_general_web_surface() -> None:
     runtime = (root / "server/app/agent_identity_runtime.py").read_text(encoding="utf-8")
     assert '"user_web_app_general.html"' in runtime
     assert "routes._render = generalized_render" in runtime
+
+
+def test_neutral_memory_context_wrapper_is_consumed() -> None:
+    install_agent_identity_runtime()
+    clean, local = extract_local_context("本轮问题\n<fdex_agent_context>允许的知识</fdex_agent_context>")
+    assert clean == "本轮问题"
+    assert local == "允许的知识"
 
 
 def test_retired_preferences_cannot_be_reintroduced(tmp_path: Path) -> None:
