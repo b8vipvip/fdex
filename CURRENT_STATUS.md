@@ -5,10 +5,10 @@ Last updated: 2026-08-28
 ## Current baseline
 
 - Default branch: `main`
-- Current code baseline: **Phase 7.16**
+- Current code baseline: **Phase 7.17**
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.16 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.17 are server/Web/infrastructure changes and do not require an Android release by themselves.
 
 The authoritative verification source for a concrete commit is the repository Build and Test workflow. Every merge must pass FastAPI Tests, Android unit tests and Android Debug APK before it becomes the accepted `main` baseline.
 
@@ -57,17 +57,22 @@ Completed capabilities include:
 - Safe cleanup of a controlled partial clone directory before clone retry
 - Shared GitHub transport timeouts and actionable proxy/direct-path network errors
 - Admin `/admin/github-egress` page for direct, custom HTTP(S) proxy and managed VLESS modes
+- Multiple server-side VLESS proxy nodes with add/edit/enable/disable/delete controls
+- Single-active-node switching: enabling one VLESS node automatically disables the other saved nodes
+- Phase 7.16 single-node VLESS configuration migration into the proxy pool
 - Managed `vless://` parsing for TLS/Reality and common Xray transports
 - FDEX-managed Xray loopback HTTP inbound with generated authentication
 - GitHub-domain allowlist plus blackhole fallback inside the managed Xray
 - No system `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`, host routing, DNS, firewall or global Git changes
 - Managed Xray startup restoration through the FDEX bootstrap path
 - Live GitHub egress and local-proxy authentication isolation tests
-- Version/maintenance GitHub API reads now use the dedicated FDEX GitHub proxy and optional `GITHUB_TOKEN`
+- Functional egress health semantics: HTTP 403 rate limits and HTTP 406 are failures rather than false-positive success states
+- Server `GITHUB_TOKEN` is used for the API health probe and maintenance reads when configured
+- Version/maintenance GitHub API reads use the dedicated FDEX GitHub proxy and optional `GITHUB_TOKEN`
 
 Earlier PAT / Device OAuth / per-project permission paths are compatibility layers rather than the recommended flow. Phase 7.15 routes those compatibility HTTP/API paths through the same dedicated GitHub transport policy so they no longer bypass operator egress settings.
 
-For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For the Phase 7.16 admin-managed VLESS path see `docs/GITHUB_MANAGED_VLESS.md`.
+For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For the managed VLESS proxy pool see `docs/GITHUB_MANAGED_VLESS.md`.
 
 ## Recent completed phases
 
@@ -87,6 +92,7 @@ For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For th
 - **Phase 7.14** — synchronize server/Web routes and UI with the 智体 model and remove DOM-based legacy terminology rewriting.
 - **Phase 7.15** — unify GitHub API/OAuth and Coding Agent Git HTTPS behind a dedicated operator-controlled GitHub egress, with scoped proxy injection, bounded network retry and deployment diagnostics/documentation for unreliable international routes.
 - **Phase 7.16** — add a server-admin managed VLESS/Xray GitHub egress with loopback authentication, GitHub-only Xray routing, application-scoped lifecycle/test controls and maintenance-page proxy/token reuse.
+- **Phase 7.17** — add a persistent multi-node VLESS proxy pool with single-active-node CRUD/switching, legacy single-node migration and strict functional GitHub health checks that reject 403/406 false positives.
 
 ## What repository CI does not prove
 
@@ -101,9 +107,10 @@ Repository CI verifies source compatibility, server tests and Android builds. It
 5. Never allow Coding Agent to write directly to `main`.
 6. Keep GitHub egress application-scoped. Do not modify system proxy variables, host default routes, DNS, firewall policy or global Git proxy as a side effect of FDEX GitHub configuration.
 7. Managed Xray must bind loopback only, require generated authentication and blackhole non-GitHub destinations.
-8. Route AI inference through the shared FDEX Provider pool.
-9. Keep destructive account/data cleanup fail-closed.
-10. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
+8. Stored VLESS nodes must never expose their full URI/UUID or generated local-proxy credentials in admin HTML or audit output.
+9. Route AI inference through the shared FDEX Provider pool.
+10. Keep destructive account/data cleanup fail-closed.
+11. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
 
 ## Historical progress file
 
