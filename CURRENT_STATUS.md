@@ -1,34 +1,20 @@
 # FDEX Current Status
 
-Last verified: 2026-08-28
+Last updated: 2026-08-28
 
 ## Current baseline
 
 - Default branch: `main`
-- Current code baseline: **Phase 7.14**
-- Verified main commit: `ded5a49fdbd714719446db1e572089fcb52e2a5e`
+- Current code baseline: **Phase 7.15**
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 is a server/Web synchronization change, so the Android Auto Release workflow skipped it by design.
+- Phase 7.14 and Phase 7.15 are server/Web/infrastructure changes and do not require an Android release by themselves.
 
-## Repository health
-
-At the time of this audit:
-
-- Open pull requests: **0**
-- Open issues: **0**
-- Phase 7.14 PR Build and Test: **success**
-- Phase 7.14 main push Build and Test: **success**
-- FastAPI Tests: **success**
-- Android unit tests: **success**
-- Android Debug APK: **success**
-- Explicit `TODO` search: no result
-- Explicit `FIXME` search: no result
-- Explicit `Phase 7.15` unfinished marker: no result
+The authoritative verification source for a concrete commit is the repository Build and Test workflow. Every merge must pass FastAPI Tests, Android unit tests and Android Debug APK before it becomes the accepted `main` baseline.
 
 ## Current product model
 
-FDEX user-facing terminology is now the universal **智体** model rather than the former company / industry / department / position / AI-employee model.
+FDEX user-facing terminology is the universal **智体** model rather than the former company / industry / department / position / AI-employee model.
 
 - A 智体 can represent any user-defined identity or role.
 - Identity prompt may be empty at creation time.
@@ -64,8 +50,16 @@ Completed capabilities include:
 - Push/PR support when allowed by effective GitHub App permission
 - No direct Agent write to `main`
 - Real GitHub tool retrieval for Coding-Agent-enabled Web 智体 chat
+- Dedicated operator-controlled GitHub HTTP(S) egress via `FDEX_GITHUB_HTTP_PROXY`
+- The same dedicated GitHub egress for GitHub REST/OAuth and Coding Agent Git HTTPS `clone` / `fetch` / `push`
+- Git proxy configuration injected only into the Git subprocess, without forcing AI providers, SMTP or unrelated FDEX traffic through that proxy
+- Bounded retry for transient GitHub `clone` / `fetch` / `push` transport failures
+- Safe cleanup of a controlled partial clone directory before clone retry
+- Shared GitHub transport timeouts and actionable proxy/direct-path network errors
 
-Earlier PAT / Device OAuth / per-project permission paths are compatibility layers rather than the recommended flow.
+Earlier PAT / Device OAuth / per-project permission paths are compatibility layers rather than the recommended flow. Phase 7.15 routes those compatibility HTTP/API paths through the same dedicated GitHub transport policy so they no longer bypass operator egress settings.
+
+For mainland-China deployments with an operator-owned Xray/VLESS overseas gateway, see `docs/GITHUB_EGRESS.md`. FDEX expects an HTTP(S) proxy endpoint, such as a loopback HTTP/mixed inbound exposed by Xray; it does not accept a raw VLESS URL as `FDEX_GITHUB_HTTP_PROXY`.
 
 ## Recent completed phases
 
@@ -83,10 +77,11 @@ Earlier PAT / Device OAuth / per-project permission paths are compatibility laye
 - **Phase 7.12** — real owner-scoped GitHub tools in Coding-Agent-enabled chat.
 - **Phase 7.13** — generalize old AI employees into universal 智体 across Android/Web/server while keeping data compatibility.
 - **Phase 7.14** — synchronize server/Web routes and UI with the 智体 model and remove DOM-based legacy terminology rewriting.
+- **Phase 7.15** — unify GitHub API/OAuth and Coding Agent Git HTTPS behind a dedicated operator-controlled GitHub egress, with scoped proxy injection, bounded network retry and deployment diagnostics/documentation for unreliable international routes.
 
-## What is not proven by repository CI
+## What repository CI does not prove
 
-This audit verifies repository state, merged code and GitHub Actions. It does **not** prove that a production server has already deployed the latest `main`, or that production GitHub App, SMTP, Provider, proxy and other external configuration is correct. Production deployment/configuration requires runtime inspection of the actual FDEX server.
+Repository CI verifies source compatibility, server tests and Android builds. It does **not** prove that a production server has already deployed the latest `main`, that a local Xray HTTP/mixed inbound is listening, or that production GitHub App, SMTP, Provider and proxy configuration is correct. Production deployment/configuration requires runtime inspection of the actual FDEX server.
 
 ## Development rules going forward
 
@@ -95,9 +90,10 @@ This audit verifies repository state, merged code and GitHub Actions. It does **
 3. Treat GitHub App Installation as the repository-permission authority.
 4. Keep GitHub installation tokens short-lived and downscoped.
 5. Never allow Coding Agent to write directly to `main`.
-6. Route AI inference through the shared FDEX Provider pool.
-7. Keep destructive account/data cleanup fail-closed.
-8. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
+6. When `FDEX_GITHUB_HTTP_PROXY` is configured, keep it scoped to GitHub traffic rather than implicitly proxying unrelated FDEX services.
+7. Route AI inference through the shared FDEX Provider pool.
+8. Keep destructive account/data cleanup fail-closed.
+9. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
 
 ## Historical progress file
 
