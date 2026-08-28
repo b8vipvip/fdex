@@ -130,6 +130,7 @@ def test_strict_probe_rejects_api_rate_limit_and_uses_server_token(monkeypatch: 
 def test_proxy_list_ui_exposes_crud_without_echoing_vless_secret() -> None:
     root = Path(__file__).resolve().parents[2]
     template = (root / "server/app/templates/github_egress.html").read_text(encoding="utf-8")
+    base = (root / "server/app/templates/base.html").read_text(encoding="utf-8")
     assert "VLESS 代理列表" in template
     assert "/admin/github-egress/nodes/add" in template
     assert "/enable" in template
@@ -139,6 +140,9 @@ def test_proxy_list_ui_exposes_crud_without_echoing_vless_secret() -> None:
     assert 'type="password" name="vless_uri"' in template
     assert 'value="{{ node.uri' not in template
     assert "FDEX_GITHUB_XRAY_PROXY_PASSWORD" not in template
+    assert "托管 VLESS 当前无法启用" in template
+    assert "无法启用：缺少 Xray" in template
+    assert "position:sticky;top:12px;z-index:1000" in base
 
 
 def test_admin_router_exposes_proxy_pool_crud() -> None:
