@@ -23,7 +23,6 @@ def test_general_web_surface_covers_work_deleted_and_info_without_dom_rewrites()
     assert "自动协作" in template
     assert "智体聊天" in template
     for retired in (
-        "AI 员工",
         "员工名称",
         "部门",
         "岗位",
@@ -53,7 +52,17 @@ def test_server_runtime_uses_neutral_agent_prompt_and_general_template() -> None
     assert "可参考的当前账号知识" in runtime
 
 
-def test_general_create_update_routes_precede_legacy_compat_router() -> None:
+def test_general_identity_routes_own_create_update_settings_and_info() -> None:
+    routes = _read("server/app/agent_identity_routes.py")
+    assert '@router.post("/employees"' in routes
+    assert '@router.post("/employees/{employee_id}"' in routes
+    assert '@router.post("/settings"' in routes
+    assert '@router.get("/info/{slug}"' in routes
+    assert "智体已创建" in routes
+    assert "智体设置已保存" in routes
+
+
+def test_general_routes_precede_legacy_compat_router() -> None:
     main = _read("server/app/main.py")
     identity = main.index("app.include_router(agent_identity_router)")
     legacy = main.index("app.include_router(user_app_router)")
