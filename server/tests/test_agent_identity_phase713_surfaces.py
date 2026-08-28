@@ -1,5 +1,10 @@
 from pathlib import Path
 
+from app.agent_identity_runtime import install_agent_identity_runtime
+from app.web_workspace import WebWorkspaceStore
+
+OWNER = "usr_abcdef1234567890abcdef12"
+
 
 def test_general_web_surface_contains_no_retired_business_taxonomy() -> None:
     root = Path(__file__).resolve().parents[2]
@@ -16,6 +21,22 @@ def test_runtime_uses_general_web_surface() -> None:
     runtime = (root / "server/app/agent_identity_runtime.py").read_text(encoding="utf-8")
     assert '"user_web_app_general.html"' in runtime
     assert "routes._render = generalized_render" in runtime
+
+
+def test_retired_preferences_cannot_be_reintroduced(tmp_path: Path) -> None:
+    install_agent_identity_runtime()
+    store = WebWorkspaceStore(tmp_path / "workspace.db")
+    saved = store.save_preferences(
+        OWNER,
+        industry="legacy-industry",
+        auto_company_mode=True,
+        professional_level="expert",
+        default_home="knowledge",
+    )
+    assert "industry" not in saved
+    assert "auto_company_mode" not in saved
+    assert saved["professional_level"] == "expert"
+    assert saved["default_home"] == "knowledge"
 
 
 def test_android_project_surface_is_not_company_specific() -> None:
