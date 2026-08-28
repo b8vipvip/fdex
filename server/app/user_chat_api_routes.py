@@ -12,7 +12,7 @@ router = APIRouter(prefix="/account", include_in_schema=False)
 
 
 def _json_error(message: str, *, status_code: int = 502) -> JSONResponse:
-    clean = (message or "AI 员工暂时无法回复").strip()[:1200]
+    clean = (message or "智体暂时无法回复").strip()[:1200]
     return JSONResponse({"ok": False, "error": clean}, status_code=status_code)
 
 
@@ -110,6 +110,6 @@ async def employee_chat_send_json(
     except HTTPException as exc:
         return _json_error(str(exc.detail), status_code=exc.status_code)
     except KeyError:
-        return _json_error("AI 员工不存在或已被删除", status_code=404)
+        return _json_error("智体不存在或已被删除", status_code=404)
     except ValueError as exc:
         return _json_error(str(exc), status_code=400)
