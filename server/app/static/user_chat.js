@@ -106,6 +106,15 @@
     });
   }
 
+  function simplifyGeneralSettings() {
+    const settings = document.querySelector('form[action="/account/settings"]');
+    if (!settings) return;
+    ['industry', 'auto_company_mode'].forEach((name) => removeField(settings, name));
+    const level = settings.querySelector('select[name="professional_level"]');
+    const levelLabel = level?.closest('label');
+    if (levelLabel?.childNodes?.[0]) levelLabel.childNodes[0].textContent = '回答专业程度';
+  }
+
   function rewriteAgentCards() {
     document.querySelectorAll('a[href^="/account/chat/employee/"] .fine').forEach((node) => {
       node.textContent = (node.textContent || '').includes('Coding Agent') ? 'Coding Agent 智体' : '智体';
@@ -151,7 +160,9 @@
         .replaceAll('企业知识', '知识')
         .replaceAll('AI 员工', '智体')
         .replaceAll('员工', '智体')
+        .replaceAll('AI 团队', '智体协作')
         .replaceAll('岗位 Prompt', '身份定义提示词')
+        .replaceAll('角色 Prompt', '身份定义提示词')
         .replaceAll('岗位说明', '身份定义')
         .replaceAll('在职', '已启用')
         .replaceAll('离职', '停用');
@@ -161,6 +172,7 @@
 
   function applyGeneralAgentUi() {
     simplifyAgentForms();
+    simplifyGeneralSettings();
     rewriteAgentCards();
     rewriteStructuralTerminology();
   }
