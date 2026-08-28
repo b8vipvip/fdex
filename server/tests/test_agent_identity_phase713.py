@@ -81,14 +81,15 @@ def test_generalized_system_prompt_has_no_company_taxonomy(monkeypatch) -> None:
 def test_web_registration_and_agent_ui_do_not_collect_company_taxonomy() -> None:
     root = Path(__file__).resolve().parents[2]
     register = (root / "server/app/templates/user_register.html").read_text(encoding="utf-8")
+    template = (root / "server/app/templates/user_web_app_general.html").read_text(encoding="utf-8")
     js = (root / "server/app/static/user_chat.js").read_text(encoding="utf-8")
     routes = (root / "server/app/agent_identity_routes.py").read_text(encoding="utf-8")
 
     assert 'name="company_name"' not in register
     assert "公司 / 团队" not in register
-    assert "身份定义提示词（可选）" in js
-    assert "创建智体" in js
-    assert "['name', 'department', 'position', 'industry'" in js
+    assert "身份定义提示词（可选）" in template
+    assert "创建智体" in template
+    assert "simplifyAgentForms" not in js
     assert 'role_prompt: str = Form("")' in routes
     assert 'name: str = Form("")' in routes
     assert '"department"' not in routes.split("store.create", 1)[1].split("sort_key", 1)[0]
