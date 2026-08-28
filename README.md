@@ -16,7 +16,7 @@ FDEX 是一个以 **FDEX Center 中心账号** 为身份边界的 AI 工作平�
 
 当前 Android 正式 Release：**v1.1.36**。Phase 7.14 为服务端 / Web 同步改动，没有新增 Android 运行逻辑，因此自动 Android Release 按设计跳过；v1.1.36 已包含 Phase 7.13 的 Android「智体」模型改造。
 
-最新开发状态见 [`DEVELOPMENT_PROGRESS.md`](DEVELOPMENT_PROGRESS.md)。
+当前开发基线见 [`CURRENT_STATUS.md`](CURRENT_STATUS.md)。`DEVELOPMENT_PROGRESS.md` 保留较早阶段的详细历史，不再作为当前状态基线。
 
 ## 目录结构
 
