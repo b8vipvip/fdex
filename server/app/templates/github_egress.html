@@ -47,6 +47,13 @@
     <span class="badge {% if active_vless %}success{% endif %}">{{ vless_nodes|length }} 个节点{% if active_vless %} · 1 个启用{% endif %}</span>
   </div>
 
+  {% if not status.xray_binary %}
+  <div class="inline-note warning-note" style="margin-bottom:16px">
+    <strong>托管 VLESS 当前无法启用：</strong>FDEX 找不到 Xray 可执行文件 <code>{{ status.xray_binary_setting }}</code>。
+    请先安装 Xray-core，或在下方“Xray 可执行文件”填写正确的绝对路径并保存基础设置。节点可以继续添加、编辑和删除，但在 Xray 可用前不会切换 GitHub 出站。
+  </div>
+  {% endif %}
+
   <form method="post" action="/admin/github-egress/nodes/add" class="settings-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid three">
@@ -87,10 +94,14 @@
             <button class="button secondary" type="submit">停用</button>
           </form>
           {% else %}
-          <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/enable" data-confirm="启用该节点后会立即切换 FDEX GitHub 出站，并自动停用其它节点。确定继续吗？">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button primary" type="submit">启用</button>
-          </form>
+            {% if status.xray_binary %}
+            <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/enable" data-confirm="启用该节点后会立即切换 FDEX GitHub 出站，并自动停用其它节点。确定继续吗？">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button primary" type="submit">启用</button>
+            </form>
+            {% else %}
+            <button class="button secondary" type="button" disabled title="FDEX 未检测到 Xray，可在下方基础设置中配置正确路径">无法启用：缺少 Xray</button>
+            {% endif %}
           {% endif %}
           <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/delete" data-confirm="确定删除该 VLESS 节点吗？完整分享链接会从 FDEX 节点库中删除。">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
