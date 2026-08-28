@@ -25,7 +25,7 @@
     <div><span>GitHub 代理</span><strong>{% if status.proxy_configured %}已配置（密钥隐藏）{% else %}未配置{% endif %}</strong></div>
     <div><span>专用 Xray</span><strong>{{ status.unit_state }}</strong></div>
     <div><span>本地监听</span><strong>{% if status.listener_ready %}127.0.0.1:{{ status.local_port }}{% else %}未监听{% endif %}</strong></div>
-    <div><span>VLESS</span><strong>{{ status.vless_summary }}</strong></div>
+    <div><span>当前 VLESS</span><strong>{% if active_vless %}{{ active_vless.name }} · {{ active_vless.summary }}{% else %}未启用节点{% endif %}</strong></div>
     <div><span>隔离边界</span><strong>{{ status.isolation }}</strong></div>
   </div>
   <div class="inline-note" style="margin-top:16px">
@@ -38,11 +38,98 @@
   </div>
 </section>
 
+<section class="panel form-section" id="vless-pool">
+  <div class="panel-header">
+    <div>
+      <h2>VLESS 代理列表</h2>
+      <p>可以保存多个 <code>vless://</code> 节点；同一时刻只启用一个。启用新节点会安全切换当前 FDEX GitHub 出站，其他节点自动停用。</p>
+    </div>
+    <span class="badge {% if active_vless %}success{% endif %}">{{ vless_nodes|length }} 个节点{% if active_vless %} · 1 个启用{% endif %}</span>
+  </div>
+
+  <form method="post" action="/admin/github-egress/nodes/add" class="settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid three">
+      <label class="field">
+        <span>节点名称（可选）</span>
+        <input name="node_name" maxlength="80" placeholder="例如：美国洛杉矶 01">
+        <small>留空时优先使用分享链接的 #备注；否则自动生成安全摘要。</small>
+      </label>
+      <label class="field" style="grid-column:span 2">
+        <span>VLESS 分享链接</span>
+        <input type="password" name="vless_uri" autocomplete="new-password" required placeholder="vless://UUID@host:443?...">
+        <small>支持 TLS / Reality 与 TCP / WS / gRPC / HTTPUpgrade / XHTTP。完整链接只保存在服务端权限受限文件中，不会回显到页面或审计日志。</small>
+      </label>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="button primary" type="submit">添加到代理列表</button>
+      <span class="muted">新添加节点默认停用，确认配置无误后再点击“启用”。</span>
+    </div>
+  </form>
+
+  {% if vless_nodes %}
+  <div style="display:grid;gap:14px;margin-top:20px">
+    {% for node in vless_nodes %}
+    <div style="border:1px solid var(--border-color,#dce4ee);border-radius:14px;padding:16px;background:var(--panel-bg,#fff)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:16px">{{ node.name }}</strong>
+            <span class="badge {% if node.enabled %}success{% endif %}">{% if node.enabled %}当前启用{% else %}已停用{% endif %}</span>
+          </div>
+          <div class="muted" style="margin-top:6px">{{ node.summary }}</div>
+          <div class="muted" style="margin-top:4px;font-size:12px">节点 ID：<code>{{ node.id }}</code></div>
+        </div>
+        <div class="row">
+          {% if node.enabled %}
+          <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/disable" data-confirm="停用当前 VLESS 后，FDEX GitHub 出站会恢复服务器直连。确定继续吗？">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button secondary" type="submit">停用</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/enable" data-confirm="启用该节点后会立即切换 FDEX GitHub 出站，并自动停用其它节点。确定继续吗？">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button primary" type="submit">启用</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/delete" data-confirm="确定删除该 VLESS 节点吗？完整分享链接会从 FDEX 节点库中删除。">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button danger-outline" type="submit">删除</button>
+          </form>
+        </div>
+      </div>
+
+      <details style="margin-top:14px">
+        <summary style="cursor:pointer;font-weight:600">编辑节点</summary>
+        <form method="post" action="/admin/github-egress/nodes/{{ node.id }}/edit" class="settings-form" style="margin-top:14px">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="form-grid three">
+            <label class="field">
+              <span>节点名称</span>
+              <input name="node_name" value="{{ node.name }}" maxlength="80">
+            </label>
+            <label class="field" style="grid-column:span 2">
+              <span>替换 VLESS 分享链接（可选）</span>
+              <input type="password" name="vless_uri" autocomplete="new-password" placeholder="留空保持当前已保存链接">
+              <small>为了避免泄露密钥，旧链接不会预填。若当前节点正在启用，替换链接后会尝试立即重新加载 Xray；失败会恢复原节点配置。</small>
+            </label>
+          </div>
+          <button class="button secondary" type="submit" style="margin-top:12px">保存编辑</button>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="inline-note" style="margin-top:18px">当前还没有保存的 VLESS 节点。添加后会出现在这里；添加动作不会自动切换服务器网络。</div>
+  {% endif %}
+</section>
+
 <section class="panel form-section">
   <div class="panel-header">
     <div>
-      <h2>出站配置</h2>
-      <p>推荐使用“托管 VLESS”：直接粘贴你自己美国 VPS 的 <code>vless://</code> 分享链接，FDEX 自动生成专用 Xray 配置。</p>
+      <h2>出站基础设置</h2>
+      <p>设置 FDEX GitHub 的出站模式、Xray 路径、本地端口和超时。VLESS 节点内容请在上方代理列表管理。</p>
     </div>
     <span class="badge {% if status.mode == 'managed_vless' and status.listener_ready %}success{% endif %}">
       {% if status.mode == 'managed_vless' and status.listener_ready %}运行中{% else %}可配置{% endif %}
@@ -56,23 +143,16 @@
         <span>出站模式</span>
         <select name="mode">
           <option value="direct" {% if effective_mode == 'direct' %}selected{% endif %}>服务器直连</option>
-          <option value="managed_vless" {% if effective_mode == 'managed_vless' %}selected{% endif %}>托管 VLESS（推荐）</option>
+          <option value="managed_vless" {% if effective_mode == 'managed_vless' %}selected{% endif %}>托管 VLESS</option>
           <option value="http_proxy" {% if effective_mode == 'http_proxy' %}selected{% endif %}>自定义 HTTP(S) 代理</option>
         </select>
-        <small>托管 VLESS 只为 FDEX 的 GitHub 流量启动一个独立 Xray。</small>
-      </label>
-
-      <label class="field">
-        <span>VLESS 分享链接</span>
-        <input type="password" name="vless_uri" autocomplete="new-password"
-               placeholder="{% if vless_configured %}已安全保存；留空保持现有 VLESS{% else %}vless://UUID@host:443?...{% endif %}">
-        <small>支持 TLS / Reality 与 TCP / WS / gRPC / HTTPUpgrade / XHTTP。链接不会回显，也不会写入审计日志。</small>
+        <small>托管 VLESS 使用上方“当前启用”的节点；如果没有启用节点，请先在列表点击“启用”。</small>
       </label>
 
       <label class="field">
         <span>Xray 可执行文件</span>
         <input name="xray_binary" value="{{ status.xray_binary_setting }}" maxlength="240" required>
-        <small>{% if status.xray_binary %}已找到：{{ status.xray_binary }}{% else %}当前未找到 Xray；请先安装 Xray-core。{% endif %}</small>
+        <small>{% if status.xray_binary %}已找到：{{ status.xray_binary }}{% else %}当前未找到 Xray；托管 VLESS 暂不可用，请先安装 Xray-core 或填写正确路径。{% endif %}</small>
       </label>
 
       <label class="field">
@@ -85,22 +165,17 @@
         <span>自定义 HTTP(S) 代理</span>
         <input type="password" name="http_proxy" autocomplete="new-password"
                placeholder="{% if custom_proxy_configured %}已保存；留空保持现有代理{% else %}例如 http://user:pass@127.0.0.1:7890{% endif %}">
-        <small>仅在“自定义 HTTP(S) 代理”模式使用。不要在这里粘贴 vless://。</small>
+        <small>仅在“自定义 HTTP(S) 代理”模式使用。</small>
       </label>
 
       <label class="field"><span>连接超时（秒）</span><input type="number" step="0.1" name="connect_timeout_seconds" min="2" max="120" value="{{ settings.fdex_github_connect_timeout_seconds }}" required></label>
       <label class="field"><span>读取超时（秒）</span><input type="number" step="0.1" name="read_timeout_seconds" min="5" max="300" value="{{ settings.fdex_github_read_timeout_seconds }}" required></label>
       <label class="field"><span>安全重试次数</span><input type="number" name="retry_attempts" min="1" max="5" value="{{ settings.fdex_github_retry_attempts }}" required><small>只对可安全重放的 GitHub 读取、clone/fetch/push 网络故障执行有限重试。</small></label>
-
-      <label class="checkbox-field aligned">
-        <input type="checkbox" name="clear_saved_vless" value="true">
-        <span>同时清除已保存的 VLESS 链接与本地代理认证</span>
-      </label>
     </div>
 
     <div class="row" style="margin-top:16px">
-      <button class="button primary" type="submit">保存并立即应用</button>
-      <span class="muted">配置文件与 VLESS 密钥均只保存在 FDEX 服务端权限受限文件中。</span>
+      <button class="button primary" type="submit">保存基础设置</button>
+      <span class="muted">切换到服务器直连或自定义 HTTP(S) 代理时，VLESS 节点会保留在列表但全部标记为停用。</span>
     </div>
   </form>
 </section>
@@ -123,14 +198,14 @@
   </section>
 
   <section class="panel">
-    <div class="panel-header"><div><h2>GitHub 出站测试</h2><p>验证真实 GitHub 路径和本地代理认证隔离。</p></div></div>
-    <p class="muted">测试会通过当前 FDEX GitHub 出站请求 <code>github.com</code> 和 <code>api.github.com</code>。托管 VLESS 模式还会验证“不带 FDEX 认证访问本地代理会被拒绝”。</p>
+    <div class="panel-header"><div><h2>GitHub 出站测试</h2><p>验证真实 GitHub 功能路径和本地代理认证隔离。</p></div></div>
+    <p class="muted">测试不再把任意 HTTP 响应当成成功：<code>github.com</code> 必须返回正常 2xx/3xx，<code>api.github.com</code> 必须返回 HTTP 200。HTTP 403 rate limit 与 406 都会明确显示为异常。</p>
     <form method="post" action="/admin/github-egress/test">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="button primary full" type="submit">测试当前 GitHub 专用出口</button>
     </form>
     <div class="inline-note warning-note" style="margin-top:12px">
-      版本维护页出现 <code>403 rate limit exceeded</code> 表示 GitHub API 配额耗尽，不等同于 VLESS 连接失败。FDEX 版本检查会优先使用已配置的 <code>GITHUB_TOKEN</code>，并使用本页设置的专用 GitHub 出站。
+      若 <code>api.github.com</code> 返回 <code>403 rate limit</code>，说明网络通常已经到达 GitHub，但 API 配额不可用，不能算功能测试通过。配置 <code>GITHUB_TOKEN</code> 后，本测试和版本维护请求会优先使用服务端 Token 配额。
     </div>
   </section>
 </div>
@@ -138,8 +213,8 @@
 <section class="panel form-section">
   <div class="panel-header"><div><h2>工作原理</h2><p>服务器其它服务不会被代理。</p></div></div>
   <div class="code-block">
-    <div>FDEX GitHub API / OAuth / Installation Token → FDEX 专用 HTTP 代理 → Xray VLESS → 美国 VPS → GitHub</div>
-    <div>Coding Agent git clone / fetch / push → Git 子进程专用 GitHub proxy → 同一 Xray VLESS → GitHub</div>
+    <div>当前启用 VLESS 节点 → FDEX 专用 HTTP 代理 → 独立 Xray → VLESS VPS → GitHub</div>
+    <div>FDEX GitHub API / OAuth / Installation Token 与 Coding Agent git clone / fetch / push → 同一 FDEX 专用出口</div>
     <div>AI Provider / SMTP / Letta / Qdrant / 服务器其它服务 → 原有服务器网络（不经过该 VLESS）</div>
   </div>
 </section>
