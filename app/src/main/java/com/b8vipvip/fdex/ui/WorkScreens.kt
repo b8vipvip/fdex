@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.AppRepository
 import com.b8vipvip.fdex.data.Project
 import com.b8vipvip.fdex.data.ProjectAsset
+import com.b8vipvip.fdex.data.createGeneralProject
 import com.b8vipvip.fdex.network.AiGatewayResult
 import com.b8vipvip.fdex.network.ChatAttachment
 import com.b8vipvip.fdex.network.ClientAiApi
@@ -118,7 +119,7 @@ internal fun NewProjectScreen(repo: AppRepository, onDone: (Long) -> Unit) {
         Button(
             enabled = title.isNotBlank(),
             onClick = {
-                onDone(repo.createProject(title, description, level, storage, retention, allowAi, desensitize, auto).id)
+                onDone(repo.createGeneralProject(title, description, level, storage, retention, allowAi, desensitize, auto).id)
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("创建工作") }
