@@ -12,6 +12,9 @@ from app.agent_loop import FdexAgentLoop
 from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, agent_runtime
 from app.agent_tasks import TaskRunBusy, agent_task_store
+from app.codex_host_guard import compact_codex_thread
+from app.codex_host_runtime import create_codex_continuation, queue_codex_steer
+from app.codex_host_store import codex_host_store
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -63,6 +66,15 @@ async def _execute(owner_id: str, task_id: str) -> None:
             pass
 
 
+async def _compact(owner_id: str, task_id: str) -> None:
+    try:
+        await compact_codex_thread(agent_runtime(), owner_id=owner_id, task_id=task_id)
+    except Exception:
+        # The durable Codex control row stores the detailed error; the task detail page can
+        # display it after refresh without leaking an exception through BackgroundTasks.
+        return
+
+
 @router.get("", response_class=HTMLResponse, response_model=None)
 def agent_center(request: Request, status: str = "") -> Response:
     user, owner_id, redirect = _owner(request)
@@ -85,6 +97,7 @@ def agent_center(request: Request, status: str = "") -> Response:
             projects=projects,
             tasks=tasks,
             task=None,
+            codex_session=None,
             status_filter=clean_status,
             usage=usage,
             operation=operation.to_dict(),
@@ -137,6 +150,7 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
         return RedirectResponse("/account/agent", status_code=303)
     projects = agent_project_store().list_projects(owner_id, enabled_only=True)
     usage = agent_runtime().execution_sandbox.account_usage(owner_id)
+    codex_session = codex_host_store().task_state(owner_id, task_id)
     return templates.TemplateResponse(
         "user_agent.html",
         _ctx(
@@ -144,6 +158,7 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
             user,
             view="task",
             task=task,
+            codex_session=codex_session,
             projects=projects,
             tasks=[],
             status_filter="",
@@ -224,6 +239,107 @@ async def agent_task_retry(
     except (ValueError, AgentRuntimeError) as exc:
         _flash(request, str(exc), "error")
         return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
+
+
+@router.post("/tasks/{task_id}/codex/resume", response_model=None)
+async def codex_resume_task(
+    task_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(...),
+    prompt: str = Form(...),
+) -> Response:
+    user, owner_id, redirect = _owner(request)
+    if redirect:
+        return redirect
+    assert user is not None
+    try:
+        _verify_csrf(request, csrf_token)
+        child = await create_codex_continuation(
+            agent_runtime(),
+            owner_id=owner_id,
+            source_task_id=task_id,
+            prompt=prompt,
+            fork=False,
+        )
+        background_tasks.add_task(_execute, owner_id, child.id)
+        _flash(request, "已在同一官方 Codex Thread 上创建续接 Turn 并开始执行", "success")
+        return RedirectResponse(f"/account/agent/tasks/{child.id}", status_code=303)
+    except (ValueError, AgentRuntimeError, KeyError) as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
+
+
+@router.post("/tasks/{task_id}/codex/fork", response_model=None)
+async def codex_fork_task(
+    task_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(...),
+    prompt: str = Form(...),
+) -> Response:
+    user, owner_id, redirect = _owner(request)
+    if redirect:
+        return redirect
+    assert user is not None
+    try:
+        _verify_csrf(request, csrf_token)
+        child = await create_codex_continuation(
+            agent_runtime(),
+            owner_id=owner_id,
+            source_task_id=task_id,
+            prompt=prompt,
+            fork=True,
+        )
+        background_tasks.add_task(_execute, owner_id, child.id)
+        _flash(request, "已请求 fork 官方 Codex Thread，并在隔离子任务中开始新 Turn", "success")
+        return RedirectResponse(f"/account/agent/tasks/{child.id}", status_code=303)
+    except (ValueError, AgentRuntimeError, KeyError) as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
+
+
+@router.post("/tasks/{task_id}/codex/steer", response_model=None)
+async def codex_steer_task(
+    task_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    text: str = Form(...),
+) -> Response:
+    user, owner_id, redirect = _owner(request)
+    if redirect:
+        return redirect
+    assert user is not None
+    try:
+        _verify_csrf(request, csrf_token)
+        control = await queue_codex_steer(owner_id=owner_id, task_id=task_id, text=text)
+        _flash(request, f"Steer 已进入 Codex Host 控制队列（#{control['id']}）", "success")
+    except (ValueError, AgentRuntimeError, KeyError) as exc:
+        _flash(request, str(exc), "error")
+    return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
+
+
+@router.post("/tasks/{task_id}/codex/compact", response_model=None)
+async def codex_compact_task(
+    task_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(...),
+) -> Response:
+    user, owner_id, redirect = _owner(request)
+    if redirect:
+        return redirect
+    assert user is not None
+    try:
+        _verify_csrf(request, csrf_token)
+        session = await asyncio.to_thread(codex_host_store().task_state, owner_id, task_id)
+        if session is None:
+            raise AgentRuntimeError("task has no persisted Codex thread")
+        background_tasks.add_task(_compact, owner_id, task_id)
+        _flash(request, "已提交 Codex Thread compact；活动 Turn 会先完成，再串行压缩上下文", "success")
+    except (ValueError, AgentRuntimeError, KeyError) as exc:
+        _flash(request, str(exc), "error")
+    return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
 
 
 @router.post("/sandbox/cleanup", response_model=None)

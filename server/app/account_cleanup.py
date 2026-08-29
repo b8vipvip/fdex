@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.agent_projects import agent_project_store
 from app.agent_tasks import agent_task_store
+from app.codex_host_store import codex_host_store
 from app.config import fresh_settings
 from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
@@ -46,7 +47,7 @@ def _purge_web_workspace(user_id: str) -> dict[str, int]:
     return {"records": removed_records, "asset_directories": removed_asset_dir}
 
 
-def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
+def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     clean = _validate_user_id(user_id)
     store = agent_project_store()
     store.init()
@@ -92,6 +93,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
     github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
+    codex_cleanup = codex_host_store().delete_owner(clean)
     task_count = agent_task_store().delete_owner(clean)
     settings = fresh_settings()
     removed_dirs = 0
@@ -112,6 +114,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
         "agent_account_policies": policy_count,
         "github_installation_sync_states": sync_state_count,
         "agent_tasks": task_count,
+        "codex_host": codex_cleanup,
         "owner_directories": removed_dirs,
     }
 
@@ -119,16 +122,19 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, int]:
 def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
     """Delete every server-owned resource for one FDEX user before identity removal.
 
-    An account cannot be deleted while a queued/running Coding Agent request can still write
-    task/worktree state. This guard runs before remote-memory erasure so a rejected deletion
-    attempt does not partially erase the user's data. Once no task is active, memory erasure
-    remains fail-closed and durable Agent task/event rows are removed with the other resources.
-    Web workspace rows and uploaded assets are also erased so account deletion has identical
-    privacy semantics whether it is initiated from Android, Web or the JSON API.
+    An account cannot be deleted while a queued/running Coding Agent request or Codex Host
+    control can still write task/worktree/thread state. This guard runs before remote-memory
+    erasure so a rejected deletion attempt does not partially erase the user's data. Once no
+    operation is active, memory erasure remains fail-closed and durable Agent/Codex rows are
+    removed with the other resources. Web workspace rows and uploaded assets are also erased
+    so account deletion has identical privacy semantics whether initiated from Android, Web or
+    the JSON API.
     """
     clean = _validate_user_id(user_id)
     if agent_task_store().active_count(clean):
         raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再注销账号")
+    if codex_host_store().active_count(clean):
+        raise ValueError("请先等待 Codex Host 的 Turn/Compact/控制操作结束，再注销账号")
     memory_cleanup = asyncio.run(erase_account_memory(clean))
     agent_cleanup = _purge_agent_resources_only(clean)
     web_cleanup = _purge_web_workspace(clean)

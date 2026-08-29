@@ -101,7 +101,7 @@ def parse_decision(text: str, allowed_tools: tuple[str, ...]) -> AgentDecision:
 
 
 async def _maybe_run_official_codex(runtime: FdexAgentRuntime, task_id: str) -> bool:
-    """Run the Phase 7.19 Codex engine when selected.
+    """Run the durable official Codex Host when selected.
 
     Returns True when the task was handled by Codex (including strict-mode readiness
     failure), or False when the caller should continue through the legacy loop.
@@ -111,7 +111,8 @@ async def _maybe_run_official_codex(runtime: FdexAgentRuntime, task_id: str) -> 
     if mode not in {"codex", "auto"}:
         return False
 
-    from app.codex_engine import codex_runtime_status, run_codex_task
+    from app.codex_engine import codex_runtime_status
+    from app.codex_host_guard import run_codex_task
 
     status = codex_runtime_status()
     if bool(status.get("ready")):

@@ -35,7 +35,7 @@
   </section>
 </div>
 {% else %}
-{% if task.status in ['queued','running'] %}<meta http-equiv="refresh" content="4">{% endif %}
+{% if task.status in ['queued','running'] or (codex_session and codex_session.thread.status in ['running','compacting']) %}<meta http-equiv="refresh" content="4">{% endif %}
 <div class="grid">
   <section class="card span-8 stack">
     <div class="row between"><div><h2>{{ task.project_name }}</h2><div class="mono muted">{{ task.repository }}</div></div><span class="badge {% if task.status == 'succeeded' %}ok{% elif task.status in ['failed','canceled'] %}warn{% endif %}">{{ task.status }}</span></div>
@@ -52,6 +52,56 @@
     {% if task.changed_files %}<div class="repo"><strong>变更文件</strong><div class="mono" style="margin-top:6px">{% for path in task.changed_files %}{{ path }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>{% endif %}
   </section>
   <section class="card span-4 stack"><div class="card-head"><h2>执行事件</h2><span class="badge">{{ task.events|length }}</span></div>{% for event in task.events|reverse %}<div class="repo"><strong>{{ event.type }}</strong><p>{{ event.message }}</p><div class="fine">{{ event.created_at }}</div></div>{% else %}<p class="muted">暂无事件。</p>{% endfor %}</section>
+
+  {% if codex_session %}
+  <section class="card span-8 stack">
+    <div class="card-head"><div><h2>Codex Thread / Turn</h2><p>Phase 7.21 持久层：浏览器、FDEX 服务或 Uvicorn worker 重启后仍保留官方 Codex 协议身份。</p></div><span class="badge {% if codex_session.thread.status == 'idle' %}ok{% elif codex_session.thread.status in ['failed','interrupted'] %}warn{% endif %}">{{ codex_session.thread.status }}</span></div>
+    <div class="grid">
+      <div class="span-6 repo"><div class="fine">Thread ID</div><strong class="mono">{{ codex_session.thread.thread_id }}</strong></div>
+      <div class="span-3 repo"><div class="fine">任务关系</div><strong>{{ codex_session.binding.relation }}</strong></div>
+      <div class="span-3 repo"><div class="fine">Runtime</div><strong class="mono">{{ codex_session.thread.runtime_version or '-' }}</strong></div>
+      <div class="span-6 repo"><div class="fine">当前 Turn</div><strong class="mono">{{ codex_session.thread.current_turn_id or '-' }}</strong></div>
+      <div class="span-6 repo"><div class="fine">最后完成 Turn</div><strong class="mono">{{ codex_session.thread.last_completed_turn_id or '-' }}</strong></div>
+      {% if codex_session.thread.parent_thread_id %}<div class="span-6 repo"><div class="fine">Fork 来源 Thread</div><strong class="mono">{{ codex_session.thread.parent_thread_id }}</strong></div><div class="span-6 repo"><div class="fine">Fork 截止 Turn</div><strong class="mono">{{ codex_session.thread.forked_from_turn_id or '-' }}</strong></div>{% endif %}
+    </div>
+
+    {% if task.status == 'running' and codex_session.thread.status == 'running' %}
+    <form action="/account/agent/tasks/{{ task.id }}/codex/steer" method="post" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Steer 当前 Turn<textarea name="text" rows="3" maxlength="12000" required placeholder="补充约束、纠正方向或追加当前 Turn 的要求。"></textarea></label>
+      <button class="secondary" type="submit">发送 steer</button>
+    </form>
+    {% endif %}
+
+    {% if task.status in ['succeeded','failed','canceled'] %}
+    <div class="grid">
+      <form class="span-6 stack repo" action="/account/agent/tasks/{{ task.id }}/codex/resume" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <strong>Resume 同一 Thread</strong>
+        <div class="fine">创建隔离的续接任务，继承上一任务 Commit，并调用官方 thread/resume 后启动新 Turn。</div>
+        <textarea name="prompt" rows="4" maxlength="12000" required placeholder="继续完成……"></textarea>
+        <button class="primary" type="submit">Resume + 新 Turn</button>
+      </form>
+      <form class="span-6 stack repo" action="/account/agent/tasks/{{ task.id }}/codex/fork" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <strong>Fork Thread</strong>
+        <div class="fine">从最后完成 Turn 分叉官方 Thread，在新的隔离任务中探索另一条开发路径。</div>
+        <textarea name="prompt" rows="4" maxlength="12000" required placeholder="从这里分叉并尝试……"></textarea>
+        <button class="secondary" type="submit">Fork + 新 Turn</button>
+      </form>
+    </div>
+    {% endif %}
+
+    <form action="/account/agent/tasks/{{ task.id }}/codex/compact" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="secondary" type="submit" {% if codex_session.thread.status == 'compacting' %}disabled{% endif %}>Compact Thread 上下文</button>
+    </form>
+
+    <div class="repo"><strong>Turn 历史</strong>{% for turn in codex_session.turns %}<div style="margin-top:8px"><span class="badge {% if turn.status == 'completed' %}ok{% elif turn.status not in ['inProgress','completed'] %}warn{% endif %}">{{ turn.kind }} · {{ turn.status }}</span> <span class="mono">{{ turn.turn_id }}</span><div class="fine">{{ turn.started_at }}{% if turn.error %} · {{ turn.error }}{% endif %}</div></div>{% else %}<p class="muted">暂无持久 Turn。</p>{% endfor %}</div>
+    {% if codex_session.controls %}<div class="repo"><strong>Host 控制队列</strong>{% for control in codex_session.controls %}<div style="margin-top:8px"><span class="badge {% if control.state == 'succeeded' %}ok{% elif control.state in ['failed','rejected'] %}warn{% endif %}">#{{ control.id }} · {{ control.action }} · {{ control.state }}</span>{% if control.error %}<div class="fine">{{ control.error }}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
+  </section>
+  <section class="card span-4 stack"><h2>Codex Host 状态</h2><div class="repo"><div class="fine">Provider / Model</div><strong>{{ codex_session.thread.provider_name or '-' }}</strong><div class="mono fine">{{ codex_session.thread.model or '-' }}</div></div><div class="repo"><div class="fine">Thread Root Task</div><strong class="mono">{{ codex_session.thread.root_task_id }}</strong></div><div class="repo"><div class="fine">当前 Worktree</div><div class="mono fine">{{ codex_session.thread.worktree or '-' }}</div></div><p class="fine">Steer/Compact 控制先写入 SQLite 队列，再由真正持有 Codex stdio 进程的 worker 执行；因此不会依赖请求恰好落到同一个 Uvicorn worker。</p></section>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}
