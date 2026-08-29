@@ -6,8 +6,6 @@ import ipaddress
 import json
 import secrets
 import socket
-import sqlite3
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any, AsyncIterator, Iterator
@@ -78,13 +76,7 @@ def _safe_server_config_name(name: str, server_id: str) -> str:
 
 
 class RemoteMcpLeaseStore:
-    """Cross-worker ephemeral capability leases for the local MCP gateway.
-
-    Only SHA-256 hashes of capability tokens are persisted. The raw token exists only in the
-    per-task Codex thread config and the localhost request path. A live lease is still subordinate
-    to the current owner-scoped registry row: disabling or deleting the server takes effect on the
-    very next request even when an older Codex process still knows its local capability URL.
-    """
+    """Cross-worker ephemeral capability leases for the local MCP gateway."""
 
     def __init__(self, registry: RemoteMcpRegistry | None = None) -> None:
         self.registry = registry or remote_mcp_registry()
@@ -117,7 +109,7 @@ class RemoteMcpLeaseStore:
             )
         self._initialized = True
 
-    def issue(self, owner_id: str, task_id: str, server_id: str) -> tuple[dict[str, Any], str]:
+    def issue(self, owner_id: str, task_id: str, server_id: str) -> tuple[dict[str,Any], str]:
         self.init()
         server = self.registry.get(owner_id, server_id)
         if server is None or not bool(server.get("enabled")):
@@ -153,10 +145,7 @@ class RemoteMcpLeaseStore:
         if not lease_id.startswith("lease_") or len(token) < 32:
             return None
         with self.registry.db() as conn:
-            row = conn.execute(
-                "SELECT * FROM remote_mcp_leases WHERE id=?",
-                (lease_id,),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM remote_mcp_leases WHERE id=?", (lease_id,)).fetchone()
             if row is None or str(row["state"]) != "active":
                 return None
             if _parse_time(str(row["expires_at"])) <= _now():
@@ -191,8 +180,7 @@ class RemoteMcpLeaseStore:
         with self.registry.db() as conn:
             cursor = conn.execute(
                 """
-                UPDATE remote_mcp_leases
-                SET state='revoked',revoked_at=?
+                UPDATE remote_mcp_leases SET state='revoked',revoked_at=?
                 WHERE owner_id=? AND task_id=? AND state='active'
                 """,
                 (now, owner_id, task_id),
@@ -250,8 +238,6 @@ def build_codex_remote_mcp_config(owner_id: str, task_id: str) -> dict[str, dict
             "startup_timeout_sec": int(server["startup_timeout_sec"]),
             "tool_timeout_sec": int(server["tool_timeout_sec"]),
             "enabled_tools": enabled_tools,
-            # Defense in depth: tools that do not advertise readOnlyHint should require a user
-            # approval in Codex. Phase 7.24 already owns MCP elicitation rendering/response.
             "default_tools_approval_mode": "writes",
         }
     return result
@@ -299,8 +285,7 @@ class PinnedResolver(AbstractResolver):
 def _forward_request_headers(request: Request) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in request.headers.items():
-        lower = key.lower()
-        if lower in _REQUEST_HEADER_ALLOWLIST:
+        if key.lower() in _REQUEST_HEADER_ALLOWLIST:
             result[key] = value
     result["Accept-Encoding"] = "identity"
     result["User-Agent"] = "FDEX-Remote-MCP-Gateway/1"
@@ -330,7 +315,6 @@ def enforce_tool_allowlist(body: bytes, content_type: str, enabled_tools: list[s
     if not body:
         return
     if "application/json" not in (content_type or "").lower():
-        # A POST that cannot be inspected must not bypass tools/call authorization.
         raise ValueError("FDEX only proxies inspectable application/json MCP POST requests")
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -346,30 +330,24 @@ async def _bounded_body(request: Request) -> bytes:
     length = request.headers.get("content-length", "").strip()
     if length:
         try:
-            if int(length) > _MAX_REQUEST_BODY:
-                raise ValueError("Remote MCP request body exceeds 8 MiB")
-        except ValueError as exc:
-            if "exceeds" in str(exc):
-                raise
+            declared = int(length)
+        except ValueError:
+            declared = -1
+        if declared > _MAX_REQUEST_BODY:
+            raise ValueError("Remote MCP request body exceeds 8 MiB")
     body = await request.body()
     if len(body) > _MAX_REQUEST_BODY:
         raise ValueError("Remote MCP request body exceeds 8 MiB")
     return body
 
 
-async def _relay(
-    request: Request,
-    *,
-    server: dict[str, Any],
-    body: bytes,
-) -> Response:
+async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Response:
     target = str(server["url"])
     parsed = urlsplit(target)
     hostname = str(parsed.hostname or "").rstrip(".").lower()
-    # This is the critical request-time check. The subsequent aiohttp connector receives only
-    # these exact IPs through PinnedResolver; it is unable to perform a second DNS lookup that
-    # could observe a rebinding answer. The URL retains the original hostname, so TLS SNI and
-    # certificate verification are still performed against that hostname.
+    # Request-time DNS is checked, then pinned into aiohttp's custom resolver. The URL remains the
+    # original hostname, preserving TLS SNI and certificate verification while preventing a second
+    # DNS lookup from observing a rebinding answer.
     addresses = resolve_public_addresses(hostname)
     resolver = PinnedResolver(hostname, addresses)
     connector = aiohttp.TCPConnector(
@@ -379,8 +357,9 @@ async def _relay(
         limit=1,
         enable_cleanup_closed=True,
     )
+    tool_timeout = max(2, min(600, int(server.get("tool_timeout_sec") or 60)))
     timeout = aiohttp.ClientTimeout(
-        total=max(2, min(600, int(server.get("tool_timeout_sec") or 60))),
+        total=None if request.method == "GET" else tool_timeout,
         connect=15,
         sock_connect=15,
         sock_read=None,
@@ -404,11 +383,11 @@ async def _relay(
         await session.close()
         raise
 
-    # Redirects are never passed through because the Codex client could follow Location directly
-    # and escape the pinned destination. Authentication challenges are also hidden in this phase
-    # so Codex cannot start its own OAuth flow against a user-controlled remote endpoint.
+    # Never expose redirects: a Codex HTTP client could otherwise follow Location directly and
+    # bypass the gateway. Never expose auth challenges either, because Phase 7.26 intentionally
+    # has no bearer/OAuth credential broker and must not trigger Codex's own MCP OAuth handling.
     if 300 <= upstream.status < 400:
-        await upstream.release()
+        upstream.release()
         await session.close()
         return JSONResponse(
             {"error": "Remote MCP redirects are blocked by FDEX destination policy"},
@@ -416,7 +395,7 @@ async def _relay(
             headers={"Cache-Control": "no-store"},
         )
     if upstream.status in {401, 403, 407}:
-        await upstream.release()
+        upstream.release()
         await session.close()
         return JSONResponse(
             {"error": "Remote MCP authentication is not enabled in Phase 7.26"},
@@ -436,12 +415,7 @@ async def _relay(
             upstream.release()
             await session.close()
 
-    return StreamingResponse(
-        stream(),
-        status_code=upstream.status,
-        headers=response_headers,
-        media_type=None,
-    )
+    return StreamingResponse(stream(), status_code=upstream.status, headers=response_headers, media_type=None)
 
 
 @router.api_route("/{lease_id}/{token}", methods=["GET", "POST", "DELETE"], response_model=None)
