@@ -5,10 +5,13 @@ Last updated: 2026-08-29
 ## Current baseline
 
 - Default branch: `main`
-- Baseline proposed by this branch: **Phase 7.20 — Codex Native Host**
+- Accepted `main` baseline before this branch: **Phase 7.22 — Durable/Realtme Codex Item Stream**
+- Accepted Phase 7.22 main commit: `e4169f906589dcca33c82472519ff9aed42be78b`
+- Baseline proposed by this branch: **Phase 7.23 — Durable Codex Interactions**
+- Current development branch: `agent/phase7-23-codex-interactions`
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.20 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.23 are server/Web/infrastructure changes and do not require an Android release by themselves.
 - `FDEX_AGENT_ENGINE=legacy` remains the rollout default until a production Responses/tool smoke task succeeds.
 
 A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green.
@@ -19,7 +22,7 @@ FDEX user-facing identities use the universal **智体** model, not the former c
 
 ## Center account and isolation
 
-FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks and sandboxes.
+FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests and sandboxes.
 
 Completed account lifecycle includes registration/login, rotating refresh sessions, password change/reset, device/session management, login rate limiting, security audit, data export, remote-memory erasure and permanent account deletion.
 
@@ -46,55 +49,119 @@ Earlier PAT / Device OAuth paths remain compatibility layers.
 
 ## Official OpenAI Codex architecture
 
-### Phase 7.19 foundation
+### Phase 7.19 — Runtime foundation
 
-Phase 7.19 first integrated the official `openai-codex==0.147.0` Python SDK and matching bundled Codex Runtime while retaining FDEX account/GitHub/worktree/security authority.
+FDEX integrated the official Codex Runtime while retaining FDEX account/GitHub/worktree/security authority.
 
-### Phase 7.20 native host
+### Phase 7.20 — Native App Server Host
 
-Phase 7.20 changes the long-term compatibility boundary from the high-level Python SDK to the public **`codex app-server` JSON-RPC protocol**.
+The long-term compatibility boundary is the public **`codex app-server` JSON-RPC protocol** rather than a high-level SDK wrapper.
 
-Implemented on this branch:
+Implemented:
 
-- `server/app/codex_app_server.py` directly hosts official `codex app-server` over stdio;
-- native initialize/initialized, request/response, notification and server-request routing;
-- direct `thread/start`, `turn/start` and `turn/interrupt` execution;
-- unknown/new notifications are transport-compatible rather than fatal;
-- unsupported interactive approval/permission/user-input/MCP requests fail closed until FDEX has an owner-scoped UI/policy bridge;
-- Runtime selection: `FDEX_AGENT_CODEX_BIN` → system `codex` → official bundled Runtime;
-- admin runtime status reports version/source/protocol/provider without secrets;
-- FDEX can therefore use a newer verified official Runtime without waiting for the Python SDK to wrap every new method;
-- one owner-scoped `CODEX_HOME` per FDEX `user_id`, allowing native thread/history/skills/hooks/plugin/MCP state to persist inside the user boundary;
-- task repository worktrees remain independent;
-- shared FDEX Provider pool remains the model source and requires a configured Responses-capable provider;
-- Codex process environment is sanitized before the official binary starts;
-- Provider API Key does not enter Codex shell command environments (`inherit=none`);
-- FDEX project `allow_network` maps to Codex workspace-write network access;
-- Web Search remains disabled until FDEX defines a separate explicit permission;
-- Codex never receives GitHub App/OAuth/PAT/maintenance credentials;
-- FDEX validates `.env`, `server/data` and `.git` protected paths before commit/push;
-- FDEX remains the authority for local commit, optional branch push and optional PR.
+- direct stdio host for official `codex app-server`;
+- initialize/initialized, request/response, notifications and fail-closed server requests;
+- native Thread/Turn execution;
+- schema-light forward-compatible notification transport;
+- Runtime selection and health reporting;
+- owner-scoped `CODEX_HOME`;
+- sanitized process environment;
+- shared FDEX Responses Provider mapping;
+- project `allow_network` mapping;
+- GitHub credentials remain outside Codex;
+- protected-path validation and FDEX-controlled commit/push/PR.
 
-### Real Runtime CI
+### Phase 7.21 — Durable Thread / Turn Host
 
-Phase 7.20 adds a FastAPI integration test that starts the actual official bundled Codex binary, completes the real app-server handshake and calls a native non-model API. This detects wire-protocol/runtime drift without requiring an API key or model quota.
+Accepted on `main` before Phase 7.22.
 
-Production CI still cannot prove a configured external Provider implements all Codex Responses/tool-streaming semantics. A real production Coding Agent smoke task is required before changing the default engine.
+Implemented:
+
+- persistent owner/task/Thread/Turn identities in SQLite;
+- `thread/resume`, `thread/fork`, `turn/steer`, `thread/compact/start`;
+- continuation tasks inherit the verified parent commit while retaining isolated worktrees;
+- cross-Uvicorn-worker control queue;
+- kernel `flock` prevents two workers from owning one Thread Host simultaneously;
+- stale worker/Turn/control reconciliation;
+- account deletion refuses active Host state and erases durable Thread/Turn/control records.
+
+### Phase 7.22 — Durable Item / Event Stream
+
+Accepted `main` commit: `e4169f906589dcca33c82472519ff9aed42be78b`.
+
+Implemented:
+
+- bounded persistence of the complete official app-server notification stream;
+- durable `item/started` / `item/completed` projection;
+- reconnect-safe persisted live deltas;
+- orphan Item marking when a terminal Turn is observed without `item/completed`;
+- unknown future notification/Item variants remain visible through schema-light raw JSON;
+- owner-scoped snapshot endpoint and SSE with `Last-Event-ID` resume;
+- Web rendering for command/file/MCP/dynamic tool/collaboration/sub-agent/Web/image/reasoning/plan/context-compaction and fallback Item types;
+- DOM rendering uses `textContent` / `replaceChildren`, never executes Item HTML;
+- account deletion erases Item/event/delta history.
+
+Phase 7.22 PR CI passed FastAPI Tests (`297 passed, 2 skipped`) plus Android unit/debug APK, and the post-merge `main` CI passed again.
+
+### Phase 7.23 — Durable Codex Interactions (current branch)
+
+This branch changes supported interactive requests from unconditional denial to an owner-scoped, fail-closed broker for:
+
+- `item/commandExecution/requestApproval`;
+- `item/fileChange/requestApproval`;
+- `item/permissions/requestApproval`;
+- `item/tool/requestUserInput`.
+
+Implemented/proposed on this branch:
+
+- the real JSON-RPC request id is preserved, including the distinction between numeric and string ids;
+- command `approvalId` is stored separately from `itemId`, matching official subcommand/writeStdin routing semantics;
+- requests are bound to FDEX `owner_id`, `task_id`, Host session, Thread, Turn and Item;
+- responses can be submitted through any Uvicorn worker and are atomically claimed only by the worker that owns the matching stdio Host;
+- `requestUserInput` secret answers are encrypted with a dedicated Fernet key while waiting for the Host;
+- first-use interaction-key publication is atomic across workers;
+- answer ciphertext is destroyed immediately after successful Host claim;
+- response history stores only a redacted summary, never secret answer bodies;
+- request/response protocol payloads fail closed above 1 MiB instead of being shape-truncated;
+- task cancellation from another worker terminates a pending interaction;
+- Host shutdown, coroutine cancellation and stale/orphan Host state terminalize pending interactions and clear ciphertext;
+- Web task detail renders command/file/permissions approvals and requestUserInput questions;
+- secret questions use password inputs with autocomplete disabled;
+- normal HTML forms use CSRF + 303 redirect, while JSON callers can request JSON results;
+- interaction snapshot and updates share the Phase 7.22 owner-scoped SSE bus;
+- Codex task pages no longer hard-refresh every four seconds while the user may be entering an answer; terminal Turn events trigger a delayed final refresh instead;
+- positive approvals remain subordinate to FDEX project/worktree policy:
+  - `allow_network=false` cannot be overridden by a user approval click;
+  - filesystem permission escalation must stay inside the task worktree;
+  - glob/special filesystem escalation fails closed;
+  - file-change approvals must have a recoverable Item and verified in-worktree paths;
+  - session-wide file approval additionally requires an explicit in-worktree `grantRoot`;
+  - ordinary unsandboxed command escalation remains blocked; only scoped network approval (when project network is enabled) and one-time `writeStdin` can be positively approved;
+- account deletion reconciles orphan interactions, refuses genuinely active ones, and erases interaction rows before Item/Thread/task state.
+
+Phase 7.23 is **not accepted into `main` until its PR and post-merge main CI are green**.
+
+## Real Runtime CI
+
+The FastAPI suite includes integration coverage that starts the actual bundled Codex binary, completes the real app-server handshake and calls a native non-model API. This detects wire/runtime drift without requiring a model API key.
+
+Production CI still cannot prove an external Provider implements every Codex Responses/tool-streaming semantic. A real production Coding Agent smoke task remains required before changing the default engine.
 
 ## Open-source Codex compatibility policy
 
 FDEX does **not** vendor every Rust crate from `openai/codex`.
 
-The goal is to use the complete portable local capability set through the official Runtime while keeping FDEX as a multi-user control plane. See:
+The goal is to use the portable local capability set through the official Runtime while FDEX remains the multi-user control plane. See:
 
 - `docs/CODEX_ENGINE.md`
 - `docs/CODEX_COMPATIBILITY.md`
+- `docs/CODEX_INTERACTIONS.md`
 
 The compatibility policy distinguishes:
 
-1. local/portable runtime capabilities that FDEX should directly adopt (Core, Exec, Sandbox, ExecPolicy, Thread/State, Skills, Hooks, local MCP/plugins, collaboration, etc.);
-2. capabilities requiring FDEX owner-scoped permission/UI bridges (approvals, user input, MCP elicitation/OAuth, multimodal, plugins, sub-agents);
-3. open client code that still depends on proprietary OpenAI/ChatGPT cloud services and therefore cannot be claimed as arbitrary-provider standalone compatibility;
+1. local/portable runtime capabilities that FDEX should directly adopt;
+2. capabilities requiring FDEX owner-scoped permission/UI bridges;
+3. open client code that still depends on proprietary OpenAI/ChatGPT cloud services;
 4. CLI/TUI/build/test/platform-specific projects that are not FDEX server Agent features.
 
 ## Recent completed phases
@@ -108,24 +175,23 @@ The compatibility policy distinguishes:
 - **Phase 7.16** — managed VLESS/Xray GitHub-only egress.
 - **Phase 7.17** — multi-node VLESS pool and strict health semantics.
 - **Phase 7.18** — explicit Xray dependency/activation failures.
-- **Phase 7.19** — official Codex SDK/Runtime foundation.
-- **Phase 7.20** — native official Codex App Server host and full-repository compatibility strategy.
+- **Phase 7.19** — official Codex Runtime foundation.
+- **Phase 7.20** — native official Codex App Server host and compatibility strategy.
+- **Phase 7.21** — durable Thread/Turn Host and continuation/control lifecycle.
+- **Phase 7.22** — durable full Item/event stream and reconnect-safe Web SSE.
 
-## What remains after Phase 7.20
+## What remains after Phase 7.23
 
-The native host is the foundation for broad Codex compatibility, not a claim of ChatGPT Codex cloud-product parity. Follow-up work includes:
+The next compatibility layers still include:
 
-- persist Codex thread/turn ids in FDEX task records;
-- resume/fork/steer/compact and continuation UI;
-- rich Item/Turn real-time Web/Android rendering;
-- image/audio/local attachment/skill/mention input;
-- command/file/permission approval bridge;
-- `tool/requestUserInput` and MCP elicitation/OAuth bridge;
-- Skills/Hooks/MCP/local plugin management;
+- MCP elicitation/OAuth and owner-scoped MCP authorization;
+- image/audio/local attachment/skill/mention Turn input;
+- Skills/Hooks/MCP/local plugin management and policy UI;
 - collaboration/sub-agent resource governance;
-- whole Codex process-tree systemd CPU/Memory/PID/concurrency envelope;
+- stronger whole Codex process-tree CPU/Memory/PID/concurrency and filesystem isolation;
 - verified official Runtime updater/rollback;
-- provider compatibility smoke tests and safe failover semantics.
+- provider compatibility smoke tests and safe failover semantics;
+- Android-native rendering/interaction parity where appropriate.
 
 ## Development rules going forward
 
@@ -136,9 +202,9 @@ The native host is the foundation for broad Codex compatibility, not a claim of 
 5. Never allow Coding Agent/Codex to write directly to `main`.
 6. Keep GitHub egress application-scoped and avoid host-global networking side effects.
 7. Keep secrets out of Codex Runtime/shell beyond the one selected Provider key needed by Runtime.
-8. Keep project network policy authoritative; do not use Web Search as a bypass.
+8. Keep project network/worktree policy authoritative; a human approval must not bypass it.
 9. Treat the official App Server Protocol as the Codex compatibility ABI; do not fork core crates without a compelling reason.
-10. Fail closed on unsupported server-initiated approval/permission requests.
+10. Fail closed on unsupported, unverifiable or over-broad server-initiated permission requests.
 11. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
 12. Require full FastAPI + Android CI before merge.
 
