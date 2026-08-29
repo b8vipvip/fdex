@@ -35,7 +35,7 @@
   </section>
 </div>
 {% else %}
-{% if task.status in ['queued','running'] or (codex_session and codex_session.thread.status in ['running','compacting']) %}<meta http-equiv="refresh" content="4">{% endif %}
+{% if not codex_session and task.status in ['queued','running'] %}<meta http-equiv="refresh" content="4">{% endif %}
 <div class="grid">
   <section class="card span-8 stack">
     <div class="row between"><div><h2>{{ task.project_name }}</h2><div class="mono muted">{{ task.repository }}</div></div><span class="badge {% if task.status == 'succeeded' %}ok{% elif task.status in ['failed','canceled'] %}warn{% endif %}">{{ task.status }}</span></div>
@@ -100,7 +100,72 @@
     <div class="repo"><strong>Turn 历史</strong>{% for turn in codex_session.turns %}<div style="margin-top:8px"><span class="badge {% if turn.status == 'completed' %}ok{% elif turn.status not in ['inProgress','completed'] %}warn{% endif %}">{{ turn.kind }} · {{ turn.status }}</span> <span class="mono">{{ turn.turn_id }}</span><div class="fine">{{ turn.started_at }}{% if turn.error %} · {{ turn.error }}{% endif %}</div></div>{% else %}<p class="muted">暂无持久 Turn。</p>{% endfor %}</div>
     {% if codex_session.controls %}<div class="repo"><strong>Host 控制队列</strong>{% for control in codex_session.controls %}<div style="margin-top:8px"><span class="badge {% if control.state == 'succeeded' %}ok{% elif control.state in ['failed','rejected'] %}warn{% endif %}">#{{ control.id }} · {{ control.action }} · {{ control.state }}</span>{% if control.error %}<div class="fine">{{ control.error }}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
   </section>
-  <section class="card span-4 stack"><h2>Codex Host 状态</h2><div class="repo"><div class="fine">Provider / Model</div><strong>{{ codex_session.thread.provider_name or '-' }}</strong><div class="mono fine">{{ codex_session.thread.model or '-' }}</div></div><div class="repo"><div class="fine">Thread Root Task</div><strong class="mono">{{ codex_session.thread.root_task_id }}</strong></div><div class="repo"><div class="fine">当前 Worktree</div><div class="mono fine">{{ codex_session.thread.worktree or '-' }}</div></div><p class="fine">Steer/Compact 控制先写入 SQLite 队列，再由真正持有 Codex stdio 进程的 worker 执行；因此不会依赖请求恰好落到同一个 Uvicorn worker。</p></section>
+  <section class="card span-4 stack"><h2>Codex Host 状态</h2><div class="repo"><div class="fine">Provider / Model</div><strong>{{ codex_session.thread.provider_name or '-' }}</strong><div class="mono fine">{{ codex_session.thread.model or '-' }}</div></div><div class="repo"><div class="fine">Thread Root Task</div><strong class="mono">{{ codex_session.thread.root_task_id }}</strong></div><div class="repo"><div class="fine">当前 Worktree</div><div class="mono fine">{{ codex_session.thread.worktree or '-' }}</div></div><p class="fine">Steer/Compact/审批/提问都通过 owner-scoped SQLite 桥交给真正持有 Codex stdio 进程的 worker，不依赖浏览器请求落到同一个 Uvicorn worker。</p></section>
+
+  <section id="codex-interaction-panel" class="card span-12 stack" data-task-id="{{ task.id }}" data-csrf-token="{{ csrf_token }}">
+    <div class="card-head">
+      <div><h2>Codex 审批与提问</h2><p>Phase 7.23 对接官方 command/file/permissions approval 与 item/tool/requestUserInput。请求保留真实 JSON-RPC/Thread/Turn/Item 身份；secret 回答只短暂加密落盘，Host claim 后立即销毁密文。</p></div>
+      <div class="row"><span class="badge">交互 <strong id="codex-interaction-count">{{ codex_interactions|length }}</strong></span><span class="badge">待处理 <strong id="codex-interaction-pending-count">{{ codex_interactions|selectattr('state','equalto','pending')|list|length }}</strong></span></div>
+    </div>
+    <div id="codex-interaction-list" class="stack" aria-live="polite">
+      {% for interaction in codex_interactions %}
+      {% set req = interaction.request %}
+      <article class="repo codex-interaction-card" data-interaction-id="{{ interaction.id }}">
+        <div class="row between"><div><strong>{{ interaction.method }}</strong><div class="mono fine">item {{ interaction.item_id or '-' }}{% if interaction.approval_id %} · approval {{ interaction.approval_id }}{% endif %}</div></div><span class="badge {% if interaction.state == 'responded' %}ok{% elif interaction.state in ['failed','declined','cancelled','interrupted','expired'] %}warn{% endif %}">{{ interaction.state }}</span></div>
+        {% if interaction.method == 'item/commandExecution/requestApproval' %}
+          {% if req.reason %}<p>{{ req.reason }}</p>{% endif %}
+          <div class="fine">命令</div><pre class="codex-item-output">{{ req.command or '-' }}</pre>
+          {% if req.cwd %}<div class="mono fine">cwd: {{ req.cwd }}</div>{% endif %}
+        {% elif interaction.method == 'item/fileChange/requestApproval' %}
+          {% if req.reason %}<p>{{ req.reason }}</p>{% endif %}
+          {% if req.grantRoot %}<div class="mono fine">grantRoot: {{ req.grantRoot }}</div>{% endif %}
+        {% elif interaction.method == 'item/permissions/requestApproval' %}
+          {% if req.reason %}<p>{{ req.reason }}</p>{% endif %}
+          {% if req.cwd %}<div class="mono fine">cwd: {{ req.cwd }}</div>{% endif %}
+          <div class="fine">请求权限</div><pre class="codex-item-output">{{ req.permissions|tojson(indent=2) }}</pre>
+        {% elif interaction.method == 'item/tool/requestUserInput' %}
+          {% if interaction.state == 'pending' %}
+          <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% for question in req.questions or [] %}
+            <fieldset class="repo stack">
+              <legend><strong>{{ question.header or 'Codex 提问' }}</strong></legend>
+              <p>{{ question.question }}</p>
+              {% if question.options %}
+                {% for option in question.options %}<label class="check"><input type="checkbox" name="q:{{ question.id }}" value="{{ option.label }}">{{ option.label }}{% if option.description %} · <span class="fine">{{ option.description }}</span>{% endif %}</label>{% endfor %}
+              {% endif %}
+              {% if not question.options or question.isOther %}<input type="{% if question.isSecret %}password{% else %}text{% endif %}" name="q:{{ question.id }}" maxlength="12000" autocomplete="off" placeholder="{% if question.isSecret %}敏感回答不会显示或写入历史{% else %}输入回答{% endif %}">{% endif %}
+              {% if question.isSecret %}<div class="fine">此问题由 Codex 标记为 secret；FDEX 不会把回答正文写入事件或审计历史。</div>{% endif %}
+            </fieldset>
+            {% endfor %}
+            <button class="primary" type="submit">提交回答</button>
+          </form>
+          {% endif %}
+        {% endif %}
+
+        {% if interaction.state == 'pending' and interaction.method in ['item/commandExecution/requestApproval','item/fileChange/requestApproval'] %}
+        <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="primary" type="submit" name="action" value="accept">允许一次</button>
+          <button class="secondary" type="submit" name="action" value="acceptForSession">本 Session 允许</button>
+          <button class="danger-button" type="submit" name="action" value="decline">拒绝</button>
+          <button class="secondary" type="submit" name="action" value="cancel">取消</button>
+        </form>
+        {% elif interaction.state == 'pending' and interaction.method == 'item/permissions/requestApproval' %}
+        <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="primary" type="submit" name="action" value="grant_turn">仅本 Turn 授权</button>
+          <button class="secondary" type="submit" name="action" value="grant_session">本 Session 授权</button>
+          <button class="danger-button" type="submit" name="action" value="deny">拒绝权限</button>
+        </form>
+        {% endif %}
+        {% if interaction.response_summary %}<div class="fine">响应摘要：{{ interaction.response_summary|tojson }}</div>{% endif %}
+        {% if interaction.error %}<div class="alert alert-error" style="margin:8px 0 0">{{ interaction.error }}</div>{% endif %}
+      </article>
+      {% else %}<p id="codex-interaction-empty" class="muted">当前没有 Codex 审批或提问。</p>{% endfor %}
+    </div>
+    <p class="fine">FDEX 只提供官方协议允许的决策。command 的 approvalId 与 itemId 分开持久化，避免 zsh/STDIN 子审批误路由；未知 server request 继续 fail-closed。</p>
+  </section>
 
   <section id="codex-item-panel" class="card span-12 stack" data-task-id="{{ task.id }}">
     <div class="card-head">
