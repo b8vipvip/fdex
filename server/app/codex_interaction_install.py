@@ -8,6 +8,7 @@ from typing import Any, Iterator
 from app.agent_runtime import AgentTask
 from app.codex_interactive_client import InteractiveCodexAppServerClient
 from app.codex_interactions import CodexInteractionBroker
+from app.codex_mcp_elicitation import install_mcp_elicitation_compat
 
 _current_broker: ContextVar[CodexInteractionBroker | None] = ContextVar(
     "fdex_codex_interaction_broker",
@@ -36,14 +37,19 @@ class ContextInteractiveCodexAppServerClient(InteractiveCodexAppServerClient):
 
 
 def install_codex_interaction_runtime() -> None:
-    """Install Phase 7.23 behavior at the Phase 7.21 public Host seam.
+    """Install the durable owner-scoped interactive Host behavior at the Phase 7.21 seam.
 
     Phase 7.21 intentionally isolated the official Host in ``codex_host_runtime``. Rather than
     duplicate that large lifecycle runner, Phase 7.23 replaces only its app-server client class
-    and approval parameter helpers. The replacement class is ContextVar-backed, so concurrent
-    FDEX tasks in the same Uvicorn process never share a broker or owner scope.
+    and approval parameter helpers. Phase 7.24 extends the same durable broker with the official
+    ``mcpServer/elicitation/request`` method while keeping unsupported server requests fail-closed.
+    The replacement class is ContextVar-backed, so concurrent FDEX tasks in the same Uvicorn
+    process never share a broker or owner scope.
     """
     global _installed
+    # This registration is idempotent and intentionally runs before the Host patch guard so a
+    # hot-reloaded worker cannot retain the Phase 7.23 method allow-list after Phase 7.24 loads.
+    install_mcp_elicitation_compat()
     if _installed:
         return
     import app.codex_host_runtime as host
