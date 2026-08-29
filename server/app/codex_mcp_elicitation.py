@@ -216,11 +216,7 @@ def decorate_mcp_interaction(row: dict[str, Any]) -> dict[str, Any]:
     if mode == "form":
         try:
             _schema, properties, required = _schema_parts(request)
-            # Validate schema defaults before exposing accept. A malformed server-provided default
-            # must not bypass the same type/range/enum checks applied to explicit user values.
-            for name, schema in properties.items():
-                if "default" in schema:
-                    _validate_default(schema.get("default"), schema, name)
+            _validate_schema_defaults(properties)
             questions.append(_action_question(message, allow_accept=True))
             for name, schema in properties.items():
                 questions.append(_question_for_field(name, schema, name in required, server_name))
@@ -377,8 +373,18 @@ def _validate_default(default: Any, schema: dict[str, Any], field: str) -> Any:
     raise AgentRuntimeError(f"FDEX does not support MCP elicitation field type: {field_type or 'unknown'}")
 
 
+def _validate_schema_defaults(properties: dict[str, dict[str, Any]]) -> None:
+    for name, schema in properties.items():
+        if "default" in schema:
+            _validate_default(schema.get("default"), schema, name)
+
+
 def _form_content(request: dict[str, Any], values: dict[str, list[str]]) -> tuple[dict[str, Any], list[str]]:
     _schema, properties, required = _schema_parts(request)
+    # Validate server-authored schema defaults before looking at user values. This makes a broken
+    # or malicious MCP schema deterministically fail on its own defect instead of depending on
+    # which user field happens to be checked first.
+    _validate_schema_defaults(properties)
     token_to_name = {_field_token(name): name for name in properties}
     unknown = sorted(set(values) - set(token_to_name) - {_MCP_ACTION_ID})
     if unknown:
