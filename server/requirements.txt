@@ -14,3 +14,5 @@ openpyxl==3.1.5
 python-pptx==1.0.2
 anyio>=4.8,<5
 letta-client==1.12.1
+# Official OpenAI Codex Python SDK. It pins and installs the matching Codex CLI runtime.
+openai-codex==0.147.0
