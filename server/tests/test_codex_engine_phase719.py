@@ -61,6 +61,16 @@ def test_codex_shell_environment_does_not_expose_provider_key(monkeypatch, tmp_p
     assert configured["HOME"] == str(tmp_path)
 
 
+def test_codex_thread_config_preserves_fdex_network_policy(tmp_path: Path) -> None:
+    blocked = codex_engine._codex_thread_config(tmp_path, allow_network=False)
+    allowed = codex_engine._codex_thread_config(tmp_path, allow_network=True)
+
+    assert blocked["sandbox_workspace_write"] == {"network_access": False}
+    assert allowed["sandbox_workspace_write"] == {"network_access": True}
+    assert blocked["web_search"] == "disabled"
+    assert allowed["web_search"] == "disabled"
+
+
 def test_codex_process_env_only_adds_provider_key_to_sanitized_wrapper_input(tmp_path: Path) -> None:
     env = codex_engine._safe_process_env(tmp_path, "provider-key")
     assert env["FDEX_CODEX_PROVIDER_KEY"] == "provider-key"
