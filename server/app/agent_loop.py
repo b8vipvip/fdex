@@ -112,7 +112,7 @@ async def _maybe_run_official_codex(runtime: FdexAgentRuntime, task_id: str) -> 
         return False
 
     from app.codex_engine import codex_runtime_status
-    from app.codex_host_guard import run_codex_task
+    from app.codex_host_entry import run_codex_task
 
     status = codex_runtime_status()
     if bool(status.get("ready")):
