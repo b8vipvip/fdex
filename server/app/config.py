@@ -63,6 +63,12 @@ class Settings(BaseSettings):
 
     # Coding Agent uses the shared provider pool. No Agent-specific AI endpoint/key/model exists.
     fdex_agent_enabled: bool = True
+    # Phase 7.19 introduces the official OpenAI Codex engine behind a rollout switch.
+    # legacy = current FDEX JSON tool loop; codex = require official Codex; auto = use
+    # Codex when the SDK/runtime and a Responses-capable provider are ready, otherwise legacy.
+    # The initial migration default remains legacy until the operator validates its Responses upstream.
+    fdex_agent_engine: str = "legacy"
+    fdex_agent_codex_home_root: str = str(SERVER_DIR / "data" / "codex")
     # Bootstrap/enrollment secret retained only for migration from pre-central-auth clients.
     fdex_agent_access_token: str = ""
     fdex_agent_workspace: str = "/opt/fdex"

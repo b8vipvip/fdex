@@ -1,28 +1,54 @@
 {% extends "base.html" %}
 {% block title %}Coding Agent · FDEX{% endblock %}
 {% block heading %}Coding Agent{% endblock %}
-{% block subheading %}统一供应商 AI、账号隔离 GitHub、项目沙箱与受限执行{% endblock %}
+{% block subheading %}FDEX 控制平面 + 官方 OpenAI Codex 执行核心 + 账号隔离 GitHub 与沙箱{% endblock %}
 {% block actions %}<a class="button secondary" href="/admin/providers">供应商管理</a>{% endblock %}
 
 {% block content %}
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>Agent Runtime</h2><p>模型直接使用 FDEX“供应商管理”的统一 AI 接口，不单独配置 API、Key 或模型。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
-    <div class="inline-note success-note">AI 来源：<strong>统一供应商模型池</strong>。Coding Agent 与普通 AI 员工共享供应商优先级、主/备用文本模型和自动故障切换。</div>
-    <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启。确定继续吗？">
+    <div class="panel-header"><div><h2>Agent Runtime</h2><p>Phase 7.19 开始支持 OpenAI 官方 Codex Core；API Key/模型仍统一来自 FDEX 的<strong>统一供应商模型池</strong>。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
+    <div class="inline-note success-note">控制平面仍由 <strong>FDEX</strong> 管理账号、项目、GitHub App、worktree、审计和远程写权限；Codex 只负责隔离工作区内的编码执行，不接收 GitHub Installation Token。</div>
+
+    <div class="content-grid equal" style="margin-top:16px">
+        <div class="inline-note {% if codex_status.ready %}success-note{% else %}warning-note{% endif %}">
+            <strong>官方 Codex Runtime</strong><br>
+            {% if codex_status.ready %}
+            已就绪 · SDK {{ codex_status.sdk_version }} · {{ codex_status.provider_name }} / {{ codex_status.model }}
+            {% else %}
+            未就绪：{{ codex_status.reason or '未检测到官方 Codex SDK/Runtime 或 Responses 供应商' }}
+            {% endif %}
+        </div>
+        <div class="inline-note">
+            <strong>当前引擎：{{ agent_engine }}</strong><br>
+            <span class="muted">legacy=原 FDEX 工具循环；codex=强制官方 Codex；auto=Codex 就绪时优先，否则回退 legacy。</span>
+        </div>
+    </div>
+
+    <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启。确定继续吗？" style="margin-top:16px">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label class="checkbox-field aligned"><input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}><span>启用 Coding Agent Runtime</span></label>
+        <label class="field">
+            <span>Coding Agent 执行引擎</span>
+            <select name="fdex_agent_engine">
+                <option value="legacy" {% if agent_engine == 'legacy' %}selected{% endif %}>Legacy FDEX Engine（兼容回退）</option>
+                <option value="codex" {% if agent_engine == 'codex' %}selected{% endif %} {% if not codex_status.ready %}disabled{% endif %}>OpenAI Codex Core{% if not codex_status.ready %}（当前未就绪）{% endif %}</option>
+                <option value="auto" {% if agent_engine == 'auto' %}selected{% endif %}>Auto（优先 Codex，未就绪自动回退）</option>
+            </select>
+            <small>首次部署 Phase 7.19 建议先保持 Legacy，确认 Responses 供应商与 Codex 兼容后再切换 Codex/Auto。</small>
+        </label>
+        <div class="inline-note">Codex 使用官方 <code>openai-codex</code> SDK 和匹配的 Codex CLI Runtime。每个任务拥有独立 <code>CODEX_HOME</code>，服务端其它 SMTP/GitHub/Admin 密钥不会传给 Codex；Codex shell 工具也拿不到模型 Provider API Key。</div>
         <div class="inline-note {% if token_ready %}success-note{% else %}warning-note{% endif %}">{% if token_ready %}Agent 注册令牌已配置。新版客户端首次使用它注册账号级凭据，后续不会继续共享此全局令牌。{% else %}Agent 注册令牌尚未就绪，请运行服务器更新脚本。{% endif %}</div>
         <button class="button primary" type="submit">保存 Runtime 设置</button>
     </form>
 </section>
 
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>执行沙箱资源</h2><p>采用按任务启动、任务结束即销毁的 systemd transient sandbox，不为每个账号常驻容器。</p></div><span class="badge success">空闲 RAM ≈ 0</span></div>
+    <div class="panel-header"><div><h2>执行沙箱资源</h2><p>FDEX 继续负责账号/项目/task worktree 隔离；Codex 使用自身 workspace-write 沙箱，FDEX 仍掌握最终 commit/push/PR 权限。</p></div><span class="badge success">空闲 RAM ≈ 0</span></div>
     <div class="content-grid equal">
-        <div><strong>默认单任务内存上限</strong><p class="muted">{{ settings.fdex_agent_sandbox_memory_mb }} MB。MemoryMax 是硬上限，不是预留内存；实际占用由构建工具决定。</p></div>
+        <div><strong>默认单任务内存上限</strong><p class="muted">{{ settings.fdex_agent_sandbox_memory_mb }} MB。现有 FDEX 测试/编译工具继续通过 systemd transient sandbox 执行；Codex 资源 cgroup 将在后续迁移阶段进一步统一。</p></div>
         <div><strong>默认 CPU / 并发</strong><p class="muted">CPU {{ settings.fdex_agent_sandbox_cpu_percent }}% · 全局最多 {{ settings.fdex_agent_sandbox_max_concurrent }} 个构建任务同时执行。</p></div>
     </div>
-    <div class="inline-note">每个账号拥有独立目录和依赖缓存：<code>{{ settings.fdex_agent_sandbox_root }}/owners/&lt;account&gt;/</code>。不同项目再分成独立 repository/worktrees；只有同一账号自己的项目共享该账号的构建缓存。</div>
+    <div class="inline-note">每个账号拥有独立目录和依赖缓存：<code>{{ settings.fdex_agent_sandbox_root }}/owners/&lt;account&gt;/</code>。Codex 临时状态另存于 <code>{{ settings.fdex_agent_codex_home_root }}/&lt;account&gt;/&lt;task&gt;/</code>。</div>
 </section>
 
 <section class="panel form-section" id="github-oauth">
@@ -83,12 +109,12 @@
 </section>
 
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>隔离与权限边界</h2><p>account → project → task 三层文件隔离 + 一次性执行沙箱</p></div></div>
+    <div class="panel-header"><div><h2>隔离与权限边界</h2><p>account → project → task 三层文件隔离 + FDEX GitHub 权限控制 + Codex workspace sandbox</p></div></div>
     <div class="content-grid equal">
-        <div><strong>账号 / 项目隔离</strong><p class="muted">不同账号使用不同 owner 目录和 GitHub 凭据；不同项目不共用 repository/worktree。任务只能修改自己的 worktree。</p></div>
-        <div><strong>执行隔离</strong><p class="muted">配置项目的测试/编译通过 systemd transient unit 运行，限制内存、CPU、PID、设备和宿主文件系统；网络默认关闭，可按项目显式开启。</p></div>
-        <div><strong>GitHub 写权限</strong><p class="muted">默认关闭。只有项目显式允许后，Agent 才能 push 自己生成的 <code>fdex-agent/*</code> 分支并创建 PR；不能直接修改 main。</p></div>
-        <div><strong>无常驻容器</strong><p class="muted">账号空闲时没有独立 Agent 容器/JVM/Gradle daemon 常驻，因此账号数量增加不会线性占用内存。</p></div>
+        <div><strong>账号 / 项目隔离</strong><p class="muted">不同账号使用不同 owner 目录和 GitHub 凭据；不同项目不共用 repository/worktree。Codex 只收到当前任务 worktree。</p></div>
+        <div><strong>密钥隔离</strong><p class="muted">Codex 子进程经过 FDEX 环境清洗；GitHub/SMTP/Admin 等服务密钥不会继承，模型 API Key 仅供 Codex Runtime 调用上游，shell 工具环境明确不继承它。</p></div>
+        <div><strong>GitHub 写权限</strong><p class="muted">Codex 被明确禁止直接 push/PR。只有任务结束后，FDEX 根据项目 allow_push/allow_pr 决定是否使用账号自己的 GitHub App 权限推送 <code>fdex-agent/*</code> 分支。</p></div>
+        <div><strong>保护路径</strong><p class="muted">Codex 结果在提交前再次扫描；若触碰 <code>.env</code>、<code>server/data</code> 或 <code>.git</code> 内部路径，FDEX 会阻止 commit/push。</p></div>
     </div>
 </section>
 {% endblock %}

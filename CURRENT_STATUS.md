@@ -1,14 +1,15 @@
 # FDEX Current Status
 
-Last updated: 2026-08-28
+Last updated: 2026-08-29
 
 ## Current baseline
 
 - Default branch: `main`
-- Current code baseline: **Phase 7.17**
+- Current code baseline after this phase: **Phase 7.19 — Official Codex Core Foundation**
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.17 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.19 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.19 deliberately keeps `FDEX_AGENT_ENGINE=legacy` as the initial default until the production Responses provider passes a real Codex smoke test.
 
 The authoritative verification source for a concrete commit is the repository Build and Test workflow. Every merge must pass FastAPI Tests, Android unit tests and Android Debug APK before it becomes the accepted `main` baseline.
 
@@ -45,7 +46,7 @@ Completed capabilities include:
 - Owner-scoped Agent projects, tasks and sandboxes
 - Durable tasks/events, cancellation and retry
 - Sandbox disk budget and cleanup
-- systemd transient-unit resource isolation
+- systemd transient-unit resource isolation for existing FDEX command/test tools
 - Per-task worktree/branch isolation
 - Push/PR support when allowed by effective GitHub App permission
 - No direct Agent write to `main`
@@ -74,6 +75,33 @@ Earlier PAT / Device OAuth / per-project permission paths are compatibility laye
 
 For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For the managed VLESS proxy pool see `docs/GITHUB_MANAGED_VLESS.md`.
 
+## Official OpenAI Codex engine foundation
+
+Phase 7.19 begins replacing the custom `FdexAgentLoop` coding engine with the official OpenAI Codex execution core while retaining FDEX as the control plane.
+
+Implemented foundation:
+
+- Official `openai-codex==0.147.0` Python SDK and matching `openai-codex-cli-bin` runtime are pinned in server dependencies.
+- FDEX can launch official `codex app-server` through the SDK rather than forking or copying the Codex Rust codebase.
+- `FDEX_AGENT_ENGINE=legacy|codex|auto` provides a controlled rollout switch; the initial default remains `legacy`.
+- Codex selects an enabled FDEX Provider whose protocol order includes `responses`, with API key and text model configured.
+- Each Codex task uses the existing FDEX owner/project/task-isolated worktree and a task-specific `CODEX_HOME`.
+- A trusted FDEX launcher wrapper strips unrelated server environment variables before exec'ing the official Codex runtime.
+- GitHub App/OAuth/PAT, SMTP, Admin and unrelated Provider secrets are not inherited by the Codex runtime.
+- The selected model Provider API key is available only to the Codex runtime; Codex shell commands use `shell_environment_policy.inherit=none` and do not inherit that key.
+- Codex runs with workspace-write sandbox and `deny_all` approval policy during this foundation phase.
+- FDEX project `allow_network` is explicitly mapped to Codex `sandbox_workspace_write.network_access`; default projects therefore keep shell network disabled.
+- Codex Web Search is disabled in Phase 7.19 so model-side web access cannot bypass FDEX project-network policy.
+- Codex never receives GitHub credentials and is instructed not to commit, push or create PRs itself.
+- After a successful Codex turn, FDEX re-validates git changes and protected paths, then performs local commit / optional push / optional PR through the existing FDEX GitHub authority and project permissions.
+- `.env` (except `.env.example`), `server/data` and `.git` internal paths are blocked before FDEX commit/push.
+- Codex streaming lifecycle events and cancellation are bridged into the existing FDEX durable task/event system.
+- Admin `/admin/agent` displays Codex SDK/runtime/provider/model readiness without exposing secrets and prevents strict `codex` selection when not ready.
+
+Detailed architecture and rollout notes are in `docs/CODEX_ENGINE.md`.
+
+Phase 7.19 is a foundation, not a claim of complete ChatGPT Codex parity. The official Codex process tree is not yet placed under the same FDEX systemd CPU/Memory/PID/concurrency envelope used by existing test/build tools, richer Item/Turn UI streaming and persistent thread continuation are not yet complete, and a production Responses-provider smoke test is still required before changing the default engine.
+
 ## Recent completed phases
 
 - **Phase 7.1** — complete FDEX Center account lifecycle, session refresh, security and local migration.
@@ -93,10 +121,12 @@ For manual local HTTP/mixed Xray deployments see `docs/GITHUB_EGRESS.md`. For th
 - **Phase 7.15** — unify GitHub API/OAuth and Coding Agent Git HTTPS behind a dedicated operator-controlled GitHub egress, with scoped proxy injection, bounded network retry and deployment diagnostics/documentation for unreliable international routes.
 - **Phase 7.16** — add a server-admin managed VLESS/Xray GitHub egress with loopback authentication, GitHub-only Xray routing, application-scoped lifecycle/test controls and maintenance-page proxy/token reuse.
 - **Phase 7.17** — add a persistent multi-node VLESS proxy pool with single-active-node CRUD/switching, legacy single-node migration and strict functional GitHub health checks that reject 403/406 false positives.
+- **Phase 7.18** — surface missing-Xray activation failures directly in the VLESS node area and prevent misleading enable actions when Xray is unavailable.
+- **Phase 7.19** — integrate the official OpenAI Codex SDK/runtime as a selectable Coding Agent execution engine while preserving FDEX ownership, GitHub authority, worktree isolation, secret isolation and project network policy; keep legacy as the initial safe default pending production Responses smoke validation.
 
 ## What repository CI does not prove
 
-Repository CI verifies source compatibility, server tests and Android builds. It does **not** prove that a production server has already deployed the latest `main`, that Xray-core is installed on that server, that a supplied VLESS node is reachable, or that production GitHub App, SMTP and Provider configuration is correct. Production VLESS application requires runtime testing from `/admin/github-egress`.
+Repository CI verifies source compatibility, server tests, dependency installation and Android builds. It does **not** prove that a production server has already deployed the latest `main`, that Xray/VLESS is currently reachable, that production GitHub App/SMTP/Provider configuration is correct, or that a production Responses-compatible Provider fully supports the Codex tool protocol. Phase 7.19 therefore requires a real production Codex smoke task before making Codex the default engine.
 
 ## Development rules going forward
 
@@ -104,13 +134,15 @@ Repository CI verifies source compatibility, server tests and Android builds. It
 2. Use Center `user_id` as the owner scope for every user resource.
 3. Treat GitHub App Installation as the repository-permission authority.
 4. Keep GitHub installation tokens short-lived and downscoped.
-5. Never allow Coding Agent to write directly to `main`.
+5. Never allow Coding Agent or Codex to write directly to `main`.
 6. Keep GitHub egress application-scoped. Do not modify system proxy variables, host default routes, DNS, firewall policy or global Git proxy as a side effect of FDEX GitHub configuration.
 7. Managed Xray must bind loopback only, require generated authentication and blackhole non-GitHub destinations.
 8. Stored VLESS nodes must never expose their full URI/UUID or generated local-proxy credentials in admin HTML or audit output.
-9. Route AI inference through the shared FDEX Provider pool.
-10. Keep destructive account/data cleanup fail-closed.
-11. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
+9. Route AI inference through the shared FDEX Provider pool; Codex must use a configured Responses-capable Provider rather than a separate user API configuration.
+10. Do not expose FDEX GitHub/SMTP/Admin secrets to the Codex process or model Provider key to Codex shell commands.
+11. Keep FDEX project `allow_network` authoritative when constructing the Codex workspace sandbox; do not silently enable Web Search as a bypass.
+12. Keep destructive account/data cleanup fail-closed.
+13. Require FastAPI Tests, Android unit tests and Android Debug APK CI before merge.
 
 ## Historical progress file
 
