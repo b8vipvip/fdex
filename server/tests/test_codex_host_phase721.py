@@ -292,13 +292,16 @@ def test_cleanup_refuses_active_turn_or_control(tmp_path: Path) -> None:
 def test_phase721_is_wired_into_runtime_portal_and_account_erasure() -> None:
     root = Path(__file__).resolve().parents[2]
     loop = (root / "server/app/agent_loop.py").read_text(encoding="utf-8")
+    entry = (root / "server/app/codex_host_entry.py").read_text(encoding="utf-8")
     routes = (root / "server/app/user_agent_task_routes.py").read_text(encoding="utf-8")
     template = (root / "server/app/templates/user_agent.html").read_text(encoding="utf-8")
     cleanup = (root / "server/app/account_cleanup.py").read_text(encoding="utf-8")
     guard = (root / "server/app/codex_host_guard.py").read_text(encoding="utf-8")
 
-    assert "from app.codex_host_guard import run_codex_task" in loop
-    assert "from app.codex_host_guard import compact_codex_thread" in routes
+    # Phase 7.23 inserts only the task-scoped interaction entry in front of the existing 7.21
+    # guard. The Thread flock/capture implementation remains the execution authority underneath.
+    assert "from app.codex_host_entry import run_codex_task" in loop
+    assert "from app.codex_host_guard import run_codex_task as guarded_run_codex_task" in entry
     assert "flock" in guard
     for path in ("/codex/resume", "/codex/fork", "/codex/steer", "/codex/compact"):
         assert path in routes
