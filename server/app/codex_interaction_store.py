@@ -97,13 +97,21 @@ class CodexInteractionStore:
         if self.key_path.exists():
             key = self.key_path.read_bytes().strip()
         else:
-            key = Fernet.generate_key()
-            descriptor = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            generated = Fernet.generate_key()
             try:
-                os.write(descriptor, key + b"\n")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+                descriptor = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                # Multiple Uvicorn workers can initialize this store at the same instant. The
+                # winner owns key creation; every loser must read exactly that same key instead
+                # of failing startup or generating an incompatible cipher.
+                key = self.key_path.read_bytes().strip()
+            else:
+                try:
+                    os.write(descriptor, generated + b"\n")
+                    os.fsync(descriptor)
+                    key = generated
+                finally:
+                    os.close(descriptor)
         try:
             os.chmod(self.key_path, 0o600)
         except OSError:
@@ -342,6 +350,36 @@ class CodexInteractionStore:
                 WHERE owner_id=? AND host_session_id=? AND state IN ('pending','answered')
                 """,
                 (reason[:10000], now, owner_id, host_session_id),
+            )
+        return int(cursor.rowcount or 0)
+
+    def interrupt_orphans(self, owner_id: str) -> int:
+        """Terminalize interactions whose owning Codex Thread is no longer running.
+
+        A hard-killed Uvicorn worker cannot execute the scope-finally cleanup. Phase 7.21 already
+        repairs stale Thread state when a new lease holder arrives; account deletion additionally
+        needs a database-only way to distinguish a live interaction from one whose Host is gone.
+        """
+        self.init()
+        now = _now()
+        reason = "Codex Host is no longer active for this interaction"
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                UPDATE codex_interactions
+                SET state='interrupted',response_cipher='',error=CASE WHEN error='' THEN ? ELSE error END,
+                    updated_at=?
+                WHERE owner_id=? AND state IN ('pending','answered') AND (
+                    thread_id='' OR NOT EXISTS (
+                        SELECT 1 FROM codex_threads t
+                        WHERE t.owner_id=codex_interactions.owner_id
+                          AND t.thread_id=codex_interactions.thread_id
+                          AND t.status IN ('running','compacting')
+                    )
+                )
+                """,
+                (reason, now, owner_id),
             )
         return int(cursor.rowcount or 0)
 
