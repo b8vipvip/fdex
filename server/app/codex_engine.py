@@ -13,11 +13,7 @@ from typing import Any, Iterable
 
 from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, AgentTaskCancelled, FdexAgentRuntime
-from app.codex_app_server import (
-    CodexAppServerClient,
-    CodexRpcError,
-    CodexServerRequestDenied,
-)
+from app.codex_app_server import CodexAppServerClient, CodexRpcError, CodexServerRequestDenied
 from app.config import SERVER_DIR, fresh_settings
 from app.provider_manager import api_roots, provider_store, text_model_candidates
 
@@ -59,7 +55,6 @@ def normalize_engine_mode(value: str) -> str:
 
 
 def select_codex_provider_from(providers: Iterable[dict[str, Any]]) -> CodexProviderSpec | None:
-    """Pick the first configured Responses-capable text provider in FDEX priority order."""
     for provider in providers:
         protocols = [str(item).strip().lower() for item in (provider.get("protocol_order") or [])]
         if "responses" not in protocols:
@@ -86,9 +81,7 @@ def select_codex_provider_from(providers: Iterable[dict[str, Any]]) -> CodexProv
 
 
 def select_codex_provider() -> CodexProviderSpec | None:
-    return select_codex_provider_from(
-        provider_store().list(enabled_only=True, include_secret=True)
-    )
+    return select_codex_provider_from(provider_store().list(enabled_only=True, include_secret=True))
 
 
 def _runtime_version(binary: Path) -> str:
@@ -116,14 +109,8 @@ def _runtime_version(binary: Path) -> str:
 
 
 def resolve_codex_runtime() -> CodexRuntimeSpec:
-    """Resolve an official Codex executable without tying FDEX to one SDK version.
-
-    Operator pinning wins, then a system-installed official `codex`, then the bundled
-    openai-codex-cli-bin shipped by the Phase 7.19 dependency. The native app-server
-    protocol is the compatibility boundary, so a newer official binary can be adopted
-    without waiting for a matching Python SDK package.
-    """
-    configured = os.environ.get("FDEX_AGENT_CODEX_BIN", "").strip()
+    """Resolve an official Codex executable independently of Python SDK method coverage."""
+    configured = fresh_settings().fdex_agent_codex_bin.strip()
     if configured:
         binary = Path(configured).expanduser().resolve()
         source = "configured"
@@ -159,8 +146,6 @@ def codex_runtime_status() -> dict[str, object]:
         reason = str(exc)
     return {
         "ready": bool(runtime is not None and provider is not None),
-        # Kept for Phase 7.19 admin-template/API compatibility. Execution no longer depends
-        # on the high-level Python SDK; FDEX speaks app-server JSON-RPC directly.
         "sdk_version": "native-jsonrpc",
         "runtime_version": runtime.version if runtime else "",
         "runtime_source": runtime.source if runtime else "",
@@ -188,12 +173,6 @@ def _provider_override(provider: CodexProviderSpec) -> str:
 
 
 def _codex_home(task_owner: str) -> Path:
-    """Return the owner-scoped Codex home used by the native runtime.
-
-    Codex's own thread store, skills, hooks and plugin/MCP configuration are user-scoped
-    concepts. Keeping one CODEX_HOME per FDEX owner allows those native capabilities to
-    persist without crossing the FDEX user_id security boundary.
-    """
     settings = fresh_settings()
     root = Path(settings.fdex_agent_codex_home_root).expanduser().resolve()
     safe_owner = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_owner)[:80] or "owner"
@@ -306,8 +285,6 @@ def _codex_thread_config(codex_home: Path, *, allow_network: bool) -> dict[str, 
     return {
         "shell_environment_policy": _shell_environment_policy(codex_home),
         "sandbox_workspace_write": {"network_access": bool(allow_network)},
-        # Keep model-side web search disabled until FDEX exposes it as an explicit project
-        # permission. Shell network remains controlled separately by allow_network.
         "web_search": "disabled",
     }
 
@@ -359,7 +336,6 @@ def _commit_and_publish(
 
 
 def _safe_event_message(method: str, params: dict[str, Any]) -> tuple[str, str] | None:
-    """Map useful native notifications to durable FDEX events without dumping raw secrets."""
     item = params.get("item") if isinstance(params.get("item"), dict) else {}
     item_type = str(item.get("type") or "item")
     if method == "item/started":
@@ -408,11 +384,6 @@ def _turn_error_text(value: Any) -> str:
 
 
 async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
-    """Execute one FDEX task through the official Codex app-server protocol.
-
-    Phase 7.20 intentionally bypasses the high-level Python SDK. FDEX speaks the public
-    app-server JSON-RPC protocol so runtime features can evolve independently from the SDK.
-    """
     task = await runtime.get_task(task_id)
     if task is None:
         raise AgentRuntimeError("task not found")
@@ -429,9 +400,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
     try:
         await runtime._raise_if_cancelled(task)
         worktree = await asyncio.to_thread(runtime._ensure_worktree, task)
-        initial_head = await asyncio.to_thread(
-            runtime._run_command, ("git", "rev-parse", "HEAD"), cwd=worktree
-        )
+        initial_head = await asyncio.to_thread(runtime._run_command, ("git", "rev-parse", "HEAD"), cwd=worktree)
         codex_home = await asyncio.to_thread(_codex_home, task.owner_id)
         allow_network = await asyncio.to_thread(_task_network_allowed, task)
 
@@ -441,9 +410,6 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
                 task.emit(*event)
 
         async def on_server_request(method: str, _params: dict[str, Any]) -> Any:
-            # Phase 7.20 opts into the complete protocol transport but keeps interactive
-            # authority fail-closed. Approval/user-input/MCP elicitation bridges are added
-            # only when FDEX has an owner-scoped UI decision channel for them.
             task.emit("codex.server_request_denied", f"Denied unsupported interactive request: {method}")
             raise CodexServerRequestDenied(f"FDEX policy denies interactive request {method}")
 
@@ -481,8 +447,6 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
                     "sandbox": "workspace-write",
                     "config": _codex_thread_config(codex_home, allow_network=allow_network),
                     "developerInstructions": _DEVELOPER_INSTRUCTIONS,
-                    # Durable within the FDEX owner-scoped CODEX_HOME. This is the basis for
-                    # resume/fork/steer and native thread history in the next UI phase.
                     "ephemeral": False,
                 },
             )
@@ -496,13 +460,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
                 "turn/start",
                 {
                     "threadId": thread_id,
-                    "input": [
-                        {
-                            "type": "text",
-                            "text": task.prompt,
-                            "text_elements": [],
-                        }
-                    ],
+                    "input": [{"type": "text", "text": task.prompt, "text_elements": []}],
                     "approvalPolicy": "never",
                 },
             )
@@ -533,9 +491,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
                                 final_item_text = text
                     elif method == "turn/completed":
                         completed = params.get("turn")
-                        if not isinstance(completed, dict):
-                            continue
-                        if str(completed.get("id") or "") != turn_id:
+                        if not isinstance(completed, dict) or str(completed.get("id") or "") != turn_id:
                             continue
                         turn_status = str(completed.get("status") or "")
                         turn_error = _turn_error_text(completed.get("error"))
@@ -554,8 +510,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
 
         if turn_status != "completed":
             raise AgentRuntimeError(
-                f"Codex turn {turn_status or 'ended without completion'}: "
-                f"{turn_error or 'no additional error detail'}"
+                f"Codex turn {turn_status or 'ended without completion'}: {turn_error or 'no additional error detail'}"
             )
         final_response = final_item_text or "".join(final_parts).strip() or "Codex 已完成任务。"
         await asyncio.to_thread(
