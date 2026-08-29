@@ -86,6 +86,23 @@ class CodexInteractionBroker:
             self.task.cancel_requested = True
         return bool(requested)
 
+    async def _terminalize(self, interaction_id: str, state: str, error: str) -> None:
+        await asyncio.to_thread(
+            self.store.terminalize,
+            owner_id=self.task.owner_id,
+            interaction_id=interaction_id,
+            state=state,
+            error=error,
+        )
+        current = await asyncio.to_thread(self.store.get, self.task.owner_id, interaction_id)
+        if current is not None:
+            try:
+                await publish_interaction_event(self.task.owner_id, self.task.id, current, state)
+            except Exception:
+                # The interaction row is authoritative. A cleanup notification must never undo
+                # terminalization or strand encrypted answer material if the Item event bus fails.
+                pass
+
     async def handle(self, request_id: int | str, method: str, params: dict[str, Any]) -> Any:
         if method not in _SUPPORTED:
             self.task.emit("codex.server_request_denied", f"Denied unsupported interactive request: {method}")
@@ -101,7 +118,15 @@ class CodexInteractionBroker:
             params=params,
         )
         interaction_id = str(row["id"])
-        await publish_interaction_event(self.task.owner_id, self.task.id, row, "pending")
+        try:
+            await publish_interaction_event(self.task.owner_id, self.task.id, row, "pending")
+        except Exception as exc:
+            await self._terminalize(
+                interaction_id,
+                "failed",
+                f"FDEX could not publish the pending interaction: {exc}",
+            )
+            raise CodexServerRequestDenied("FDEX could not publish the Codex interaction") from exc
         self.task.emit(
             "codex.interaction_pending",
             f"Codex requires {interaction_kind(method)} approval/input ({interaction_id[:10]})",
@@ -123,21 +148,17 @@ class CodexInteractionBroker:
         try:
             while asyncio.get_running_loop().time() < deadline:
                 if await self._cancel_requested():
-                    await asyncio.to_thread(
-                        self.store.terminalize,
-                        owner_id=self.task.owner_id,
-                        interaction_id=interaction_id,
-                        state="cancelled",
-                        error="FDEX task cancellation requested",
+                    await self._terminalize(
+                        interaction_id,
+                        "cancelled",
+                        "FDEX task cancellation requested",
                     )
                     raise CodexServerRequestDenied("FDEX task was cancelled while interaction was pending")
                 if not self.transport_alive():
-                    await asyncio.to_thread(
-                        self.store.terminalize,
-                        owner_id=self.task.owner_id,
-                        interaction_id=interaction_id,
-                        state="interrupted",
-                        error="Codex app-server transport exited while interaction was pending",
+                    await self._terminalize(
+                        interaction_id,
+                        "interrupted",
+                        "Codex app-server transport exited while interaction was pending",
                     )
                     raise CodexServerRequestDenied("Codex transport closed while interaction was pending")
 
@@ -166,21 +187,17 @@ class CodexInteractionBroker:
                     )
                 await asyncio.sleep(0.2)
         except asyncio.CancelledError:
-            await asyncio.to_thread(
-                self.store.terminalize,
-                owner_id=self.task.owner_id,
-                interaction_id=interaction_id,
-                state="interrupted",
-                error="FDEX Host coroutine was cancelled",
+            await self._terminalize(
+                interaction_id,
+                "interrupted",
+                "FDEX Host coroutine was cancelled",
             )
             raise
 
-        await asyncio.to_thread(
-            self.store.terminalize,
-            owner_id=self.task.owner_id,
-            interaction_id=interaction_id,
-            state="expired",
-            error="Codex interaction exceeded FDEX one-hour user-response window",
+        await self._terminalize(
+            interaction_id,
+            "expired",
+            "Codex interaction exceeded FDEX one-hour user-response window",
         )
         raise CodexServerRequestDenied("Codex interaction timed out waiting for user response")
 
