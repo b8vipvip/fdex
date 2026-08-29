@@ -113,7 +113,6 @@ def codex_runtime_status() -> dict[str, object]:
 
 
 def _toml_string(value: str) -> str:
-    # TOML basic strings and JSON strings share the escaping needed by these values.
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -168,8 +167,6 @@ def _safe_process_env(codex_home: Path, provider_key: str) -> dict[str, str]:
 
 
 def _shell_environment_policy(codex_home: Path) -> dict[str, object]:
-    # Tool commands get a clean environment without the model provider API key or any
-    # unrelated FDEX service secrets. Only build/runtime variables are explicitly restored.
     values: dict[str, str] = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": str(codex_home),
@@ -200,7 +197,10 @@ def _launch_args(runtime_path: str, provider: CodexProviderSpec) -> tuple[str, .
 
 
 def _path_is_protected(relative: str) -> bool:
-    clean = relative.strip().replace("\\", "/").lstrip("./")
+    clean = relative.strip().replace("\\", "/")
+    while clean.startswith("./"):
+        clean = clean[2:]
+    clean = clean.lstrip("/")
     lowered = clean.lower()
     if lowered == ".env" or (lowered.startswith(".env.") and lowered != ".env.example"):
         return True
@@ -230,16 +230,12 @@ def _all_task_changes(runtime: FdexAgentRuntime, worktree: Path, initial_head: s
 
 def _task_network_allowed(task: Any) -> bool:
     if task.project_id is None:
-        # The legacy bootstrap workspace never grants Codex arbitrary network access.
         return False
     project = agent_project_store().get_project(task.owner_id, task.project_id)
     return bool(project.get("allow_network"))
 
 
 def _codex_thread_config(codex_home: Path, *, allow_network: bool) -> dict[str, object]:
-    # Keep FDEX project network semantics authoritative. Web Search is disabled in the
-    # foundation release because it is model-side network access rather than workspace
-    # command access and must not silently bypass allow_network.
     return {
         "shell_environment_policy": _shell_environment_policy(codex_home),
         "sandbox_workspace_write": {"network_access": bool(allow_network)},
