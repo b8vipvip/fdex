@@ -228,6 +228,25 @@ def _all_task_changes(runtime: FdexAgentRuntime, worktree: Path, initial_head: s
     return paths
 
 
+def _task_network_allowed(task: Any) -> bool:
+    if task.project_id is None:
+        # The legacy bootstrap workspace never grants Codex arbitrary network access.
+        return False
+    project = agent_project_store().get_project(task.owner_id, task.project_id)
+    return bool(project.get("allow_network"))
+
+
+def _codex_thread_config(codex_home: Path, *, allow_network: bool) -> dict[str, object]:
+    # Keep FDEX project network semantics authoritative. Web Search is disabled in the
+    # foundation release because it is model-side network access rather than workspace
+    # command access and must not silently bypass allow_network.
+    return {
+        "shell_environment_policy": _shell_environment_policy(codex_home),
+        "sandbox_workspace_write": {"network_access": bool(allow_network)},
+        "web_search": "disabled",
+    }
+
+
 def _commit_and_publish(
     runtime: FdexAgentRuntime,
     task: Any,
@@ -297,6 +316,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
             runtime._run_command, ("git", "rev-parse", "HEAD"), cwd=worktree
         )
         codex_home = await asyncio.to_thread(_codex_home, task.owner_id, task.id)
+        allow_network = await asyncio.to_thread(_task_network_allowed, task)
         config = CodexConfig(
             launch_args_override=_launch_args(runtime_path, provider),
             cwd=str(worktree),
@@ -305,7 +325,11 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
             client_title="FDEX Coding Agent",
             client_version=fresh_settings().app_version,
         )
-        task.emit("codex.started", "Starting official Codex app-server in the isolated task worktree")
+        task.emit(
+            "codex.started",
+            "Starting official Codex app-server in the isolated task worktree "
+            f"(workspace network={'enabled' if allow_network else 'disabled'})",
+        )
         final_parts: list[str] = []
         turn_status = ""
         turn_error = ""
@@ -318,9 +342,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
                 model=provider.model,
                 model_provider=_PROVIDER_ID,
                 sandbox=Sandbox.workspace_write,
-                config={
-                    "shell_environment_policy": _shell_environment_policy(codex_home),
-                },
+                config=_codex_thread_config(codex_home, allow_network=allow_network),
             )
             task.emit("codex.thread_started", f"Codex thread {thread.id}")
             turn = await thread.turn(
@@ -375,28 +397,3 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
         return
     except Exception as exc:
         await runtime.fail_task(task_id, str(exc))
-
-
-async def run_configured_agent(runtime: FdexAgentRuntime, task_id: str) -> None:
-    """Dispatch one task to legacy FDEX loop or the official Codex engine.
-
-    Phase 7.19 intentionally defaults to legacy until an operator opts into Codex or
-    auto mode. This lets production verify its configured Responses provider before
-    making Codex the universal default.
-    """
-    from app.agent_loop import FdexAgentLoop
-
-    mode = normalize_engine_mode(fresh_settings().fdex_agent_engine)
-    if mode == "legacy":
-        await FdexAgentLoop(runtime).run(task_id)
-        return
-    status = codex_runtime_status()
-    if not bool(status.get("ready")):
-        if mode == "auto":
-            task = await runtime.get_task(task_id)
-            if task is not None:
-                task.emit("engine.fallback", f"Codex not ready; using legacy engine: {status.get('reason') or 'unknown'}")
-            await FdexAgentLoop(runtime).run(task_id)
-            return
-        raise AgentRuntimeError(str(status.get("reason") or "Codex engine is not ready"))
-    await run_codex_task(runtime, task_id)
