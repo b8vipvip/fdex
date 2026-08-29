@@ -7,6 +7,7 @@ from starlette.responses import Response
 
 from app.agent_projects import agent_project_store
 from app.config import SERVER_DIR
+from app.remote_mcp_registry import remote_mcp_registry
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
 router = APIRouter(prefix="/account/agent/runtime", include_in_schema=False)
@@ -31,6 +32,7 @@ def runtime_policy_page(request: Request) -> Response:
         policy = store.account_policy(owner_id)
         sync_status = store.sync_status(owner_id)
         projects = store.list_projects(owner_id, enabled_only=True)
+        remote_mcp_servers = remote_mcp_registry().list(owner_id)
     except (ValueError, RuntimeError) as exc:
         _flash(request, str(exc), "error")
         return RedirectResponse("/account/agent", status_code=303)
@@ -42,6 +44,7 @@ def runtime_policy_page(request: Request) -> Response:
             policy=policy,
             sync_status=sync_status,
             repository_count=len(projects),
+            remote_mcp_servers=remote_mcp_servers,
         ),
     )
 
@@ -93,3 +96,103 @@ def runtime_repository_sync(request: Request, csrf_token: str = Form(...)) -> Re
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"GitHub 仓库刷新失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime", status_code=303)
+
+
+@router.post("/mcp", response_model=None)
+def remote_mcp_create(
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    url: str = Form(...),
+    enabled_tools: str = Form(default=""),
+    enabled: bool = Form(default=False),
+    startup_timeout_sec: int = Form(default=15),
+    tool_timeout_sec: int = Form(default=60),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        server = remote_mcp_registry().save(
+            str(user["id"]),
+            name=name,
+            url=url,
+            enabled_tools=enabled_tools,
+            enabled=enabled,
+            startup_timeout_sec=startup_timeout_sec,
+            tool_timeout_sec=tool_timeout_sec,
+        )
+        _flash(
+            request,
+            f"Remote MCP 已保存：{server['name']}。Phase 7.25 仅登记策略，不会把该地址交给 Codex 发起网络请求。",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP 保存失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}", response_model=None)
+def remote_mcp_update(
+    server_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    url: str = Form(...),
+    enabled_tools: str = Form(default=""),
+    enabled: bool = Form(default=False),
+    startup_timeout_sec: int = Form(default=15),
+    tool_timeout_sec: int = Form(default=60),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        if remote_mcp_registry().get(owner_id, server_id) is None:
+            raise KeyError("Remote MCP 不存在")
+        server = remote_mcp_registry().save(
+            owner_id,
+            name=name,
+            url=url,
+            enabled_tools=enabled_tools,
+            enabled=enabled,
+            startup_timeout_sec=startup_timeout_sec,
+            tool_timeout_sec=tool_timeout_sec,
+            server_id=server_id,
+        )
+        _flash(request, f"Remote MCP 已更新：{server['name']}", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP 更新失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/disable", response_model=None)
+def remote_mcp_disable(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        server = remote_mcp_registry().set_enabled(str(user["id"]), server_id, False)
+        _flash(request, f"Remote MCP 已立即停用：{server['name']}", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP 停用失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/delete", response_model=None)
+def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        if not remote_mcp_registry().delete(str(user["id"]), server_id):
+            raise KeyError("Remote MCP 不存在")
+        _flash(request, "Remote MCP 已从当前账号移除", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP 删除失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)

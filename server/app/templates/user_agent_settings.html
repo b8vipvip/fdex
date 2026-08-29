@@ -4,7 +4,7 @@
 <section class="hero">
   <div>
     <h1>Coding Agent 运行策略</h1>
-    <p>GitHub 仓库范围和 GitHub 读写/PR 权限完全由你安装的 FDEX GitHub App 决定；这里只配置与 GitHub 无关的账号级沙箱运行策略，一次设置后对当前 FDEX 账号下所有授权仓库生效。</p>
+    <p>GitHub 仓库范围和 GitHub 读写/PR 权限完全由你安装的 FDEX GitHub App 决定；这里只配置与 GitHub 无关的账号级沙箱运行策略和 Remote MCP 注册信息。</p>
   </div>
   <div class="row">
     <a class="button button-secondary" href="/account/agent">返回 Coding Agent</a>
@@ -18,7 +18,7 @@
     <form action="/account/agent/runtime/policy" method="post" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="check"><input type="checkbox" name="allow_network" {% if policy.allow_network %}checked{% endif %}>允许 Coding Agent 构建任务访问外网</label>
-      <p class="fine">只影响 npm / pip / Maven 等构建依赖联网；不会扩大 GitHub App 的仓库范围或 GitHub 权限。</p>
+      <p class="fine">只影响 npm / pip / Maven 等构建依赖联网；不会扩大 GitHub App 的仓库范围、GitHub 权限或自动启用 Remote MCP。</p>
       <div class="grid">
         <div class="span-6"><label>单任务沙箱内存 MB</label><input type="number" name="sandbox_memory_mb" min="128" max="16384" value="{{ policy.sandbox_memory_mb }}" required></div>
         <div class="span-6"><label>单任务 CPU 上限 %</label><input type="number" name="sandbox_cpu_percent" min="10" max="800" value="{{ policy.sandbox_cpu_percent }}" required></div>
@@ -44,6 +44,79 @@
   <section class="card span-12">
     <h3>权限模型</h3>
     <p>GitHub App Installation 是唯一 GitHub 权限源。Coding Agent 对每次具体操作仍会生成“当前仓库 + 当前操作”的短期 installation token：读取仓库只申请 Contents read，Push 时申请 Contents write，创建 PR 时申请 Pull requests write。FDEX 不把一个全仓库长期 Token 交给 Agent。</p>
+  </section>
+
+  <section class="card span-12 stack" id="remote-mcp">
+    <div class="card-head">
+      <div>
+        <h2>Remote MCP 注册表</h2>
+        <p>当前账号独立保存。Phase 7.25 只建立控制平面，不会把已登记地址注入 Codex Runtime。</p>
+      </div>
+      <span class="badge">{{ remote_mcp_servers|length }}</span>
+    </div>
+    <div class="alert alert-warning">
+      <strong>安全边界：</strong>仅接受 HTTPS 443、无用户名/密码、无 query/fragment、DNS 全部解析为公网地址的端点；不接受 bearer token、OAuth token、任意 HTTP Header，也不接受本地 stdio command/args/env/cwd。即使勾选“启用”，本阶段也只表示账号策略意图，Runtime 激活仍保持关闭，直到 FDEX 的目的地址强制出站网关完成。
+    </div>
+
+    <form action="/account/agent/runtime/mcp" method="post" class="stack repo">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="grid">
+        <div class="span-4"><label>名称</label><input name="name" maxlength="64" placeholder="docs" required></div>
+        <div class="span-8"><label>Streamable HTTP URL</label><input name="url" type="url" maxlength="2048" placeholder="https://mcp.example.com/mcp" required></div>
+      </div>
+      <label>允许暴露的工具</label>
+      <textarea name="enabled_tools" rows="3" maxlength="9000" placeholder="search_docs&#10;read_page"></textarea>
+      <p class="fine">每行或逗号分隔一个工具名；启用状态必须至少配置一个 allowlist。未来 Runtime 只会暴露这里明确允许的工具。</p>
+      <div class="grid">
+        <div class="span-3"><label>启动超时（秒）</label><input name="startup_timeout_sec" type="number" min="2" max="120" value="15"></div>
+        <div class="span-3"><label>工具超时（秒）</label><input name="tool_timeout_sec" type="number" min="2" max="600" value="60"></div>
+        <div class="span-6"><label class="check"><input type="checkbox" name="enabled">登记为启用策略（当前仍不会接入 Runtime）</label></div>
+      </div>
+      <button class="primary" type="submit">添加 Remote MCP</button>
+    </form>
+
+    {% if remote_mcp_servers %}
+      {% for server in remote_mcp_servers %}
+      <article class="repo stack">
+        <div class="row between">
+          <div>
+            <strong>{{ server.name }}</strong>
+            <div class="mono fine">{{ server.url }}</div>
+          </div>
+          {% if server.enabled %}<span class="badge ok">策略启用 · Runtime 未激活</span>{% else %}<span class="badge">已停用</span>{% endif %}
+        </div>
+        <div class="fine">上次公网解析：{% if server.resolved_addresses %}{{ server.resolved_addresses|join(', ') }}{% else %}未记录{% endif %}</div>
+        {% if server.enabled %}
+        <form action="/account/agent/runtime/mcp/{{ server.id }}/disable" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="danger-button" type="submit">立即停用（不依赖 DNS）</button>
+        </form>
+        <p class="fine">如果端点 DNS 已被污染或无法解析，仍可用此按钮原子停用；重新启用时必须重新通过公网 DNS 校验。</p>
+        {% endif %}
+        <form action="/account/agent/runtime/mcp/{{ server.id }}" method="post" class="stack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="grid">
+            <div class="span-4"><label>名称</label><input name="name" maxlength="64" value="{{ server.name }}" required></div>
+            <div class="span-8"><label>Streamable HTTP URL</label><input name="url" type="url" maxlength="2048" value="{{ server.url }}" required></div>
+          </div>
+          <label>工具 allowlist</label>
+          <textarea name="enabled_tools" rows="3" maxlength="9000">{{ server.enabled_tools|join('\n') }}</textarea>
+          <div class="grid">
+            <div class="span-3"><label>启动超时（秒）</label><input name="startup_timeout_sec" type="number" min="2" max="120" value="{{ server.startup_timeout_sec }}"></div>
+            <div class="span-3"><label>工具超时（秒）</label><input name="tool_timeout_sec" type="number" min="2" max="600" value="{{ server.tool_timeout_sec }}"></div>
+            <div class="span-6"><label class="check"><input type="checkbox" name="enabled" {% if server.enabled %}checked{% endif %}>登记为启用策略</label></div>
+          </div>
+          <button class="secondary" type="submit">保存此 Remote MCP</button>
+        </form>
+        <form action="/account/agent/runtime/mcp/{{ server.id }}/delete" method="post" onsubmit="return confirm('确定删除这个 Remote MCP 注册项吗？');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="danger-button" type="submit">删除</button>
+        </form>
+      </article>
+      {% endfor %}
+    {% else %}
+      <p class="muted">当前账号还没有 Remote MCP 注册项。</p>
+    {% endif %}
   </section>
 </div>
 {% endblock %}

@@ -5,16 +5,16 @@ Last updated: 2026-08-29
 ## Current baseline
 
 - Default branch: `main`
-- Accepted `main` baseline before this branch: **Phase 7.23 — Durable Codex Interactions**
-- Accepted Phase 7.23 main commit: `bbec3145dfba5d22bf68afc3341cc49c8b1b468d`
-- Baseline proposed by this branch: **Phase 7.24 — Owner-scoped Codex MCP Elicitation**
-- Current development branch: `agent/phase7-24-codex-mcp-elicitation`
+- Accepted `main` baseline before this branch: **Phase 7.24 — Owner-scoped Codex MCP Elicitation**
+- Accepted Phase 7.24 main commit: `22d8a15ecdf99e526614f93acb0788b6d4100542`
+- Baseline proposed by this branch: **Phase 7.25 — Owner-scoped Remote MCP Registry**
+- Current development branch: `agent/phase7-25-remote-mcp-registry`
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.24 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.25 are server/Web/infrastructure changes and do not require an Android release by themselves.
 - `FDEX_AGENT_ENGINE=legacy` remains the rollout default until a production Responses/tool smoke task succeeds.
 
-A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green.
+A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the PR and again after merge.
 
 ## Current product model
 
@@ -22,7 +22,7 @@ FDEX user-facing identities use the universal **智体** model, not the former c
 
 ## Center account and isolation
 
-FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests and sandboxes.
+FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests, Remote MCP registry entries and sandboxes.
 
 Completed account lifecycle includes registration/login, rotating refresh sessions, password change/reset, device/session management, login rate limiting, security audit, data export, remote-memory erasure and permanent account deletion.
 
@@ -73,29 +73,11 @@ Implemented:
 
 ### Phase 7.21 — Durable Thread / Turn Host
 
-Implemented:
-
-- persistent owner/task/Thread/Turn identities in SQLite;
-- `thread/resume`, `thread/fork`, `turn/steer`, `thread/compact/start`;
-- continuation tasks inherit the verified parent commit while retaining isolated worktrees;
-- cross-Uvicorn-worker control queue;
-- kernel `flock` prevents two workers from owning one Thread Host simultaneously;
-- stale worker/Turn/control reconciliation;
-- account deletion refuses active Host state and erases durable Thread/Turn/control records.
+Implemented persistent owner/task/Thread/Turn state, resume/fork/steer/compact operations, cross-worker control, kernel `flock` Host ownership, stale-state reconciliation and account-erasure semantics.
 
 ### Phase 7.22 — Durable Item / Event Stream
 
-Implemented:
-
-- bounded persistence of the complete official app-server notification stream;
-- durable `item/started` / `item/completed` projection;
-- reconnect-safe persisted live deltas;
-- orphan Item marking when a terminal Turn is observed without `item/completed`;
-- unknown future notification/Item variants remain visible through schema-light raw JSON;
-- owner-scoped snapshot endpoint and SSE with `Last-Event-ID` resume;
-- Web rendering for command/file/MCP/dynamic tool/collaboration/sub-agent/Web/image/reasoning/plan/context-compaction and fallback Item types;
-- DOM rendering uses `textContent` / `replaceChildren`, never executes Item HTML;
-- account deletion erases Item/event/delta history.
+Implemented bounded persistence of the complete app-server notification stream, durable Item projections, reconnect-safe deltas/SSE, orphan reconciliation, schema-light future Item handling and safe DOM rendering.
 
 ### Phase 7.23 — Durable Codex Interactions
 
@@ -108,55 +90,66 @@ Supported owner-scoped interactive requests:
 - `item/permissions/requestApproval`;
 - `item/tool/requestUserInput`.
 
-Implemented:
+The bridge preserves typed JSON-RPC ids and approval ids, binds every request to owner/task/Host/Thread/Turn/Item, supports cross-worker response submission, encrypts waiting answers with Fernet, destroys ciphertext after Host claim, stores redacted history only, fails closed above 1 MiB, and keeps FDEX worktree/network policy authoritative over every approval click.
 
-- typed JSON-RPC request identity, including numeric vs string ids;
-- command `approvalId` preserved separately from `itemId`;
-- durable owner/task/Host-session/Thread/Turn/Item correlation;
-- response submission through any worker and atomic claim only by the matching stdio Host;
-- Fernet-encrypted waiting answers with atomic cross-worker key creation;
-- answer ciphertext destroyed immediately after Host claim or terminal cleanup;
-- redacted response history; secret answer bodies are never written into interaction/event audit history;
-- request/response payloads fail closed above 1 MiB instead of changing protocol shape through truncation;
-- cross-worker task cancellation, Host shutdown and orphan reconciliation;
-- realtime Web approval/question UI over the Phase 7.22 SSE bus;
-- no hard page refresh while a user may be typing an interaction;
-- FDEX project/worktree/network authority remains above every human approval click;
-- account deletion reconciles orphan interactions, refuses genuinely active ones and erases interaction state.
+### Phase 7.24 — Owner-scoped MCP Elicitation
 
-PR #84 and the post-merge `main` Build and Test run both passed. Android auto-release was skipped because Phase 7.23 was server/Web-only.
+Accepted main commit: `22d8a15ecdf99e526614f93acb0788b6d4100542`.
 
-### Phase 7.24 — Owner-scoped MCP Elicitation (current branch)
+PR #85 passed FastAPI Tests, Android unit tests and Android Debug APK. The post-merge `main` Build and Test run passed all of the same jobs again.
 
-This branch adds the next official app-server server-request type:
+Implemented official `mcpServer/elicitation/request` handling on top of the Phase 7.23 encrypted interaction bridge:
 
-- `mcpServer/elicitation/request`.
+- preserves original MCP request/Host/Thread/Turn/server identity;
+- standard public `mode=form` gets typed Web rendering and validation;
+- supports string/number/integer/boolean/single-select and enum-backed multi-select fields;
+- validates required/default/min/max/length/item-count/enum and supported string formats;
+- returns exact `{action, content, _meta}` response shape;
+- submitted values remain encrypted only while waiting for the matching Host and are not written to durable response summaries;
+- generic `mode=url` accepts only credential-free HTTPS URLs;
+- `serverName=codex_apps` acceptance stays blocked;
+- proprietary `openai/form` / `openaiForm` acceptance stays fail-closed;
+- unsupported/malformed schemas stay decline/cancel-only;
+- no user-configurable local stdio MCP process launch.
 
-Phase 7.24 scope is deliberately narrower than “arbitrary MCP configuration”. It reuses the Phase 7.23 durable encrypted interaction channel and keeps FDEX as the multi-user authority.
+## Phase 7.25 — Owner-scoped Remote MCP Registry (current branch)
+
+Phase 7.25 builds the MCP **control plane only**. It deliberately does not activate registered endpoints inside Codex Runtime yet.
 
 Implemented/proposed on this branch:
 
-- preserve the original MCP JSON-RPC request, `threadId`, nullable `turnId`, `serverName`, mode and Host-session identity in the durable interaction store;
-- standard public MCP `mode=form` is projected into the existing safe Web question renderer;
-- typed form validation supports string, number, integer, boolean, single-select enum and enum-backed multi-select arrays;
-- required fields, defaults, min/max, length, enum membership and supported string formats are validated before an accepted response is delivered;
-- exact official response shape is returned as `{action, content, _meta}` with `action` limited to `accept`, `decline` or `cancel`;
-- user form values travel through the Phase 7.23 Fernet-encrypted transient answer column and ciphertext is erased after Host claim;
-- durable response summaries contain field names/count and action only, never submitted values;
-- generic `mode=url` is accepted only for credential-free HTTPS URLs; response history records only the destination host, not the full URL/query;
-- `serverName=codex_apps` URL acceptance remains blocked because FDEX does not impersonate or proxy ChatGPT Connector authentication;
-- proprietary `openai/form` and `openaiForm` acceptance remains fail-closed; decline/cancel are still protocol-valid;
-- every Web/Uvicorn worker installs the same MCP projection so snapshot, pending SSE and answered SSE have identical semantics;
-- unsupported or malformed MCP elicitation schemas remain reject/decline-only rather than falling back to an unsafe generic JSON editor;
-- existing owner/task scope, CSRF, Host claim, timeout/orphan cleanup and account-erasure rules apply unchanged.
+- new owner-scoped SQLite Remote MCP registry;
+- maximum 20 registry entries per account;
+- credential-free schema: no bearer token, OAuth token, arbitrary HTTP Header, `command`, `args`, `env` or `cwd` columns;
+- strict URL admission:
+  - HTTPS only;
+  - port 443 only;
+  - hostname required;
+  - no URL username/password;
+  - no query or fragment;
+  - direct IP literals must be globally routable;
+  - DNS is resolved at save/re-enable time;
+  - every resolved address must be globally routable;
+  - mixed public/private DNS answers fail closed;
+- explicit bounded per-server tool allowlist; an enabled entry must contain at least one tool and an empty list never means “all tools”;
+- startup and tool-call timeout policy fields;
+- Web CRUD in `/account/agent/runtime#remote-mcp` with CSRF and current-user owner scope;
+- dedicated atomic **disable** path that does not depend on DNS health, so DNS poisoning/unavailability cannot trap an enabled policy in the on state;
+- re-enable always performs the full public-DNS admission check again;
+- account portable export includes only the user-owned non-secret registry fields;
+- permanent account deletion erases all Remote MCP registry rows for that owner;
+- regression coverage proves another owner cannot read/overwrite/delete an entry;
+- regression coverage proves current `_codex_thread_config()` contains neither `mcp_servers` nor `mcpServers`.
 
-#### Explicitly out of scope in Phase 7.24
+### Why Runtime activation is intentionally blocked
 
-FDEX **does not expose user-configurable local stdio MCP commands**. Official Codex MCP configuration can launch a local command with arguments/environment; exposing that directly in a multi-tenant Center before a whole-process-tree execution envelope would create an arbitrary server-process execution surface.
+A save-time DNS check is not sufficient runtime SSRF protection. DNS can change after registration, an attacker can use DNS rebinding, and an HTTP client can follow redirects to a different address. Therefore an entry marked `enabled` in Phase 7.25 represents account policy intent only; it does not create an MCP connection.
 
-FDEX also does not hand ChatGPT/OpenAI Connector tokens, OAuth refresh tokens or arbitrary MCP bearer tokens to Codex in this phase. A later owner-scoped MCP registry/OAuth broker must keep those credentials under FDEX authority and expose only the minimum runtime capability.
+The next activation layer must be a FDEX-controlled destination-enforcing egress bridge that revalidates DNS at connection time, blocks private/loopback/link-local/metadata destinations, constrains redirects/TLS destination, enforces owner/server/tool policy and later injects only narrowly scoped FDEX-held credentials.
 
-Phase 7.24 becomes accepted `main` only after its PR and post-merge main CI are green.
+See `docs/CODEX_REMOTE_MCP.md`.
+
+Phase 7.25 is **not accepted into `main` until PR CI and post-merge main CI are green**.
 
 ## Real Runtime CI
 
@@ -174,6 +167,7 @@ The goal is to use the portable local capability set through the official Runtim
 - `docs/CODEX_COMPATIBILITY.md`
 - `docs/CODEX_INTERACTIONS.md`
 - `docs/CODEX_MCP_ELICITATION.md`
+- `docs/CODEX_REMOTE_MCP.md`
 
 The compatibility policy distinguishes:
 
@@ -198,13 +192,14 @@ The compatibility policy distinguishes:
 - **Phase 7.21** — durable Thread/Turn Host and continuation/control lifecycle.
 - **Phase 7.22** — durable full Item/event stream and reconnect-safe Web SSE.
 - **Phase 7.23** — durable owner-scoped approvals and requestUserInput bridge.
+- **Phase 7.24** — owner-scoped official MCP elicitation bridge.
 
-## What remains after Phase 7.24
+## What remains after Phase 7.25
 
 The next compatibility layers include:
 
-- owner-scoped remote MCP registry with FDEX-held credentials and explicit server/tool allowlists;
-- MCP OAuth callback/token broker without exposing refresh/bearer credentials to arbitrary Codex shell processes;
+- FDEX-controlled Remote MCP destination-enforcing egress gateway and actual Runtime activation;
+- owner/server-scoped MCP credential vault and OAuth callback/token broker without exposing refresh/bearer credentials to arbitrary Codex shell processes;
 - safe policy for official `item/tool/call` dynamic tool requests;
 - image/audio/local attachment/skill/mention Turn input;
 - Skills/Hooks/local plugin management and policy UI;
@@ -227,8 +222,9 @@ The next compatibility layers include:
 9. Treat the official App Server Protocol as the Codex compatibility ABI; do not fork core crates without a compelling reason.
 10. Fail closed on unsupported, unverifiable or over-broad server-initiated permission/MCP requests.
 11. Never expose user-configurable stdio MCP process launch in the multi-tenant Center without an outer process-tree sandbox/allowlist boundary.
-12. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
-13. Require full FastAPI + Android CI before merge.
+12. Do not activate a user Remote MCP URL from Codex until a FDEX-controlled request-time destination enforcement layer exists.
+13. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
+14. Require full FastAPI + Android CI before merge.
 
 ## Historical progress file
 
