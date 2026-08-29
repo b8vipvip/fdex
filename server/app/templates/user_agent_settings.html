@@ -86,6 +86,13 @@
           {% if server.enabled %}<span class="badge ok">策略启用 · Runtime 未激活</span>{% else %}<span class="badge">已停用</span>{% endif %}
         </div>
         <div class="fine">上次公网解析：{% if server.resolved_addresses %}{{ server.resolved_addresses|join(', ') }}{% else %}未记录{% endif %}</div>
+        {% if server.enabled %}
+        <form action="/account/agent/runtime/mcp/{{ server.id }}/disable" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="danger-button" type="submit">立即停用（不依赖 DNS）</button>
+        </form>
+        <p class="fine">如果端点 DNS 已被污染或无法解析，仍可用此按钮原子停用；重新启用时必须重新通过公网 DNS 校验。</p>
+        {% endif %}
         <form action="/account/agent/runtime/mcp/{{ server.id }}" method="post" class="stack">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="grid">
