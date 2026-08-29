@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/fdex/server
+# Keep the historical /opt/deploy_fdex.sh entry point working, but make the
+# repository-owned scripts/update_server.sh the single source of truth.
+ExecStartPre=/usr/bin/install -m 0755 /opt/fdex/scripts/deploy_fdex_compat.sh /opt/deploy_fdex.sh
 ExecStart=/opt/fdex/server/.venv/bin/python -m app.run
 Restart=always
 RestartSec=5

@@ -17,6 +17,10 @@ if ! docker compose version >/dev/null 2>&1; then
   echo "Docker Compose v2 不可用。" >&2
   exit 1
 fi
+if ! command -v timeout >/dev/null 2>&1; then
+  echo "系统缺少 coreutils timeout，无法保证长期记忆栈部署有界；本阶段停止并交由上层 fail-open/fail-closed 策略处理。" >&2
+  exit 1
+fi
 if [[ ! -f "${ENV_FILE}" || ! -f "${COMPOSE_FILE}" ]]; then
   echo "缺少 ${ENV_FILE} 或 ${COMPOSE_FILE}。" >&2
   exit 1
@@ -33,6 +37,7 @@ read_env() {
 PROXY_PORT="$(read_env FDEX_MEMORY_PROXY_PORT)"; PROXY_PORT="${PROXY_PORT:-18100}"
 QDRANT_PORT="$(read_env FDEX_MEMORY_QDRANT_PORT)"; QDRANT_PORT="${QDRANT_PORT:-6333}"
 LETTA_PORT="$(read_env FDEX_LETTA_PORT)"; LETTA_PORT="${LETTA_PORT:-8283}"
+SETUP_TIMEOUT="$(read_env FDEX_MEMORY_SETUP_TIMEOUT_SECONDS)"; SETUP_TIMEOUT="${SETUP_TIMEOUT:-900}"
 
 for pair in "proxy:${PROXY_PORT}" "qdrant:${QDRANT_PORT}" "letta:${LETTA_PORT}"; do
   name="${pair%%:*}"; port="${pair##*:}"
@@ -40,11 +45,28 @@ for pair in "proxy:${PROXY_PORT}" "qdrant:${QDRANT_PORT}" "letta:${LETTA_PORT}";
     echo "${name} 端口 ${port} 无效。" >&2; exit 1
   fi
 done
+if ! [[ "${SETUP_TIMEOUT}" =~ ^[0-9]+$ ]] || (( SETUP_TIMEOUT < 60 || SETUP_TIMEOUT > 3600 )); then
+  echo "FDEX_MEMORY_SETUP_TIMEOUT_SECONDS=${SETUP_TIMEOUT} 无效，必须是 60-3600 秒。" >&2
+  exit 1
+fi
 
 mkdir -p "${APP_DIR}/server/data/memory"
 chmod 700 "${APP_DIR}/server/data" "${APP_DIR}/server/data/memory" 2>/dev/null || true
 
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build
+echo "正在构建/启动长期记忆栈；memory-provider-proxy 使用轻量专用依赖，不再安装 Codex/完整 FDEX 依赖。"
+echo "Docker Compose 构建/启动最多等待 ${SETUP_TIMEOUT} 秒；随后健康检查同样有固定次数上限。"
+COMPOSE_ARGS=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build)
+if timeout --signal=TERM --kill-after=30s "${SETUP_TIMEOUT}s" "${COMPOSE_ARGS[@]}"; then
+  :
+else
+  rc=$?
+  if (( rc == 124 || rc == 137 )); then
+    echo "长期记忆栈 Docker 构建/启动超过 ${SETUP_TIMEOUT} 秒，已终止本阶段。" >&2
+  else
+    echo "长期记忆栈 Docker 构建/启动失败（退出码 ${rc}）。" >&2
+  fi
+  exit "${rc}"
+fi
 
 wait_url() {
   local name="$1" url="$2" attempts="${3:-60}"
