@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Callable
 
 from app.agent_runtime import AgentTask, AgentRuntimeError
+from app.agent_tasks import agent_task_store
 from app.codex_app_server import CodexServerRequestDenied
 from app.codex_interaction_store import CodexInteractionStore, codex_interaction_store
 from app.codex_item_store import codex_item_store
@@ -73,6 +74,18 @@ class CodexInteractionBroker:
         self.transport_alive = transport_alive or (lambda: True)
         self.max_wait_seconds = max(30.0, float(max_wait_seconds))
 
+    async def _cancel_requested(self) -> bool:
+        if self.task.cancel_requested:
+            return True
+        try:
+            requested = await asyncio.to_thread(agent_task_store().cancel_requested, self.task.id)
+        except (KeyError, ValueError):
+            # If the durable task record vanished while an approval is pending, fail closed.
+            return True
+        if requested:
+            self.task.cancel_requested = True
+        return bool(requested)
+
     async def handle(self, request_id: int | str, method: str, params: dict[str, Any]) -> Any:
         if method not in _SUPPORTED:
             self.task.emit("codex.server_request_denied", f"Denied unsupported interactive request: {method}")
@@ -97,18 +110,19 @@ class CodexInteractionBroker:
         # The current protocol explicitly says isBlocking is authoritative and autoResolutionMs
         # is deprecated. A non-blocking request must not stall the Codex turn waiting on a browser.
         if method == "item/tool/requestUserInput" and not bool(row.get("blocking")):
-            await asyncio.to_thread(
+            answered = await asyncio.to_thread(
                 self.store.submit_response,
                 owner_id=self.task.owner_id,
                 interaction_id=interaction_id,
                 response={"answers": {}},
                 summary={"resolution": "nonblocking-empty"},
             )
+            await publish_interaction_event(self.task.owner_id, self.task.id, answered, "answered")
 
         deadline = asyncio.get_running_loop().time() + self.max_wait_seconds
         try:
             while asyncio.get_running_loop().time() < deadline:
-                if self.task.cancel_requested:
+                if await self._cancel_requested():
                     await asyncio.to_thread(
                         self.store.terminalize,
                         owner_id=self.task.owner_id,
