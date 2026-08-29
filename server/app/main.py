@@ -37,6 +37,7 @@ from app.provider_manager import provider_store
 from app.provider_protocol_runtime import install_provider_protocol_runtime
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
 from app.realtime_voice import router as realtime_voice_router
+from app.remote_mcp_gateway import remote_mcp_lease_store, router as remote_mcp_gateway_router
 from app.request_trace import log_ai_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
@@ -140,6 +141,10 @@ generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
+# The gateway route is intentionally not an account/API surface. The handler itself additionally
+# requires an actual loopback TCP peer plus an unguessable task capability before touching a
+# registry row. It is mounted before broad user routers so no compatibility route can shadow it.
+app.include_router(remote_mcp_gateway_router)
 app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
 app.include_router(user_home_router)
@@ -171,6 +176,9 @@ app.include_router(agent_router)
 @app.on_event("startup")
 async def start_security_cleanup_tasks() -> None:
     await start_github_app_flow_cleanup()
+    # Leases are short-lived and raw tokens are never stored, but reconcile expired rows on each
+    # process start so a worker crash cannot leave durable state that still looks active.
+    remote_mcp_lease_store().purge_expired()
 
 
 @app.on_event("shutdown")
