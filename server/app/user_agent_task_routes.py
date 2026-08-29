@@ -15,6 +15,7 @@ from app.agent_tasks import TaskRunBusy, agent_task_store
 from app.codex_host_guard import compact_codex_thread
 from app.codex_host_runtime import create_codex_continuation, queue_codex_steer
 from app.codex_host_store import codex_host_store
+from app.codex_interaction_store import codex_interaction_store
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -98,6 +99,7 @@ def agent_center(request: Request, status: str = "") -> Response:
             tasks=tasks,
             task=None,
             codex_session=None,
+            codex_interactions=[],
             status_filter=clean_status,
             usage=usage,
             operation=operation.to_dict(),
@@ -151,6 +153,7 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
     projects = agent_project_store().list_projects(owner_id, enabled_only=True)
     usage = agent_runtime().execution_sandbox.account_usage(owner_id)
     codex_session = codex_host_store().task_state(owner_id, task_id)
+    codex_interactions = codex_interaction_store().list_for_task(owner_id, task_id, limit=100)
     return templates.TemplateResponse(
         "user_agent.html",
         _ctx(
@@ -159,6 +162,7 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
             view="task",
             task=task,
             codex_session=codex_session,
+            codex_interactions=codex_interactions,
             projects=projects,
             tasks=[],
             status_filter="",

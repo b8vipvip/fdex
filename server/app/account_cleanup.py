@@ -8,6 +8,7 @@ from pathlib import Path
 from app.agent_projects import agent_project_store
 from app.agent_tasks import agent_task_store
 from app.codex_host_store import codex_host_store
+from app.codex_interaction_store import codex_interaction_store
 from app.codex_item_store import codex_item_store
 from app.config import fresh_settings
 from app.github_app import GitHubAppClient, GitHubAppError
@@ -94,9 +95,10 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
     github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
-    # Item/Event rows intentionally live in the same SQLite file as Codex Host state but have
-    # their own privacy lifecycle. Erase them before deleting Thread rows so no transcript or
-    # command-output projection survives account removal.
+    # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
+    # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
+    # account deletion. Item/Event rows then erase transcript/command-output projections.
+    codex_interaction_cleanup = codex_interaction_store().delete_owner(clean)
     codex_item_cleanup = codex_item_store().delete_owner(clean)
     codex_cleanup = codex_host_store().delete_owner(clean)
     task_count = agent_task_store().delete_owner(clean)
@@ -119,6 +121,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "agent_account_policies": policy_count,
         "github_installation_sync_states": sync_state_count,
         "agent_tasks": task_count,
+        "codex_interactions": codex_interaction_cleanup,
         "codex_items": codex_item_cleanup,
         "codex_host": codex_cleanup,
         "owner_directories": removed_dirs,
@@ -128,11 +131,11 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
     """Delete every server-owned resource for one FDEX user before identity removal.
 
-    An account cannot be deleted while a queued/running Coding Agent request or Codex Host
-    control can still write task/worktree/thread/item state. This guard runs before remote-memory
-    erasure so a rejected deletion attempt does not partially erase the user's data. Once no
-    operation is active, memory erasure remains fail-closed and durable Agent/Codex rows are
-    removed with the other resources. Web workspace rows and uploaded assets are also erased
+    An account cannot be deleted while a queued/running Coding Agent request, Codex Host control,
+    or interactive Codex request can still write task/worktree/thread/item state. These guards run
+    before remote-memory erasure so a rejected deletion attempt does not partially erase data.
+    Once no operation is active, memory erasure remains fail-closed and durable Agent/Codex rows
+    are removed with the other resources. Web workspace rows and uploaded assets are also erased
     so account deletion has identical privacy semantics whether initiated from Android, Web or
     the JSON API.
     """
@@ -141,6 +144,10 @@ def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
         raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再注销账号")
     if codex_host_store().active_count(clean):
         raise ValueError("请先等待 Codex Host 的 Turn/Compact/控制操作结束，再注销账号")
+    interaction_store = codex_interaction_store()
+    interaction_store.interrupt_orphans(clean)
+    if interaction_store.active_count(clean):
+        raise ValueError("请先完成或取消当前 Codex 审批/提问，再注销账号")
     memory_cleanup = asyncio.run(erase_account_memory(clean))
     agent_cleanup = _purge_agent_resources_only(clean)
     web_cleanup = _purge_web_workspace(clean)
