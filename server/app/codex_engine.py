@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,12 +13,14 @@ from typing import Any, Iterable
 
 from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, AgentTaskCancelled, FdexAgentRuntime
+from app.codex_app_server import CodexAppServerClient, CodexRpcError, CodexServerRequestDenied
 from app.config import SERVER_DIR, fresh_settings
 from app.provider_manager import api_roots, provider_store, text_model_candidates
 
 _PROVIDER_ENV_KEY = "FDEX_CODEX_PROVIDER_KEY"
 _PROVIDER_ID = "fdex"
 _WRAPPER = SERVER_DIR / "app" / "codex_env_wrapper.py"
+_VERSION_RE = re.compile(r"(?P<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z_.-]+)?)")
 
 _DEVELOPER_INSTRUCTIONS = """You are running inside FDEX's account/project/task isolated worktree.
 Work only on the user's requested coding task and inspect the repository before editing.
@@ -37,13 +42,19 @@ class CodexProviderSpec:
     model: str
 
 
+@dataclass(frozen=True, slots=True)
+class CodexRuntimeSpec:
+    path: str
+    version: str
+    source: str
+
+
 def normalize_engine_mode(value: str) -> str:
     mode = (value or "legacy").strip().lower()
     return mode if mode in {"legacy", "codex", "auto"} else "legacy"
 
 
 def select_codex_provider_from(providers: Iterable[dict[str, Any]]) -> CodexProviderSpec | None:
-    """Pick the first configured Responses-capable text provider in FDEX priority order."""
     for provider in providers:
         protocols = [str(item).strip().lower() for item in (provider.get("protocol_order") or [])]
         if "responses" not in protocols:
@@ -70,41 +81,76 @@ def select_codex_provider_from(providers: Iterable[dict[str, Any]]) -> CodexProv
 
 
 def select_codex_provider() -> CodexProviderSpec | None:
-    return select_codex_provider_from(
-        provider_store().list(enabled_only=True, include_secret=True)
-    )
+    return select_codex_provider_from(provider_store().list(enabled_only=True, include_secret=True))
 
 
-def _sdk_runtime() -> tuple[str, str]:
+def _runtime_version(binary: Path) -> str:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+    }
     try:
-        import openai_codex
-        from codex_cli_bin import bundled_codex_path
-    except ImportError as exc:
-        raise AgentRuntimeError(
-            "官方 OpenAI Codex Python SDK/Runtime 未安装；请安装 server/requirements.txt 后重启 FDEX"
-        ) from exc
-    binary = Path(bundled_codex_path()).resolve()
+        result = subprocess.run(
+            (str(binary), "--version"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=8,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    text = f"{result.stdout}\n{result.stderr}".strip()
+    match = _VERSION_RE.search(text)
+    return match.group("version") if match else (text[:120] or "unknown")
+
+
+def resolve_codex_runtime() -> CodexRuntimeSpec:
+    """Resolve an official Codex executable independently of Python SDK method coverage."""
+    configured = fresh_settings().fdex_agent_codex_bin.strip()
+    if configured:
+        binary = Path(configured).expanduser().resolve()
+        source = "configured"
+    else:
+        system_codex = shutil.which("codex")
+        if system_codex:
+            binary = Path(system_codex).resolve()
+            source = "system"
+        else:
+            try:
+                from codex_cli_bin import bundled_codex_path
+            except ImportError as exc:
+                raise AgentRuntimeError(
+                    "官方 Codex Runtime 未安装；请安装 server/requirements.txt，或设置 FDEX_AGENT_CODEX_BIN"
+                ) from exc
+            binary = Path(bundled_codex_path()).resolve()
+            source = "bundled"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise AgentRuntimeError(f"官方 Codex Runtime 不可执行：{binary}")
-    return str(getattr(openai_codex, "__version__", "unknown")), str(binary)
+    return CodexRuntimeSpec(path=str(binary), version=_runtime_version(binary), source=source)
 
 
 def codex_runtime_status() -> dict[str, object]:
     provider: CodexProviderSpec | None = None
-    sdk_version = ""
-    runtime_path = ""
+    runtime: CodexRuntimeSpec | None = None
     reason = ""
     try:
-        sdk_version, runtime_path = _sdk_runtime()
+        runtime = resolve_codex_runtime()
         provider = select_codex_provider()
         if provider is None:
             reason = "没有已启用且支持 Responses 协议、API Key 和文本模型完整的供应商"
     except (AgentRuntimeError, RuntimeError, ValueError) as exc:
         reason = str(exc)
     return {
-        "ready": bool(sdk_version and runtime_path and provider is not None),
-        "sdk_version": sdk_version,
-        "runtime_path": runtime_path,
+        "ready": bool(runtime is not None and provider is not None),
+        "sdk_version": "native-jsonrpc",
+        "runtime_version": runtime.version if runtime else "",
+        "runtime_source": runtime.source if runtime else "",
+        "runtime_path": runtime.path if runtime else "",
+        "protocol": "codex-app-server-jsonrpc-v2",
         "provider_id": provider.provider_id if provider else None,
         "provider_name": provider.name if provider else "",
         "model": provider.model if provider else "",
@@ -126,11 +172,11 @@ def _provider_override(provider: CodexProviderSpec) -> str:
     )
 
 
-def _codex_home(task_owner: str, task_id: str) -> Path:
+def _codex_home(task_owner: str) -> Path:
     settings = fresh_settings()
     root = Path(settings.fdex_agent_codex_home_root).expanduser().resolve()
     safe_owner = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_owner)[:80] or "owner"
-    path = (root / safe_owner / task_id).resolve()
+    path = (root / safe_owner).resolve()
     if root != path and root not in path.parents:
         raise AgentRuntimeError("Codex HOME escaped configured root")
     path.mkdir(parents=True, exist_ok=True)
@@ -289,6 +335,54 @@ def _commit_and_publish(
         task.emit("github.pr_created", f"Created pull request {task.pr_url}")
 
 
+def _safe_event_message(method: str, params: dict[str, Any]) -> tuple[str, str] | None:
+    item = params.get("item") if isinstance(params.get("item"), dict) else {}
+    item_type = str(item.get("type") or "item")
+    if method == "item/started":
+        return "codex.item_started", f"Codex started {item_type}"
+    if method == "item/completed":
+        suffix = ""
+        if item_type == "commandExecution":
+            status = str(item.get("status") or "")
+            exit_code = item.get("exitCode")
+            suffix = f" · {status}" if status else ""
+            if exit_code is not None:
+                suffix += f" · exit={exit_code}"
+        if item_type == "fileChange":
+            changes = item.get("changes")
+            if isinstance(changes, list):
+                suffix = f" · {len(changes)} file change(s)"
+        return "codex.item_completed", f"Codex completed {item_type}{suffix}"
+    if method == "turn/plan/updated":
+        return "codex.plan_updated", "Codex updated its execution plan"
+    if method == "turn/diff/updated":
+        return "codex.diff_updated", "Codex updated the task diff"
+    if method == "hook/started":
+        return "codex.hook_started", "Codex hook started"
+    if method == "hook/completed":
+        return "codex.hook_completed", "Codex hook completed"
+    if method == "item/mcpToolCall/progress":
+        return "codex.mcp_progress", "Codex MCP tool call progressed"
+    if method in {"warning", "configWarning", "guardianWarning", "deprecationNotice"}:
+        message = str(params.get("message") or params.get("warning") or method)
+        return "codex.warning", message[:700]
+    if method == "error":
+        message = str(params.get("message") or params.get("error") or "Codex reported an error")
+        return "codex.error", message[:700]
+    return None
+
+
+def _turn_error_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        message = value.get("message")
+        if message:
+            return str(message)[:1200]
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:1200]
+    return str(value)[:1200]
+
+
 async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
     task = await runtime.get_task(task_id)
     if task is None:
@@ -296,86 +390,129 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
     provider = select_codex_provider()
     if provider is None:
         raise AgentRuntimeError("没有可供 Codex 使用的 Responses 供应商")
-    sdk_version, runtime_path = _sdk_runtime()
-
-    try:
-        from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, Sandbox
-    except ImportError as exc:
-        raise AgentRuntimeError("官方 OpenAI Codex SDK 无法导入") from exc
+    runtime_spec = resolve_codex_runtime()
 
     task.status = "running"
-    task.emit("engine.selected", f"Official OpenAI Codex SDK {sdk_version} · {provider.name} / {provider.model}")
+    task.emit(
+        "engine.selected",
+        f"Official OpenAI Codex native app-server {runtime_spec.version} · {provider.name} / {provider.model}",
+    )
     try:
         await runtime._raise_if_cancelled(task)
         worktree = await asyncio.to_thread(runtime._ensure_worktree, task)
-        initial_head = await asyncio.to_thread(
-            runtime._run_command, ("git", "rev-parse", "HEAD"), cwd=worktree
-        )
-        codex_home = await asyncio.to_thread(_codex_home, task.owner_id, task.id)
+        initial_head = await asyncio.to_thread(runtime._run_command, ("git", "rev-parse", "HEAD"), cwd=worktree)
+        codex_home = await asyncio.to_thread(_codex_home, task.owner_id)
         allow_network = await asyncio.to_thread(_task_network_allowed, task)
-        config = CodexConfig(
-            launch_args_override=_launch_args(runtime_path, provider),
-            cwd=str(worktree),
+
+        async def on_notification(method: str, params: dict[str, Any]) -> None:
+            event = _safe_event_message(method, params)
+            if event is not None:
+                task.emit(*event)
+
+        async def on_server_request(method: str, _params: dict[str, Any]) -> Any:
+            task.emit("codex.server_request_denied", f"Denied unsupported interactive request: {method}")
+            raise CodexServerRequestDenied(f"FDEX policy denies interactive request {method}")
+
+        client = CodexAppServerClient(
+            _launch_args(runtime_spec.path, provider),
             env=_safe_process_env(codex_home, provider.api_key),
-            client_name="fdex",
-            client_title="FDEX Coding Agent",
+            cwd=worktree,
             client_version=fresh_settings().app_version,
+            request_timeout=30.0,
+            notification_handler=on_notification,
+            server_request_handler=on_server_request,
+            experimental_api=True,
         )
         task.emit(
             "codex.started",
-            "Starting official Codex app-server in the isolated task worktree "
+            "Starting native official Codex app-server in the isolated task worktree "
             f"(workspace network={'enabled' if allow_network else 'disabled'})",
         )
+
         final_parts: list[str] = []
+        final_item_text = ""
         turn_status = ""
         turn_error = ""
-        async with AsyncCodex(config=config) as codex:
-            thread = await codex.thread_start(
-                approval_mode=ApprovalMode.deny_all,
-                cwd=str(worktree),
-                developer_instructions=_DEVELOPER_INSTRUCTIONS,
-                ephemeral=True,
-                model=provider.model,
-                model_provider=_PROVIDER_ID,
-                sandbox=Sandbox.workspace_write,
-                config=_codex_thread_config(codex_home, allow_network=allow_network),
+        thread_id = ""
+        turn_id = ""
+
+        async with client:
+            thread_result = await client.request(
+                "thread/start",
+                {
+                    "model": provider.model,
+                    "modelProvider": _PROVIDER_ID,
+                    "cwd": str(worktree),
+                    "approvalPolicy": "never",
+                    "sandbox": "workspace-write",
+                    "config": _codex_thread_config(codex_home, allow_network=allow_network),
+                    "developerInstructions": _DEVELOPER_INSTRUCTIONS,
+                    "ephemeral": False,
+                },
             )
-            task.emit("codex.thread_started", f"Codex thread {thread.id}")
-            turn = await thread.turn(
-                task.prompt,
-                approval_mode=ApprovalMode.deny_all,
-                sandbox=Sandbox.workspace_write,
+            thread_obj = thread_result.get("thread") if isinstance(thread_result, dict) else None
+            if not isinstance(thread_obj, dict) or not str(thread_obj.get("id") or ""):
+                raise AgentRuntimeError("Codex thread/start returned no thread id")
+            thread_id = str(thread_obj["id"])
+            task.emit("codex.thread_started", f"Codex thread {thread_id}")
+
+            turn_result = await client.request(
+                "turn/start",
+                {
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": task.prompt, "text_elements": []}],
+                    "approvalPolicy": "never",
+                },
             )
+            turn_obj = turn_result.get("turn") if isinstance(turn_result, dict) else None
+            if not isinstance(turn_obj, dict) or not str(turn_obj.get("id") or ""):
+                raise AgentRuntimeError("Codex turn/start returned no turn id")
+            turn_id = str(turn_obj["id"])
+            task.emit("codex.turn_started", f"Codex turn {turn_id}")
+
             try:
-                async for event in turn.stream():
+                while True:
                     await runtime._raise_if_cancelled(task)
-                    method = str(getattr(event, "method", "") or "")
-                    payload = getattr(event, "payload", None)
-                    if method == "item/agentMessage/delta":
-                        delta = str(getattr(payload, "delta", "") or "")
+                    try:
+                        method, params = await client.next_notification(timeout=1.0)
+                    except CodexRpcError as exc:
+                        if exc.code == -32002:
+                            continue
+                        raise
+                    if method == "item/agentMessage/delta" and str(params.get("turnId") or "") in {"", turn_id}:
+                        delta = str(params.get("delta") or "")
                         if delta:
                             final_parts.append(delta)
-                    elif method == "item/started":
-                        task.emit("codex.action_started", "Codex started a workspace action")
-                    elif method == "item/completed":
-                        task.emit("codex.action_completed", "Codex completed a workspace action")
+                    elif method == "item/completed" and str(params.get("turnId") or "") in {"", turn_id}:
+                        item = params.get("item")
+                        if isinstance(item, dict) and str(item.get("type") or "") == "agentMessage":
+                            text = str(item.get("text") or "").strip()
+                            if text:
+                                final_item_text = text
                     elif method == "turn/completed":
-                        turn_obj = getattr(payload, "turn", None)
-                        status_obj = getattr(turn_obj, "status", "")
-                        turn_status = str(getattr(status_obj, "value", status_obj) or "")
-                        error_obj = getattr(turn_obj, "error", None)
-                        if error_obj:
-                            turn_error = str(error_obj)[:1000]
+                        completed = params.get("turn")
+                        if not isinstance(completed, dict) or str(completed.get("id") or "") != turn_id:
+                            continue
+                        turn_status = str(completed.get("status") or "")
+                        turn_error = _turn_error_text(completed.get("error"))
+                        break
             except AgentTaskCancelled:
-                try:
-                    await turn.interrupt()
-                except Exception:
-                    pass
+                if thread_id and turn_id:
+                    try:
+                        await client.request(
+                            "turn/interrupt",
+                            {"threadId": thread_id, "turnId": turn_id},
+                            timeout=10.0,
+                        )
+                    except Exception:
+                        pass
                 raise
 
-        if turn_status and turn_status not in {"completed", "succeeded"}:
-            raise AgentRuntimeError(f"Codex turn {turn_status}: {turn_error or 'no additional error detail'}")
-        final_response = "".join(final_parts).strip() or "Codex 已完成任务。"
+        if turn_status != "completed":
+            raise AgentRuntimeError(
+                f"Codex turn {turn_status or 'ended without completion'}: {turn_error or 'no additional error detail'}"
+            )
+        final_response = final_item_text or "".join(final_parts).strip() or "Codex 已完成任务。"
         await asyncio.to_thread(
             _commit_and_publish,
             runtime,
