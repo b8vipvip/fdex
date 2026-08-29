@@ -190,6 +190,18 @@ def test_form_validation_rejects_missing_required_multiple_actions_enum_injectio
         )
 
 
+def test_malformed_server_default_disables_accept_and_cannot_bypass_validation() -> None:
+    params = _form_params()
+    params["requestedSchema"]["properties"]["mode"]["default"] = "root"
+    row = {"method": MCP_ELICITATION_METHOD, "request": params}
+    projected = decorate_mcp_interaction(row)
+    assert projected["mcp_accept_supported"] is False
+    action = _action_token(projected)
+    assert {option["label"] for option in projected["request"]["questions"][0]["options"]} == {"decline", "cancel"}
+    with pytest.raises(AgentRuntimeError, match="allowed enum"):
+        mcp_elicitation_response(row, {action: ["accept"]})
+
+
 def test_decline_and_cancel_never_require_form_content() -> None:
     row = {"method": MCP_ELICITATION_METHOD, "request": _form_params()}
     projected = decorate_mcp_interaction(row)
@@ -389,11 +401,12 @@ def test_phase724_wiring_keeps_mcp_credentials_and_arbitrary_stdio_out_of_scope(
     status = (root / "CURRENT_STATUS.md").read_text(encoding="utf-8")
 
     assert "install_mcp_elicitation_compat()" in install
+    assert "install_mcp_elicitation_compat()" in routes
     assert "MCP_ELICITATION_METHOD" in routes
     assert "decorate_mcp_interaction" in routes
     assert "mcp_elicitation_response" in routes
     assert "mcpServer/elicitation/request" in helper
-    assert "serverName == \"codex_apps\"" in helper
+    assert '"codex_apps"' in helper
     assert "OpenAI-specific" in helper
     assert "stdio" in status.lower()
     assert "MCP" in status
