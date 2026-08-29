@@ -21,13 +21,7 @@ _MAX_OPTIONS = 200
 
 
 def install_mcp_elicitation_compat() -> None:
-    """Extend the Phase 7.23 generic interaction bridge without forking its transport/store.
-
-    Phase 7.23 intentionally kept private method allow-lists small. Phase 7.24 registers only the
-    public app-server MCP elicitation request and wraps the existing public-event projection so
-    browsers on every Host worker can reuse the already-hardened requestUserInput UI surface.
-    The durable database row still retains the original MCP method and exact request payload.
-    """
+    """Extend the Phase 7.23 generic interaction bridge without forking its transport/store."""
     import app.codex_interaction_store as store_module
     import app.codex_interactions as interactions_module
 
@@ -122,7 +116,7 @@ def _enum_options(schema: dict[str, Any]) -> tuple[list[tuple[str, str]], bool]:
             return [(str(value), str(value)) for value in values[:_MAX_OPTIONS]], True
         any_of = items.get("anyOf")
         if isinstance(any_of, list):
-            result = []
+            result: list[tuple[str, str]] = []
             for option in any_of[:_MAX_OPTIONS]:
                 if not isinstance(option, dict) or "const" not in option:
                     continue
@@ -173,7 +167,10 @@ def _question_for_field(name: str, schema: dict[str, Any], required: bool, serve
         min_items = schema.get("minItems")
         max_items = schema.get("maxItems")
         if min_items is not None or max_items is not None:
-            prompt_parts.append(f"Selections: min={min_items if min_items is not None else 0}, max={max_items if max_items is not None else 'unbounded'}")
+            prompt_parts.append(
+                f"Selections: min={min_items if min_items is not None else 0}, "
+                f"max={max_items if max_items is not None else 'unbounded'}"
+            )
     return {
         "id": _field_token(name),
         "header": title,
@@ -181,8 +178,8 @@ def _question_for_field(name: str, schema: dict[str, Any], required: bool, serve
         "isOther": False,
         "isSecret": False,
         "options": [
-            {"label": value, "description": title if title != value else ""}
-            for value, title in options
+            {"label": value, "description": option_title if option_title != value else ""}
+            for value, option_title in options
         ] or None,
     }
 
@@ -205,12 +202,7 @@ def _action_question(message: str, *, allow_accept: bool) -> dict[str, Any]:
 
 
 def decorate_mcp_interaction(row: dict[str, Any]) -> dict[str, Any]:
-    """Project MCP elicitation onto Phase 7.23's existing safe requestUserInput UI.
-
-    The stored row remains protocol-authentic. Only the browser projection changes, allowing the
-    existing textContent-only renderer, CSRF route and encrypted answer bridge to be reused without
-    adding a second interaction transport.
-    """
+    """Project MCP elicitation onto Phase 7.23's existing safe requestUserInput UI."""
     if str(row.get("method") or "") != MCP_ELICITATION_METHOD:
         return dict(row)
     result = dict(row)
@@ -224,6 +216,11 @@ def decorate_mcp_interaction(row: dict[str, Any]) -> dict[str, Any]:
     if mode == "form":
         try:
             _schema, properties, required = _schema_parts(request)
+            # Validate schema defaults before exposing accept. A malformed server-provided default
+            # must not bypass the same type/range/enum checks applied to explicit user values.
+            for name, schema in properties.items():
+                if "default" in schema:
+                    _validate_default(schema.get("default"), schema, name)
             questions.append(_action_question(message, allow_accept=True))
             for name, schema in properties.items():
                 questions.append(_question_for_field(name, schema, name in required, server_name))
@@ -293,10 +290,6 @@ def _single(values: list[str], field: str) -> str:
     return clean[0]
 
 
-def _default_or_missing(schema: dict[str, Any]) -> tuple[bool, Any]:
-    return ("default" in schema, schema.get("default"))
-
-
 def _validate_string(value: str, schema: dict[str, Any], field: str) -> str:
     min_length = schema.get("minLength")
     max_length = schema.get("maxLength")
@@ -359,6 +352,31 @@ def _validate_array(values: list[str], schema: dict[str, Any], field: str) -> li
     return clean
 
 
+def _validate_default(default: Any, schema: dict[str, Any], field: str) -> Any:
+    field_type = str(schema.get("type") or "")
+    if field_type == "string":
+        if not isinstance(default, str):
+            raise AgentRuntimeError(f"MCP field `{field}` has an invalid string default")
+        return _validate_string(default, schema, field)
+    if field_type == "integer":
+        if isinstance(default, bool) or not isinstance(default, int):
+            raise AgentRuntimeError(f"MCP field `{field}` has an invalid integer default")
+        return _validate_number(str(default), schema, field)
+    if field_type == "number":
+        if isinstance(default, bool) or not isinstance(default, (int, float)):
+            raise AgentRuntimeError(f"MCP field `{field}` has an invalid number default")
+        return _validate_number(str(default), schema, field)
+    if field_type == "boolean":
+        if not isinstance(default, bool):
+            raise AgentRuntimeError(f"MCP field `{field}` has an invalid boolean default")
+        return default
+    if field_type == "array":
+        if not isinstance(default, list) or any(not isinstance(value, str) for value in default):
+            raise AgentRuntimeError(f"MCP field `{field}` has an invalid array default")
+        return _validate_array(default, schema, field)
+    raise AgentRuntimeError(f"FDEX does not support MCP elicitation field type: {field_type or 'unknown'}")
+
+
 def _form_content(request: dict[str, Any], values: dict[str, list[str]]) -> tuple[dict[str, Any], list[str]]:
     _schema, properties, required = _schema_parts(request)
     token_to_name = {_field_token(name): name for name in properties}
@@ -369,10 +387,9 @@ def _form_content(request: dict[str, Any], values: dict[str, list[str]]) -> tupl
     for token, name in token_to_name.items():
         schema = properties[name]
         raw_values = [str(value) for value in values.get(token, []) if str(value) != ""]
-        has_default, default = _default_or_missing(schema)
         if not raw_values:
-            if has_default:
-                content[name] = default
+            if "default" in schema:
+                content[name] = _validate_default(schema.get("default"), schema, name)
                 continue
             if name in required:
                 raise AgentRuntimeError(f"MCP field `{name}` is required")
