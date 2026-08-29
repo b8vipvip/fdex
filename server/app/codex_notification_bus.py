@@ -21,7 +21,8 @@ class CodexNotificationCapture:
 
     The app-server reader must keep reading JSON-RPC responses/notifications even when disk I/O
     briefly stalls. A dedicated writer task preserves event order and makes shutdown drain
-    explicit, while bounded queue backpressure prevents unbounded RAM growth.
+    explicit, while bounded queue backpressure prevents unbounded RAM growth. Publish/close also
+    watch the writer task so a SQLite failure can never strand a producer on a full queue.
     """
 
     def __init__(self, owner_id: str, task_id: str, *, max_pending: int = 4096) -> None:
@@ -35,20 +36,62 @@ class CodexNotificationCapture:
         if self.worker is None:
             self.worker = asyncio.create_task(self._run(), name=f"fdex-codex-events-{self.task_id[:8]}")
 
-    async def publish(self, method: str, params: dict[str, Any]) -> None:
+    async def _put_while_writer_alive(self, value: _Envelope | object) -> None:
         if self.error is not None:
             raise self.error
         if self.worker is None:
             await self.start()
-        # copy the top-level dict because downstream handlers may retain/mutate their own view.
-        await self.queue.put(_Envelope(str(method or "unknown"), dict(params)))
+        assert self.worker is not None
+        if self.worker.done():
+            await self.worker
+            if self.error is not None:
+                raise self.error
+            raise RuntimeError("Codex notification writer stopped unexpectedly")
+
+        put_task = asyncio.create_task(self.queue.put(value))
+        done, _pending = await asyncio.wait(
+            {put_task, self.worker},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if self.worker in done and not put_task.done():
+            put_task.cancel()
+            try:
+                await put_task
+            except asyncio.CancelledError:
+                pass
+            await self.worker
+            if self.error is not None:
+                raise self.error
+            raise RuntimeError("Codex notification writer stopped unexpectedly")
+        await put_task
+        if self.error is not None:
+            raise self.error
+
+    async def publish(self, method: str, params: dict[str, Any]) -> None:
+        if self.worker is None:
+            await self.start()
+        await self._put_while_writer_alive(_Envelope(str(method or "unknown"), dict(params)))
 
     async def close(self) -> None:
-        if self.worker is None:
+        worker = self.worker
+        if worker is None:
+            if self.error is not None:
+                raise self.error
             return
-        await self.queue.put(_SENTINEL)
-        await self.worker
-        self.worker = None
+        if not worker.done():
+            try:
+                await self._put_while_writer_alive(_SENTINEL)
+            except Exception:
+                # The writer already owns the durable error. Do not hide it behind a queue
+                # shutdown race or wait forever for a consumer that has exited.
+                if not worker.done():
+                    worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.worker = None
         if self.error is not None:
             raise self.error
 
