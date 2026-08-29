@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.codex_interaction_store import CodexInteractionStore
 from app.codex_interactions import (
     CodexInteractionBroker,
     approval_response,
+    enforce_response_policy,
     permissions_response,
     user_input_response,
 )
@@ -104,6 +106,21 @@ def test_secret_user_input_is_encrypted_then_destroyed_after_correct_host_claim(
     assert final["state"] == "responded"
     assert final["response_cipher"] == ""
     assert store.claim_response(owner_id=OWNER, interaction_id=str(row["id"]), host_session_id="host-one") is None
+
+
+def test_first_use_encryption_key_is_atomically_shared_across_workers(tmp_path: Path) -> None:
+    path = tmp_path / "codex-host.db"
+    key_path = tmp_path / "codex-interactions.key"
+    stores = [CodexInteractionStore(path, key_path) for _ in range(12)]
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        ciphers = list(pool.map(lambda item: item._cipher(), stores))
+
+    assert key_path.exists()
+    assert len(key_path.read_bytes().strip()) == 44
+    token = ciphers[0].encrypt(b"cross-worker-secret")
+    for cipher in ciphers[1:]:
+        assert cipher.decrypt(token) == b"cross-worker-secret"
 
 
 def test_jsonrpc_numeric_and_string_ids_do_not_collide_inside_one_host(tmp_path: Path) -> None:
@@ -236,6 +253,105 @@ def test_official_response_helpers_preserve_supported_protocol_shapes() -> None:
         user_input_response(user_row, {"not-a-question": ["x"]})
 
 
+def test_human_approval_cannot_override_fdex_network_or_worktree_policy(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    inside = worktree / "src" / "safe.txt"
+    outside = tmp_path / "other" / "secret.txt"
+
+    regular_command = {
+        "method": "item/commandExecution/requestApproval",
+        "request": {"kind": "command", "cwd": str(worktree), "command": "cat /etc/shadow"},
+    }
+    with pytest.raises(AgentRuntimeError, match="unsandboxed command escalation"):
+        enforce_response_policy(regular_command, "accept", allow_network=True, worktree=str(worktree))
+    # Decline/cancel always remain available so the Host can make progress without escalation.
+    enforce_response_policy(regular_command, "decline", allow_network=False, worktree="")
+
+    network_command = {
+        "method": "item/commandExecution/requestApproval",
+        "request": {
+            "kind": "command",
+            "cwd": str(worktree),
+            "command": "curl https://example.com",
+            "networkApprovalContext": {"host": "example.com", "protocol": "https"},
+        },
+    }
+    with pytest.raises(AgentRuntimeError, match="network access disabled"):
+        enforce_response_policy(network_command, "accept", allow_network=False, worktree=str(worktree))
+    enforce_response_policy(network_command, "accept", allow_network=True, worktree=str(worktree))
+
+    stdin_command = {
+        "method": "item/commandExecution/requestApproval",
+        "request": {"kind": "writeStdin", "cwd": str(worktree)},
+    }
+    enforce_response_policy(stdin_command, "accept", allow_network=False, worktree=str(worktree))
+    with pytest.raises(AgentRuntimeError, match="one-time"):
+        enforce_response_policy(stdin_command, "acceptForSession", allow_network=False, worktree=str(worktree))
+
+    file_row = {
+        "method": "item/fileChange/requestApproval",
+        "request": {"grantRoot": str(worktree)},
+    }
+    inside_projection = {
+        "payload": {"type": "fileChange", "changes": [{"path": str(inside), "kind": "update", "diff": "+ok"}]}
+    }
+    enforce_response_policy(
+        file_row,
+        "acceptForSession",
+        allow_network=False,
+        worktree=str(worktree),
+        item_projection=inside_projection,
+    )
+    outside_projection = {
+        "payload": {"type": "fileChange", "changes": [{"path": str(outside), "kind": "update", "diff": "+bad"}]}
+    }
+    with pytest.raises(AgentRuntimeError, match="outside the task worktree"):
+        enforce_response_policy(
+            file_row,
+            "accept",
+            allow_network=False,
+            worktree=str(worktree),
+            item_projection=outside_projection,
+        )
+
+    permissions = {
+        "method": "item/permissions/requestApproval",
+        "request": {
+            "permissions": {
+                "network": {"hosts": ["example.com"]},
+                "fileSystem": {"read": [str(inside)], "write": [str(worktree / "generated")], "entries": None},
+            }
+        },
+    }
+    with pytest.raises(AgentRuntimeError, match="network access disabled"):
+        enforce_response_policy(permissions, "grant_turn", allow_network=False, worktree=str(worktree))
+    enforce_response_policy(permissions, "grant_turn", allow_network=True, worktree=str(worktree))
+    permissions["request"]["permissions"]["fileSystem"]["read"] = [str(outside)]
+    with pytest.raises(AgentRuntimeError, match="outside the task worktree"):
+        enforce_response_policy(permissions, "grant_turn", allow_network=True, worktree=str(worktree))
+
+
+def test_filesystem_special_or_glob_escalation_fails_closed(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    row = {
+        "method": "item/permissions/requestApproval",
+        "request": {
+            "permissions": {
+                "network": None,
+                "fileSystem": {
+                    "read": None,
+                    "write": None,
+                    "entries": [{"path": {"type": "special", "value": "home"}, "access": "read"}],
+                },
+            }
+        },
+    }
+    with pytest.raises(AgentRuntimeError, match="glob/special"):
+        enforce_response_policy(row, "grant_turn", allow_network=False, worktree=str(worktree))
+
+
 def test_broker_consumes_response_submitted_by_another_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _host, store = _stores(tmp_path)
 
@@ -316,6 +432,7 @@ def test_phase723_runtime_ui_and_account_erasure_wiring() -> None:
     assert "ContextVar" in installer
     assert "_interactive_tasks.add(task)" in client
     assert "/codex/interactions/{interaction_id}/respond" in routes
+    assert "enforce_response_policy" in routes
     assert 'id="codex-interaction-panel"' in template
     assert 'type="{% if question.isSecret %}password{% else %}text{% endif %}"' in template
     assert "fdex/interaction/" in javascript
