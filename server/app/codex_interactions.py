@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 from app.agent_runtime import AgentTask, AgentRuntimeError
@@ -54,6 +56,173 @@ async def publish_interaction_event(owner_id: str, task_id: str, row: dict[str, 
         method=f"fdex/interaction/{phase}",
         params=_public_event(row),
     )
+
+
+def interaction_item_projection(owner_id: str, task_id: str, row: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover the exact Item identified by an interaction without a bounded list scan."""
+    thread_id = str(row.get("thread_id") or "")
+    turn_id = str(row.get("turn_id") or "")
+    item_id = str(row.get("item_id") or "")
+    if not thread_id or not turn_id or not item_id:
+        return None
+    store = codex_item_store()
+    store.init()
+    with store.db() as conn:
+        item = conn.execute(
+            """
+            SELECT item_type,status,payload_json,delta_text FROM codex_items
+            WHERE owner_id=? AND task_id=? AND thread_id=? AND turn_id=? AND item_id=?
+            """,
+            (owner_id, task_id, thread_id, turn_id, item_id),
+        ).fetchone()
+    if item is None:
+        return None
+    try:
+        payload = json.loads(str(item["payload_json"] or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "item_type": str(item["item_type"] or "unknown"),
+        "status": str(item["status"] or ""),
+        "payload": payload if isinstance(payload, dict) else {},
+        "delta_text": str(item["delta_text"] or ""),
+    }
+
+
+def _scope_root(worktree: str) -> Path:
+    clean = str(worktree or "").strip()
+    if not clean:
+        raise AgentRuntimeError("Codex approval cannot be granted before the task worktree is known")
+    root = Path(clean).expanduser().resolve()
+    if not root.is_dir():
+        raise AgentRuntimeError("Codex approval worktree is unavailable")
+    return root
+
+
+def _within_root(root: Path, value: Any) -> bool:
+    clean = str(value or "").strip()
+    if not clean or any(ord(ch) < 32 for ch in clean):
+        return False
+    candidate = Path(clean).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    return resolved == root or root in resolved.parents
+
+
+def _filesystem_permission_paths(profile: dict[str, Any]) -> list[str]:
+    file_system = profile.get("fileSystem")
+    if file_system is None:
+        return []
+    if not isinstance(file_system, dict):
+        raise AgentRuntimeError("Codex filesystem permission request has an invalid shape")
+    unknown = {str(key) for key, value in file_system.items() if value is not None} - {
+        "read",
+        "write",
+        "globScanMaxDepth",
+        "entries",
+    }
+    if unknown:
+        raise AgentRuntimeError("Codex filesystem permission request contains unsupported fields")
+    paths: list[str] = []
+    for key in ("read", "write"):
+        values = file_system.get(key)
+        if values is None:
+            continue
+        if not isinstance(values, list):
+            raise AgentRuntimeError("Codex filesystem permission roots have an invalid shape")
+        paths.extend(str(value) for value in values)
+    entries = file_system.get("entries")
+    if entries is not None:
+        if not isinstance(entries, list):
+            raise AgentRuntimeError("Codex filesystem permission entries have an invalid shape")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise AgentRuntimeError("Codex filesystem permission entry is invalid")
+            path_spec = entry.get("path")
+            if not isinstance(path_spec, dict) or str(path_spec.get("type") or "") != "path":
+                # glob_pattern and special paths cannot be proven owner/worktree scoped by a
+                # generic server path check, so FDEX fails closed instead of broadening access.
+                raise AgentRuntimeError("FDEX does not grant glob/special filesystem escalation")
+            paths.append(str(path_spec.get("path") or ""))
+    return paths
+
+
+def enforce_response_policy(
+    row: dict[str, Any],
+    action: str,
+    *,
+    allow_network: bool,
+    worktree: str,
+    item_projection: dict[str, Any] | None = None,
+) -> None:
+    """Keep FDEX project/worktree authority above a human Codex approval click.
+
+    Human approval answers an interactive Codex question; it is not authority to escape the FDEX
+    tenant boundary. Positive command/file/permission decisions are therefore narrowed to actions
+    that FDEX can prove remain inside the task worktree and project network policy.
+    """
+    method = str(row.get("method") or "")
+    clean_action = str(action or "").strip()
+    if clean_action in {"decline", "cancel", "deny"} or method == "item/tool/requestUserInput":
+        return
+    request = row.get("request") if isinstance(row.get("request"), dict) else {}
+    root = _scope_root(worktree)
+
+    if method == "item/commandExecution/requestApproval":
+        cwd = request.get("cwd")
+        if cwd and not _within_root(root, cwd):
+            raise AgentRuntimeError("FDEX policy blocks command approval outside the task worktree")
+        kind = str(request.get("kind") or "command")
+        if kind == "writeStdin":
+            if clean_action != "accept":
+                raise AgentRuntimeError("writeStdin approval only supports one-time accept in FDEX")
+            return
+        network_context = request.get("networkApprovalContext")
+        network_amendments = request.get("proposedNetworkPolicyAmendments")
+        if network_context is not None or network_amendments is not None:
+            if not allow_network:
+                raise AgentRuntimeError("FDEX project policy has network access disabled")
+            return
+        # A regular on-request command prompt without network context normally represents an
+        # unsandboxed/escalated retry. Until a separate outer filesystem namespace is available,
+        # allowing it could expose FDEX service files, so only decline/cancel is accepted.
+        raise AgentRuntimeError(
+            "FDEX blocks unsandboxed command escalation; only scoped network approval or writeStdin can be allowed"
+        )
+
+    if method == "item/fileChange/requestApproval":
+        grant_root = request.get("grantRoot")
+        if grant_root and not _within_root(root, grant_root):
+            raise AgentRuntimeError("FDEX policy blocks file-change grantRoot outside the task worktree")
+        payload = item_projection.get("payload") if isinstance(item_projection, dict) else None
+        if not isinstance(payload, dict) or payload.get("fdex_truncated"):
+            raise AgentRuntimeError("FDEX cannot verify the file-change Item; approval fails closed")
+        changes = payload.get("changes")
+        if not isinstance(changes, list) or not changes:
+            raise AgentRuntimeError("FDEX cannot verify file-change paths; approval fails closed")
+        for change in changes:
+            if not isinstance(change, dict) or not _within_root(root, change.get("path")):
+                raise AgentRuntimeError("FDEX policy blocks file changes outside the task worktree")
+        if clean_action == "acceptForSession" and not grant_root:
+            raise AgentRuntimeError("session-wide file approval requires an explicit in-worktree grantRoot")
+        return
+
+    if method == "item/permissions/requestApproval":
+        permissions = request.get("permissions")
+        if not isinstance(permissions, dict):
+            raise AgentRuntimeError("Codex permission request has an invalid shape")
+        unknown = {str(key) for key, value in permissions.items() if value is not None} - {"network", "fileSystem"}
+        if unknown:
+            raise AgentRuntimeError("Codex permission request contains unsupported fields")
+        if permissions.get("network") is not None and not allow_network:
+            raise AgentRuntimeError("FDEX project policy has network access disabled")
+        for path in _filesystem_permission_paths(permissions):
+            if not _within_root(root, path):
+                raise AgentRuntimeError("FDEX policy blocks filesystem permission outside the task worktree")
+        return
+
+    raise AgentRuntimeError("unsupported Codex interaction method")
 
 
 class CodexInteractionBroker:
