@@ -107,15 +107,24 @@ def normalize_remote_mcp_url(value: str, *, resolve_dns: bool = True) -> tuple[s
         raise ValueError("Remote MCP URL 端口无效") from exc
     if port not in (None, 443):
         raise ValueError("Remote MCP 当前仅允许 HTTPS 443 端口")
+
     host = parsed.hostname.rstrip(".")
     try:
-        ascii_host = host.encode("idna").decode("ascii").lower()
-    except UnicodeError as exc:
-        raise ValueError("Remote MCP 主机名不是有效的 DNS 名称") from exc
-    netloc = ascii_host
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        canonical_host = str(literal).lower()
+        netloc = f"[{canonical_host}]" if isinstance(literal, ipaddress.IPv6Address) else canonical_host
+    else:
+        try:
+            canonical_host = host.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ValueError("Remote MCP 主机名不是有效的 DNS 名称") from exc
+        netloc = canonical_host
     path = parsed.path or "/"
     normalized = urlunsplit(("https", netloc, path, "", ""))
-    addresses = resolve_public_addresses(ascii_host) if resolve_dns else ()
+    addresses = resolve_public_addresses(canonical_host) if resolve_dns else ()
     return normalized, addresses
 
 
@@ -329,17 +338,34 @@ class RemoteMcpRegistry:
         return _row(saved)
 
     def set_enabled(self, owner_id: str, server_id: str, enabled: bool) -> dict[str, Any]:
-        current = self.get(owner_id, server_id)
+        owner = _clean_owner(owner_id)
+        current = self.get(owner, server_id)
         if current is None:
             raise KeyError("Remote MCP 不存在")
-        if enabled and not current["enabled_tools"]:
+        if not enabled:
+            # Disabling is a safety escape hatch. It must not depend on current DNS health: an
+            # endpoint whose DNS has just become private/malicious must still be immediately
+            # switchable off. Re-enabling always runs the full public-DNS admission check.
+            with self.db() as conn:
+                conn.execute(
+                    "UPDATE remote_mcp_servers SET enabled=0,updated_at=? WHERE owner_id=? AND id=?",
+                    (_now(), owner, str(server_id)),
+                )
+                row = conn.execute(
+                    "SELECT * FROM remote_mcp_servers WHERE owner_id=? AND id=?",
+                    (owner, str(server_id)),
+                ).fetchone()
+            if row is None:
+                raise KeyError("Remote MCP 不存在")
+            return _row(row)
+        if not current["enabled_tools"]:
             raise ValueError("启用 Remote MCP 前必须配置至少一个显式工具 allowlist")
         return self.save(
-            owner_id,
+            owner,
             name=str(current["name"]),
             url=str(current["url"]),
             enabled_tools=list(current["enabled_tools"]),
-            enabled=enabled,
+            enabled=True,
             startup_timeout_sec=int(current["startup_timeout_sec"]),
             tool_timeout_sec=int(current["tool_timeout_sec"]),
             server_id=str(current["id"]),
