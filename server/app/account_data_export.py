@@ -10,6 +10,7 @@ from app.config import fresh_settings
 from app.fdex_memory import MemoryScope
 from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
+from app.remote_mcp_registry import remote_mcp_registry
 
 
 def _now() -> str:
@@ -159,6 +160,9 @@ def build_account_export(
         # This prevents a future store refactor from accidentally expanding a user export.
         "github_connections": _safe_connections(projects.list_connections(user_id)),
         "coding_agent_projects": _safe_projects(projects.list_projects(user_id, enabled_only=False)),
+        # Phase 7.25 Remote MCP registry is credential-free by design. Export only the exact
+        # user-owned control-plane fields; resolved IP snapshots are operational admission data.
+        "remote_mcp_servers": remote_mcp_registry().export_owner(user_id),
         "long_term_memory": {
             "status": memory_erasure_status(user_id),
             "registered_device_scopes": scopes.scope_count(user_id),
@@ -182,6 +186,8 @@ def build_account_export(
             "github_device_code",
             "github_device_code_cipher",
             "provider_api_keys",
+            "remote_mcp_bearer_tokens",
+            "remote_mcp_oauth_credentials",
             "embeddings",
             "sandbox_cache_files",
         ],
