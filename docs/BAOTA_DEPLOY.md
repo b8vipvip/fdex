@@ -14,10 +14,26 @@ FDEX 默认使用独立端口 `18080`，只监听本机，不需要开放服务�
 
 ## 一、部署或更新
 
+唯一权威的仓库内更新入口是：
+
 ```bash
 cd /opt/fdex
-sudo bash scripts/update_server.sh
+sudo bash /opt/fdex/scripts/update_server.sh
 ```
+
+历史服务器上可能还保留 `/opt/deploy_fdex.sh`。新版 FDEX 会在 `fdex.service` 启动前自动把它修复为仓库内 `scripts/deploy_fdex_compat.sh` 的兼容入口，最终仍转到同一个 `scripts/update_server.sh`。不要继续维护一份独立的 `/opt/deploy_fdex.sh` 部署逻辑。
+
+如果服务器仍处于旧版本，而且 `/opt/deploy_fdex.sh` 报错引用已经删除的 `ai-business-assistant/backend`，先执行一次仓库内权威入口：
+
+```bash
+cd /opt/fdex
+git fetch origin main
+git checkout main
+git reset --hard origin/main
+sudo bash /opt/fdex/scripts/update_server.sh
+```
+
+成功重启后，`/opt/deploy_fdex.sh` 会自动被修复，后续继续使用旧命令也会进入权威更新器。
 
 脚本会自动：
 
@@ -25,8 +41,11 @@ sudo bash scripts/update_server.sh
 2. 拉取 GitHub `main`
 3. 初始化缺失的管理员密码和会话密钥
 4. 检查目标端口，且不会结束占用端口的其他服务
-5. 更新 Python 依赖和 systemd 服务
-6. 重启 FDEX 并检查健康接口
+5. 更新 Python 依赖
+6. 启动/检查长期记忆栈；memory-provider-proxy 使用轻量专用镜像，不安装 Codex/完整服务端依赖
+7. 安装 systemd 服务、重启 FDEX 并检查健康接口
+
+后台更新进度到 `70%` 时对应长期记忆栈阶段。Docker 首次拉取 Qdrant/Letta 镜像仍可能耗时，但 memory-provider-proxy 不再重复安装完整 FDEX/Codex 依赖，而且 Docker 构建/启动有总超时、后续健康检查也有固定次数上限。默认 `FDEX_MEMORY_REQUIRED=false` 时，记忆栈失败或超时会 fail-open，核心 FDEX 服务继续完成更新；只有显式设置为 `true` 才会因为记忆服务失败停止部署。
 
 首次生成管理员密码时，终端会显示：
 
@@ -117,6 +136,14 @@ ADMIN_SESSION_HOURS=12
 ```
 
 这些内容可以在管理后台可视化修改。API Key 在页面中只显示脱敏结果，留空表示保持当前密钥。
+
+长期记忆 Docker 构建/启动默认最多等待 900 秒。只有在网络环境确实需要更长时间时才建议在 `server/.env` 增加：
+
+```dotenv
+FDEX_MEMORY_SETUP_TIMEOUT_SECONDS=1200
+```
+
+允许范围为 60–3600 秒。
 
 ## 四、端口冲突处理
 
