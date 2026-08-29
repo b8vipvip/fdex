@@ -62,6 +62,15 @@ def test_remote_mcp_url_requires_credential_free_https_443_and_public_dns(monkey
         normalize_remote_mcp_url("https://rebind.example/mcp")
 
 
+def test_public_ipv6_literal_is_canonicalized_with_brackets() -> None:
+    url, addresses = normalize_remote_mcp_url(
+        "https://[2606:4700:4700::1111]/mcp",
+        resolve_dns=True,
+    )
+    assert url == "https://[2606:4700:4700::1111]/mcp"
+    assert addresses == ("2606:4700:4700::1111",)
+
+
 def test_tool_allowlist_is_explicit_bounded_and_deduplicated() -> None:
     assert normalize_tools("search_docs\nread_page,search_docs") == ("search_docs", "read_page")
     with pytest.raises(ValueError, match="工具名无效"):
@@ -124,7 +133,7 @@ def test_registry_is_owner_scoped_and_contains_no_credential_surface(tmp_path: P
     assert store.list(OWNER) == []
 
 
-def test_registry_requires_allowlist_before_enabled_and_revalidates_dns_on_update(
+def test_registry_requires_allowlist_before_enabled_and_revalidates_dns_on_enable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,9 +166,13 @@ def test_registry_requires_allowlist_before_enabled_and_revalidates_dns_on_updat
         enabled=True,
     )
     assert updated["enabled"] is True
+
+    # A poisoned DNS answer must never prevent the owner from disabling the registry entry.
     monkeypatch.setattr(registry_module.socket, "getaddrinfo", _private_dns)
+    stopped = store.set_enabled(OWNER, disabled["id"], False)
+    assert stopped["enabled"] is False
     with pytest.raises(ValueError, match="非公网"):
-        store.set_enabled(OWNER, disabled["id"], False)
+        store.set_enabled(OWNER, disabled["id"], True)
 
 
 def test_cross_owner_cannot_overwrite_existing_registry_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,9 +205,12 @@ def test_phase725_registry_is_not_injected_into_codex_runtime_yet(tmp_path: Path
     template_source = Path(__file__).parents[1] / "app" / "templates" / "user_agent_settings.html"
     cleanup_source = Path(__file__).parents[1] / "app" / "account_cleanup.py"
     export_source = Path(__file__).parents[1] / "app" / "account_data_export.py"
-    assert 'remote_mcp_registry().save(' in route_source.read_text(encoding="utf-8")
+    route = route_source.read_text(encoding="utf-8")
+    assert 'remote_mcp_registry().save(' in route
+    assert 'remote_mcp_registry().set_enabled(str(user["id"]), server_id, False)' in route
     template = template_source.read_text(encoding="utf-8")
     assert "Remote MCP 注册表" in template
     assert "Runtime 激活仍保持关闭" in template
+    assert "立即停用（不依赖 DNS）" in template
     assert "remote_mcp_registry().delete_owner(clean)" in cleanup_source.read_text(encoding="utf-8")
     assert '"remote_mcp_servers": remote_mcp_registry().export_owner(user_id)' in export_source.read_text(encoding="utf-8")
