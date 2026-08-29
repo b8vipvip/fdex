@@ -169,6 +169,20 @@ def remote_mcp_update(
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
 
 
+@router.post("/mcp/{server_id}/disable", response_model=None)
+def remote_mcp_disable(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        server = remote_mcp_registry().set_enabled(str(user["id"]), server_id, False)
+        _flash(request, f"Remote MCP 已立即停用：{server['name']}", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP 停用失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
 @router.post("/mcp/{server_id}/delete", response_model=None)
 def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
     user = _current_user(request)
