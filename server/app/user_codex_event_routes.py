@@ -6,7 +6,7 @@ from time import monotonic
 from typing import AsyncIterator, Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.responses import Response
 
 from app.agent_runtime import AgentRuntimeError
@@ -19,7 +19,7 @@ from app.codex_interactions import (
     user_input_response,
 )
 from app.codex_item_store import codex_item_store
-from app.user_portal_routes import _current_user, _verify_csrf
+from app.user_portal_routes import _current_user, _flash, _verify_csrf
 
 router = APIRouter(prefix="/account/agent/tasks", include_in_schema=False)
 
@@ -45,6 +45,10 @@ def _interaction_for_task(owner_id: str, task_id: str, interaction_id: str) -> d
     return row
 
 
+def _wants_json(request: Request) -> bool:
+    return request.query_params.get("format") == "json" or "application/json" in request.headers.get("accept", "")
+
+
 @router.get("/{task_id}/codex/snapshot", response_model=None)
 async def codex_item_snapshot(task_id: str, request: Request) -> Response:
     owner_id, _task, error = _scope(request, task_id)
@@ -52,6 +56,10 @@ async def codex_item_snapshot(task_id: str, request: Request) -> Response:
         return error
     item_store = codex_item_store()
     interaction_store = codex_interaction_store()
+    # A previous worker may have died after persisting a pending request. Once Phase 7.21 has
+    # reconciled its Thread away from running/compacting, surface that request as interrupted
+    # instead of presenting a button that can no longer reach any stdio Host.
+    await asyncio.to_thread(interaction_store.interrupt_orphans, owner_id)
     items, latest_seq, interactions = await asyncio.gather(
         asyncio.to_thread(item_store.list_items, owner_id, task_id, limit=300),
         asyncio.to_thread(item_store.latest_seq, owner_id, task_id),
@@ -73,7 +81,9 @@ async def codex_interactions_snapshot(task_id: str, request: Request) -> Respons
     owner_id, _task, error = _scope(request, task_id)
     if error is not None:
         return error
-    rows = await asyncio.to_thread(codex_interaction_store().list_for_task, owner_id, task_id, limit=100)
+    store = codex_interaction_store()
+    await asyncio.to_thread(store.interrupt_orphans, owner_id)
+    rows = await asyncio.to_thread(store.list_for_task, owner_id, task_id, limit=100)
     return JSONResponse({"task_id": task_id, "interactions": rows}, headers={"Cache-Control": "no-store"})
 
 
@@ -115,15 +125,22 @@ async def codex_interaction_respond(task_id: str, interaction_id: str, request: 
             summary=summary,
         )
         await publish_interaction_event(owner_id, task_id, updated, "answered")
-        return JSONResponse(
-            {
-                "ok": True,
-                "interaction": updated,
-            },
-            headers={"Cache-Control": "no-store"},
-        )
+        if _wants_json(request):
+            return JSONResponse(
+                {"ok": True, "interaction": updated},
+                headers={"Cache-Control": "no-store"},
+            )
+        _flash(request, "已提交 Codex 审批/回答，正在交给持有该 Host 的 worker", "success")
+        return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
     except (KeyError, ValueError, AgentRuntimeError) as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400, headers={"Cache-Control": "no-store"})
+        if _wants_json(request):
+            return JSONResponse(
+                {"ok": False, "error": str(exc)},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
 
 
 @router.get("/{task_id}/codex/events", response_model=None)
