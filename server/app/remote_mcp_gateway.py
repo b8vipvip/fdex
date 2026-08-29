@@ -24,6 +24,7 @@ router = APIRouter(prefix="/internal/codex-mcp", include_in_schema=False)
 
 _MAX_REQUEST_BODY = 8 * 1024 * 1024
 _LEASE_HOURS = 6
+_CAPABILITY_HEADER = "X-FDEX-MCP-Capability"
 _ALLOWED_METHODS = {"GET", "POST", "DELETE"}
 _REQUEST_HEADER_ALLOWLIST = {
     "accept",
@@ -109,7 +110,7 @@ class RemoteMcpLeaseStore:
             )
         self._initialized = True
 
-    def issue(self, owner_id: str, task_id: str, server_id: str) -> tuple[dict[str,Any], str]:
+    def issue(self, owner_id: str, task_id: str, server_id: str) -> tuple[dict[str, Any], str]:
         self.init()
         server = self.registry.get(owner_id, server_id)
         if server is None or not bool(server.get("enabled")):
@@ -230,9 +231,13 @@ def build_codex_remote_mcp_config(owner_id: str, task_id: str) -> dict[str, dict
         if not enabled_tools:
             continue
         lease, token = leases.issue(owner_id, task_id, str(server["id"]))
-        local_url = f"http://127.0.0.1:{port}/internal/codex-mcp/{lease['id']}/{token}"
+        local_url = f"http://127.0.0.1:{port}/internal/codex-mcp/{lease['id']}"
         result[_safe_server_config_name(str(server["name"]), str(server["id"]))] = {
             "url": local_url,
+            # This is an ephemeral localhost gateway capability, not a remote server credential.
+            # Keeping it in a header prevents Uvicorn's normal access log from recording the raw
+            # token as part of the request path. The gateway never forwards this header remotely.
+            "http_headers": {_CAPABILITY_HEADER: token},
             "enabled": True,
             "required": False,
             "startup_timeout_sec": int(server["startup_timeout_sec"]),
@@ -418,12 +423,13 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
     return StreamingResponse(stream(), status_code=upstream.status, headers=response_headers, media_type=None)
 
 
-@router.api_route("/{lease_id}/{token}", methods=["GET", "POST", "DELETE"], response_model=None)
-async def remote_mcp_gateway(lease_id: str, token: str, request: Request) -> Response:
+@router.api_route("/{lease_id}", methods=["GET", "POST", "DELETE"], response_model=None)
+async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
     if not _loopback_client(request):
         return PlainTextResponse("not found", status_code=404)
     if request.method not in _ALLOWED_METHODS or request.url.query:
         return PlainTextResponse("method/query not allowed", status_code=405)
+    token = request.headers.get(_CAPABILITY_HEADER, "")
     resolved = remote_mcp_lease_store().resolve(lease_id, token)
     if resolved is None:
         return PlainTextResponse("expired or invalid capability", status_code=404)
