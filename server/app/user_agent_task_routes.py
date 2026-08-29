@@ -12,7 +12,8 @@ from app.agent_loop import FdexAgentLoop
 from app.agent_projects import agent_project_store
 from app.agent_runtime import AgentRuntimeError, agent_runtime
 from app.agent_tasks import TaskRunBusy, agent_task_store
-from app.codex_host_runtime import compact_codex_thread, create_codex_continuation, queue_codex_steer
+from app.codex_host_guard import compact_codex_thread
+from app.codex_host_runtime import create_codex_continuation, queue_codex_steer
 from app.codex_host_store import codex_host_store
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
