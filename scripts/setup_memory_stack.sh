@@ -17,6 +17,10 @@ if ! docker compose version >/dev/null 2>&1; then
   echo "Docker Compose v2 不可用。" >&2
   exit 1
 fi
+if ! command -v timeout >/dev/null 2>&1; then
+  echo "系统缺少 coreutils timeout，无法保证长期记忆栈部署有界；本阶段停止并交由上层 fail-open/fail-closed 策略处理。" >&2
+  exit 1
+fi
 if [[ ! -f "${ENV_FILE}" || ! -f "${COMPOSE_FILE}" ]]; then
   echo "缺少 ${ENV_FILE} 或 ${COMPOSE_FILE}。" >&2
   exit 1
@@ -50,23 +54,18 @@ mkdir -p "${APP_DIR}/server/data/memory"
 chmod 700 "${APP_DIR}/server/data" "${APP_DIR}/server/data/memory" 2>/dev/null || true
 
 echo "正在构建/启动长期记忆栈；memory-provider-proxy 使用轻量专用依赖，不再安装 Codex/完整 FDEX 依赖。"
-echo "Docker Compose 启动阶段最多等待 ${SETUP_TIMEOUT} 秒；超时后由上层部署策略决定 fail-open 或停止更新。"
+echo "Docker Compose 构建/启动最多等待 ${SETUP_TIMEOUT} 秒；随后健康检查同样有固定次数上限。"
 COMPOSE_ARGS=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build)
-if command -v timeout >/dev/null 2>&1; then
-  if timeout --signal=TERM --kill-after=30s "${SETUP_TIMEOUT}s" "${COMPOSE_ARGS[@]}"; then
-    :
-  else
-    rc=$?
-    if (( rc == 124 || rc == 137 )); then
-      echo "长期记忆栈 Docker 构建/启动超过 ${SETUP_TIMEOUT} 秒，已终止本阶段。" >&2
-    else
-      echo "长期记忆栈 Docker 构建/启动失败（退出码 ${rc}）。" >&2
-    fi
-    exit "${rc}"
-  fi
+if timeout --signal=TERM --kill-after=30s "${SETUP_TIMEOUT}s" "${COMPOSE_ARGS[@]}"; then
+  :
 else
-  echo "警告：系统缺少 timeout 命令，Docker Compose 启动阶段无法施加总超时。" >&2
-  "${COMPOSE_ARGS[@]}"
+  rc=$?
+  if (( rc == 124 || rc == 137 )); then
+    echo "长期记忆栈 Docker 构建/启动超过 ${SETUP_TIMEOUT} 秒，已终止本阶段。" >&2
+  else
+    echo "长期记忆栈 Docker 构建/启动失败（退出码 ${rc}）。" >&2
+  fi
+  exit "${rc}"
 fi
 
 wait_url() {
