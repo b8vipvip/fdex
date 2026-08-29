@@ -53,7 +53,9 @@ echo "正在构建/启动长期记忆栈；memory-provider-proxy 使用轻量专
 echo "Docker Compose 启动阶段最多等待 ${SETUP_TIMEOUT} 秒；超时后由上层部署策略决定 fail-open 或停止更新。"
 COMPOSE_ARGS=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build)
 if command -v timeout >/dev/null 2>&1; then
-  if ! timeout --signal=TERM --kill-after=30s "${SETUP_TIMEOUT}s" "${COMPOSE_ARGS[@]}"; then
+  if timeout --signal=TERM --kill-after=30s "${SETUP_TIMEOUT}s" "${COMPOSE_ARGS[@]}"; then
+    :
+  else
     rc=$?
     if (( rc == 124 || rc == 137 )); then
       echo "长期记忆栈 Docker 构建/启动超过 ${SETUP_TIMEOUT} 秒，已终止本阶段。" >&2
