@@ -5,6 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.codex_host_guard import (
+    CodexThreadBusy,
+    reconcile_orphaned_thread,
+    settle_orphaned_controls,
+    thread_lock,
+)
 from app.codex_host_runtime import (
     thread_fork_params,
     thread_resume_params,
@@ -190,6 +196,74 @@ def test_cross_worker_control_queue_claims_once_and_records_result(tmp_path: Pat
     assert finished["result"] == {"turnId": TURN1}
 
 
+def test_thread_flock_prevents_two_workers_from_using_same_thread(tmp_path: Path) -> None:
+    store = CodexHostStore(tmp_path / "codex-host.db")
+    store.upsert_thread(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, project_id=10)
+    with thread_lock(store, OWNER, THREAD1):
+        with pytest.raises(CodexThreadBusy, match="already using"):
+            with thread_lock(store, OWNER, THREAD1):
+                pass
+
+
+def test_orphan_recovery_terminalizes_turn_and_controls_after_dead_worker(tmp_path: Path) -> None:
+    store = CodexHostStore(tmp_path / "codex-host.db")
+    store.upsert_thread(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, project_id=10)
+    store.bind_task(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, relation="start")
+    store.record_turn_started(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, turn_id=TURN1)
+    control = store.enqueue_control(
+        owner_id=OWNER,
+        task_id=TASK1,
+        thread_id=THREAD1,
+        action="steer",
+        payload={"text": "late steer"},
+    )
+    claimed = store.claim_controls(owner_id=OWNER, thread_id=THREAD1, actions=("steer",), limit=1)
+    assert claimed and claimed[0]["state"] == "processing"
+
+    with thread_lock(store, OWNER, THREAD1):
+        reconcile_orphaned_thread(store, OWNER, THREAD1)
+
+    state = store.task_state(OWNER, TASK1)
+    assert state is not None
+    assert state["thread"]["status"] == "interrupted"
+    assert state["thread"]["current_turn_id"] == ""
+    assert state["turns"][0]["status"] == "interrupted"
+    recovered = store.get_control(OWNER, int(control["id"]))
+    assert recovered is not None
+    assert recovered["state"] == "failed"
+    assert store.active_count(OWNER) == 0
+
+
+def test_host_exit_settles_late_controls_instead_of_blocking_account_forever(tmp_path: Path) -> None:
+    store = CodexHostStore(tmp_path / "codex-host.db")
+    store.upsert_thread(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, project_id=10)
+    store.bind_task(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, relation="start")
+    steer = store.enqueue_control(
+        owner_id=OWNER,
+        task_id=TASK1,
+        thread_id=THREAD1,
+        action="steer",
+        payload={"text": "too late"},
+    )
+    compact = store.enqueue_control(
+        owner_id=OWNER,
+        task_id=TASK1,
+        thread_id=THREAD1,
+        action="compact",
+        payload={},
+    )
+    changed = settle_orphaned_controls(
+        store,
+        OWNER,
+        THREAD1,
+        reason="host closed",
+    )
+    assert changed == 2
+    assert store.get_control(OWNER, int(steer["id"]))["state"] == "rejected"  # type: ignore[index]
+    assert store.get_control(OWNER, int(compact["id"]))["state"] == "failed"  # type: ignore[index]
+    assert store.active_count(OWNER) == 0
+
+
 def test_owner_scope_blocks_cross_account_thread_access_and_cleanup(tmp_path: Path) -> None:
     store = CodexHostStore(tmp_path / "codex-host.db")
     store.upsert_thread(owner_id=OWNER, task_id=TASK1, thread_id=THREAD1, project_id=10)
@@ -221,8 +295,11 @@ def test_phase721_is_wired_into_runtime_portal_and_account_erasure() -> None:
     routes = (root / "server/app/user_agent_task_routes.py").read_text(encoding="utf-8")
     template = (root / "server/app/templates/user_agent.html").read_text(encoding="utf-8")
     cleanup = (root / "server/app/account_cleanup.py").read_text(encoding="utf-8")
+    guard = (root / "server/app/codex_host_guard.py").read_text(encoding="utf-8")
 
-    assert "from app.codex_host_runtime import run_codex_task" in loop
+    assert "from app.codex_host_guard import run_codex_task" in loop
+    assert "from app.codex_host_guard import compact_codex_thread" in routes
+    assert "flock" in guard
     for path in ("/codex/resume", "/codex/fork", "/codex/steer", "/codex/compact"):
         assert path in routes
         assert path in template
