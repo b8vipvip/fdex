@@ -112,7 +112,9 @@ class CodexAppServerClient:
                 },
             )
             self.initialize_result = result if isinstance(result, dict) else {}
-            await self.notify("initialized", {})
+            # ClientNotification is exactly {"method":"initialized"}; no params are
+            # permitted by the generated official app-server schema.
+            await self.notify("initialized")
             return self.initialize_result
         except Exception:
             await self.close()
