@@ -22,6 +22,11 @@ from app.codex_interactions import (
     user_input_response,
 )
 from app.codex_item_store import codex_item_store
+from app.codex_mcp_elicitation import (
+    MCP_ELICITATION_METHOD,
+    decorate_mcp_interaction,
+    mcp_elicitation_response,
+)
 from app.user_portal_routes import _current_user, _flash, _verify_csrf
 
 router = APIRouter(prefix="/account/agent/tasks", include_in_schema=False)
@@ -58,15 +63,31 @@ def _task_policy(owner_id: str, task: dict[str, object]) -> tuple[bool, str]:
 
 
 def _decorate_interaction(owner_id: str, task_id: str, row: dict[str, Any]) -> dict[str, Any]:
-    result = dict(row)
-    item = interaction_item_projection(owner_id, task_id, row)
-    if item is not None:
-        result["item_projection"] = item
+    # MCP elicitation keeps its official method/payload in SQLite but reuses the already hardened
+    # requestUserInput browser renderer. All other interactions keep their original projection.
+    result = decorate_mcp_interaction(row)
+    if str(row.get("method") or "") != MCP_ELICITATION_METHOD:
+        item = interaction_item_projection(owner_id, task_id, row)
+        if item is not None:
+            result["item_projection"] = item
     return result
 
 
 def _wants_json(request: Request) -> bool:
     return request.query_params.get("format") == "json" or "application/json" in request.headers.get("accept", "")
+
+
+def _interaction_values(form: Any) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for key, value in form.multi_items():
+        key_text = str(key)
+        if not key_text.startswith("q:"):
+            continue
+        question_id = key_text[2:]
+        if not question_id:
+            continue
+        values.setdefault(question_id, []).append(str(value))
+    return values
 
 
 @router.get("/{task_id}/codex/snapshot", response_model=None)
@@ -122,40 +143,38 @@ async def codex_interaction_respond(task_id: str, interaction_id: str, request: 
     try:
         form = await request.form()
         _verify_csrf(request, str(form.get("csrf_token") or ""))
+        # Always load the canonical persisted row here, not the browser projection. The projection
+        # intentionally disguises MCP elicitation as requestUserInput only for rendering.
         row = await asyncio.to_thread(_interaction_for_task, owner_id, task_id, interaction_id)
         if str(row.get("state") or "") != "pending":
             raise AgentRuntimeError("Codex interaction is no longer pending")
         method = str(row.get("method") or "")
         action = str(form.get("action") or "").strip()
-        allow_network, worktree = await asyncio.to_thread(_task_policy, owner_id, task)
-        item_projection = None
-        if method == "item/fileChange/requestApproval" and action not in {"decline", "cancel"}:
-            item_projection = await asyncio.to_thread(interaction_item_projection, owner_id, task_id, row)
-        await asyncio.to_thread(
-            enforce_response_policy,
-            row,
-            action,
-            allow_network=allow_network,
-            worktree=worktree,
-            item_projection=item_projection,
-        )
-        if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
-            response, summary = approval_response(method, action)
-        elif method == "item/permissions/requestApproval":
-            response, summary = permissions_response(row, action)
-        elif method == "item/tool/requestUserInput":
-            values: dict[str, list[str]] = {}
-            for key, value in form.multi_items():
-                key_text = str(key)
-                if not key_text.startswith("q:"):
-                    continue
-                question_id = key_text[2:]
-                if not question_id:
-                    continue
-                values.setdefault(question_id, []).append(str(value))
-            response, summary = user_input_response(row, values)
+
+        if method == MCP_ELICITATION_METHOD:
+            response, summary = mcp_elicitation_response(row, _interaction_values(form))
         else:
-            raise AgentRuntimeError("unsupported Codex interaction method")
+            allow_network, worktree = await asyncio.to_thread(_task_policy, owner_id, task)
+            item_projection = None
+            if method == "item/fileChange/requestApproval" and action not in {"decline", "cancel"}:
+                item_projection = await asyncio.to_thread(interaction_item_projection, owner_id, task_id, row)
+            await asyncio.to_thread(
+                enforce_response_policy,
+                row,
+                action,
+                allow_network=allow_network,
+                worktree=worktree,
+                item_projection=item_projection,
+            )
+            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+                response, summary = approval_response(method, action)
+            elif method == "item/permissions/requestApproval":
+                response, summary = permissions_response(row, action)
+            elif method == "item/tool/requestUserInput":
+                response, summary = user_input_response(row, _interaction_values(form))
+            else:
+                raise AgentRuntimeError("unsupported Codex interaction method")
+
         updated = await asyncio.to_thread(
             codex_interaction_store().submit_response,
             owner_id=owner_id,
@@ -166,10 +185,10 @@ async def codex_interaction_respond(task_id: str, interaction_id: str, request: 
         await publish_interaction_event(owner_id, task_id, updated, "answered")
         if _wants_json(request):
             return JSONResponse(
-                {"ok": True, "interaction": updated},
+                {"ok": True, "interaction": _decorate_interaction(owner_id, task_id, updated)},
                 headers={"Cache-Control": "no-store"},
             )
-        _flash(request, "已提交 Codex 审批/回答，正在交给持有该 Host 的 worker", "success")
+        _flash(request, "已提交 Codex 审批/回答/MCP 交互，正在交给持有该 Host 的 worker", "success")
         return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
     except (KeyError, ValueError, AgentRuntimeError) as exc:
         if _wants_json(request):
