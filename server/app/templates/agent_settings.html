@@ -6,7 +6,7 @@
 
 {% block content %}
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>Agent Runtime</h2><p>Phase 7.19 开始支持 OpenAI 官方 Codex Core；API Key/模型仍统一来自 FDEX“供应商管理”。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
+    <div class="panel-header"><div><h2>Agent Runtime</h2><p>Phase 7.19 开始支持 OpenAI 官方 Codex Core；API Key/模型仍统一来自 FDEX 的<strong>统一供应商模型池</strong>。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
     <div class="inline-note success-note">控制平面仍由 <strong>FDEX</strong> 管理账号、项目、GitHub App、worktree、审计和远程写权限；Codex 只负责隔离工作区内的编码执行，不接收 GitHub Installation Token。</div>
 
     <div class="content-grid equal" style="margin-top:16px">
