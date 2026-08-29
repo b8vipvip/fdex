@@ -123,11 +123,8 @@ def remote_mcp_create(
             startup_timeout_sec=startup_timeout_sec,
             tool_timeout_sec=tool_timeout_sec,
         )
-        _flash(
-            request,
-            f"Remote MCP 已保存：{server['name']}。Phase 7.25 仅登记策略，不会把该地址交给 Codex 发起网络请求。",
-            "success",
-        )
+        suffix = "；后续新启动/续接的 Codex 任务将通过 FDEX 安全网关使用它" if server["enabled"] else ""
+        _flash(request, f"Remote MCP 已保存：{server['name']}{suffix}", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 保存失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
@@ -163,7 +160,7 @@ def remote_mcp_update(
             tool_timeout_sec=tool_timeout_sec,
             server_id=server_id,
         )
-        _flash(request, f"Remote MCP 已更新：{server['name']}", "success")
+        _flash(request, f"Remote MCP 已更新：{server['name']}；启停/allowlist 会由 FDEX 网关实时执行", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 更新失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
@@ -177,7 +174,11 @@ def remote_mcp_disable(server_id: str, request: Request, csrf_token: str = Form(
     try:
         _verify_csrf(request, csrf_token)
         server = remote_mcp_registry().set_enabled(str(user["id"]), server_id, False)
-        _flash(request, f"Remote MCP 已立即停用：{server['name']}", "success")
+        _flash(
+            request,
+            f"Remote MCP 已立即停用：{server['name']}；当前任务已有 lease 的后续请求也会被拒绝",
+            "success",
+        )
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 停用失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
@@ -192,7 +193,7 @@ def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(.
         _verify_csrf(request, csrf_token)
         if not remote_mcp_registry().delete(str(user["id"]), server_id):
             raise KeyError("Remote MCP 不存在")
-        _flash(request, "Remote MCP 已从当前账号移除", "success")
+        _flash(request, "Remote MCP 已从当前账号移除；对应现存 lease 将立即失效", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 删除失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
