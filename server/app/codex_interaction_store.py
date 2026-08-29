@@ -29,20 +29,17 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
-def _json(value: Any) -> str:
+def _bounded_json(value: Any, label: str) -> str:
+    """Serialize protocol data without silently changing its shape.
+
+    Phase 7.22 raw notification history may be truncated because it is an observational stream.
+    Interactive requests/responses are different: truncating them can turn a valid Codex response
+    into a different JSON object. They therefore fail closed when the bounded bridge limit is hit.
+    """
     raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    if len(raw.encode("utf-8")) <= _MAX_JSON:
-        return raw
-    return json.dumps(
-        {
-            "fdex_truncated": True,
-            "original_bytes": len(raw.encode("utf-8")),
-            "preview": raw[:200_000],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    if len(raw.encode("utf-8")) > _MAX_JSON:
+        raise ValueError(f"{label} exceeds the 1 MiB FDEX interaction limit")
+    return raw
 
 
 def _parse(raw: Any, fallback: Any) -> Any:
@@ -50,6 +47,20 @@ def _parse(raw: Any, fallback: Any) -> Any:
         return json.loads(str(raw or ""))
     except json.JSONDecodeError:
         return fallback
+
+
+def _rpc_key(value: int | str) -> str:
+    # JSON-RPC allows both numeric and string request ids. Preserve the type so id=1 and id="1"
+    # cannot collide inside one app-server Host session.
+    if isinstance(value, bool):
+        raise ValueError("Codex JSON-RPC request id cannot be boolean")
+    if isinstance(value, int):
+        return f"i:{value}"
+    if isinstance(value, str):
+        if not value or len(value) > 480:
+            raise ValueError("Codex JSON-RPC string request id is invalid")
+        return f"s:{value}"
+    raise ValueError("Codex JSON-RPC request id must be an integer or string")
 
 
 class CodexInteractionStore:
@@ -94,30 +105,43 @@ class CodexInteractionStore:
             os.chmod(self.key_path.parent, 0o700)
         except OSError:
             pass
-        if self.key_path.exists():
-            key = self.key_path.read_bytes().strip()
-        else:
+
+        if not self.key_path.exists():
+            # Publish a fully-written temporary file with an atomic hard-link. Unlike O_EXCL on
+            # the final path, another worker can never observe a zero-byte key between create()
+            # and write(). The winner's inode becomes canonical; every loser discards its temp.
             generated = Fernet.generate_key()
+            temp_path = self.key_path.with_name(
+                f".{self.key_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            )
+            descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                descriptor = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                # Multiple Uvicorn workers can initialize this store at the same instant. The
-                # winner owns key creation; every loser must read exactly that same key instead
-                # of failing startup or generating an incompatible cipher.
-                key = self.key_path.read_bytes().strip()
-            else:
+                os.write(descriptor, generated + b"\n")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            try:
                 try:
-                    os.write(descriptor, generated + b"\n")
-                    os.fsync(descriptor)
-                    key = generated
-                finally:
-                    os.close(descriptor)
+                    os.link(temp_path, self.key_path)
+                except FileExistsError:
+                    pass
+            finally:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+        key = self.key_path.read_bytes().strip()
+        try:
+            cipher = Fernet(key)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Codex interaction encryption key is invalid") from exc
         try:
             os.chmod(self.key_path, 0o600)
         except OSError:
             pass
-        self._fernet = Fernet(key)
-        return self._fernet
+        self._fernet = cipher
+        return cipher
 
     def init(self) -> None:
         if self._initialized:
@@ -190,8 +214,9 @@ class CodexInteractionStore:
         self.init()
         if method not in _SUPPORTED:
             raise ValueError("unsupported Codex interaction method")
+        request_json = _bounded_json(params, "Codex interaction request")
         interaction_id = uuid.uuid4().hex
-        rpc_text = str(rpc_id)
+        rpc_text = _rpc_key(rpc_id)
         thread_id = str(params.get("threadId") or "")[:240]
         turn_id = str(params.get("turnId") or "")[:240]
         item_id = str(params.get("itemId") or "")[:240]
@@ -218,7 +243,7 @@ class CodexInteractionStore:
                     item_id,
                     approval_id,
                     1 if blocking else 0,
-                    _json(params),
+                    request_json,
                     now,
                     now,
                 ),
@@ -268,7 +293,9 @@ class CodexInteractionStore:
     ) -> dict[str, Any]:
         self.init()
         now = _now()
-        cipher = self._cipher().encrypt(_json(response).encode("utf-8")).decode("ascii")
+        response_json = _bounded_json(response, "Codex interaction response")
+        summary_json = _bounded_json(summary or {}, "Codex interaction response summary")
+        cipher = self._cipher().encrypt(response_json.encode("utf-8")).decode("ascii")
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -284,7 +311,7 @@ class CodexInteractionStore:
                 UPDATE codex_interactions SET state='answered',response_cipher=?,response_summary_json=?,
                     responded_at=?,updated_at=? WHERE owner_id=? AND id=?
                 """,
-                (cipher, _json(summary or {}), now, now, owner_id, interaction_id),
+                (cipher, summary_json, now, now, owner_id, interaction_id),
             )
         result = self.get(owner_id, interaction_id)
         assert result is not None
@@ -356,9 +383,9 @@ class CodexInteractionStore:
     def interrupt_orphans(self, owner_id: str) -> int:
         """Terminalize interactions whose owning Codex Thread is no longer running.
 
-        A hard-killed Uvicorn worker cannot execute the scope-finally cleanup. Phase 7.21 already
-        repairs stale Thread state when a new lease holder arrives; account deletion additionally
-        needs a database-only way to distinguish a live interaction from one whose Host is gone.
+        A hard-killed Uvicorn worker cannot execute the scope-finally cleanup. Phase 7.21 repairs
+        stale Thread state when another worker next acquires its kernel lease. Once that happens,
+        this database-only reconciliation makes the old browser interaction terminal as well.
         """
         self.init()
         now = _now()
