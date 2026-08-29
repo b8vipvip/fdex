@@ -15,6 +15,7 @@ from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
+from app.remote_mcp_gateway import remote_mcp_lease_store
 from app.remote_mcp_registry import remote_mcp_registry
 from app.web_workspace import web_workspace_store
 
@@ -96,8 +97,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
     github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
-    # Remote MCP Phase 7.25 contains no credentials, but it is still owner-scoped account data and
-    # must not survive identity deletion. Remove it before the task/Host stores disappear.
+    # Capability leases must disappear before their registry rows. Only token hashes are durable,
+    # but deleting them first also guarantees no localhost capability can survive identity erasure.
+    remote_mcp_lease_count = remote_mcp_lease_store().delete_owner(clean)
     remote_mcp_count = remote_mcp_registry().delete_owner(clean)
     # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
     # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
@@ -124,6 +126,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "github_app_installations_revoked": len(installation_ids),
         "agent_account_policies": policy_count,
         "github_installation_sync_states": sync_state_count,
+        "remote_mcp_leases": remote_mcp_lease_count,
         "remote_mcp_servers": remote_mcp_count,
         "agent_tasks": task_count,
         "codex_interactions": codex_interaction_cleanup,
