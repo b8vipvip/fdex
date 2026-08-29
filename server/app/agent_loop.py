@@ -100,6 +100,33 @@ def parse_decision(text: str, allowed_tools: tuple[str, ...]) -> AgentDecision:
     raise AgentDecisionError(f"unsupported agent action: {action or '<empty>'}")
 
 
+async def _maybe_run_official_codex(runtime: FdexAgentRuntime, task_id: str) -> bool:
+    """Run the Phase 7.19 Codex engine when selected.
+
+    Returns True when the task was handled by Codex (including strict-mode readiness
+    failure), or False when the caller should continue through the legacy loop.
+    """
+    settings = get_settings()
+    mode = (settings.fdex_agent_engine or "legacy").strip().lower()
+    if mode not in {"codex", "auto"}:
+        return False
+
+    from app.codex_engine import codex_runtime_status, run_codex_task
+
+    status = codex_runtime_status()
+    if bool(status.get("ready")):
+        await run_codex_task(runtime, task_id)
+        return True
+    reason = str(status.get("reason") or "Codex engine is not ready")
+    if mode == "auto":
+        task = await runtime.get_task(task_id)
+        if task is not None:
+            task.emit("engine.fallback", f"Codex not ready; using legacy FDEX engine: {reason}")
+        return False
+    await runtime.fail_task(task_id, reason)
+    return True
+
+
 class FdexAgentLoop:
     def __init__(self, runtime: FdexAgentRuntime, *, model_call: ModelCall | None = None, max_steps: int | None = None) -> None:
         settings = get_settings()
@@ -114,6 +141,8 @@ class FdexAgentLoop:
             raise AgentRuntimeError("task not found")
         if task.status not in {"queued", "running"}:
             raise AgentRuntimeError(f"task cannot run from status: {task.status}")
+        if self.model_call is _default_model_call and await _maybe_run_official_codex(self.runtime, task_id):
+            return
         task.status = "running"
         task.emit("agent.started", f"Coding Agent started for {task.project_name}")
         transcript: list[str] = []
