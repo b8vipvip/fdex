@@ -43,6 +43,7 @@ from app.update_monitor_routes import router as update_monitor_router
 from app.user_account_auth_routes import router as user_account_auth_router
 from app.user_admin_routes import router as user_admin_router
 from app.user_agent_task_routes import router as user_agent_task_router
+from app.user_codex_event_routes import router as user_codex_event_router
 
 # The legacy provider manager already stored protocol_order, but the text runtime previously ignored
 # it and always called /chat/completions. Install the protocol-aware runtime before Web app routes
@@ -148,6 +149,7 @@ app.include_router(agent_identity_router)
 app.include_router(user_app_router)
 app.include_router(user_chat_api_router)
 app.include_router(user_agent_task_router)
+app.include_router(user_codex_event_router)
 app.include_router(agent_policy_portal_router)
 app.include_router(user_portal_router)
 app.include_router(github_app_portal_router)

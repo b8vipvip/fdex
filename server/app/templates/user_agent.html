@@ -101,7 +101,17 @@
     {% if codex_session.controls %}<div class="repo"><strong>Host 控制队列</strong>{% for control in codex_session.controls %}<div style="margin-top:8px"><span class="badge {% if control.state == 'succeeded' %}ok{% elif control.state in ['failed','rejected'] %}warn{% endif %}">#{{ control.id }} · {{ control.action }} · {{ control.state }}</span>{% if control.error %}<div class="fine">{{ control.error }}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
   </section>
   <section class="card span-4 stack"><h2>Codex Host 状态</h2><div class="repo"><div class="fine">Provider / Model</div><strong>{{ codex_session.thread.provider_name or '-' }}</strong><div class="mono fine">{{ codex_session.thread.model or '-' }}</div></div><div class="repo"><div class="fine">Thread Root Task</div><strong class="mono">{{ codex_session.thread.root_task_id }}</strong></div><div class="repo"><div class="fine">当前 Worktree</div><div class="mono fine">{{ codex_session.thread.worktree or '-' }}</div></div><p class="fine">Steer/Compact 控制先写入 SQLite 队列，再由真正持有 Codex stdio 进程的 worker 执行；因此不会依赖请求恰好落到同一个 Uvicorn worker。</p></section>
+
+  <section id="codex-item-panel" class="card span-12 stack" data-task-id="{{ task.id }}">
+    <div class="card-head">
+      <div><h2>Codex Item 实时流</h2><p>Phase 7.22 直接映射官方 ThreadItem。刷新页面会先恢复 SQLite 快照，再从最后事件序号继续 SSE；缺失 item/completed 的 Item 会明确显示 orphaned。</p></div>
+      <div class="row"><span id="codex-stream-state" class="badge">准备连接</span><span class="badge">Items <strong id="codex-item-count">0</strong></span><span class="badge">本次实时事件 <strong id="codex-event-count">0</strong></span></div>
+    </div>
+    <div id="codex-item-list" class="codex-item-list stack" aria-live="polite" aria-busy="false"><p id="codex-item-empty" class="muted">加载 Codex Item 快照……</p></div>
+    <p class="fine">命令、文件变更、MCP、动态工具、协作/子 Agent、Web、图片、reasoning/plan、上下文压缩及未来未知 Item 都保留原始有界协议事件；UI 只使用 DOM textContent 渲染，不执行 Item 中的 HTML。</p>
+  </section>
   {% endif %}
 </div>
 {% endif %}
 {% endblock %}
+{% block scripts %}<script src="/static/codex_items.js" defer></script>{% endblock %}

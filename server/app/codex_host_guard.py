@@ -7,15 +7,18 @@ import os
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator
+from typing import Any, Awaitable, Iterator, TypeVar
 
 from app.agent_runtime import AgentRuntimeError, FdexAgentRuntime
 from app.codex_host_store import CodexHostStore, codex_host_store
+from app.codex_notification_bus import CodexNotificationCapture, install_capture, reset_capture
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - FDEX production server is Linux/systemd.
     fcntl = None  # type: ignore[assignment]
+
+_T = TypeVar("_T")
 
 
 class CodexThreadBusy(AgentRuntimeError):
@@ -42,7 +45,7 @@ def thread_lock(store: CodexHostStore, owner_id: str, thread_id: str) -> Iterato
     """Hold a crash-safe cross-process lock for one owner-scoped Codex Thread.
 
     SQLite serializes metadata transactions but must not be held while an app-server Turn is
-    running.  A Linux flock is therefore the execution lease: it is visible to every Uvicorn
+    running. A Linux flock is therefore the execution lease: it is visible to every Uvicorn
     worker and the kernel releases it automatically if a worker crashes or is killed.
     """
     if fcntl is None:
@@ -136,8 +139,22 @@ def settle_orphaned_controls(
         return int(cursor.rowcount or 0)
 
 
+async def _with_notification_capture(owner_id: str, task_id: str, operation: Awaitable[_T]) -> _T:
+    capture = CodexNotificationCapture(owner_id, task_id)
+    await capture.start()
+    token = install_capture(capture)
+    try:
+        return await operation
+    finally:
+        # Reader/server-request child tasks inherit the ContextVar at creation time. Core Host
+        # shutdown closes those tasks before returning, then this drain commits every queued
+        # notification in order before the task's capture scope disappears.
+        reset_capture(token)
+        await capture.close()
+
+
 async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
-    """Guard the Phase 7.21 core runner with a Thread execution lease when reusing a Thread."""
+    """Guard the Codex runner with a Thread lease and durable full-notification capture."""
     from app.codex_host_runtime import run_codex_task as core_run_codex_task
 
     task = await runtime.get_task(task_id)
@@ -148,9 +165,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
     source_thread_id = str(binding.get("thread_id") or "") if binding else ""
 
     if not source_thread_id:
-        # A brand-new task has no shared Thread identity yet.  Its per-task run_lock is already
-        # held by the caller, and no other task can reference the new Thread until it is bound.
-        await core_run_codex_task(runtime, task_id)
+        await _with_notification_capture(task.owner_id, task.id, core_run_codex_task(runtime, task_id))
         final_binding = await asyncio.to_thread(store.task_binding, task.owner_id, task.id)
         if final_binding:
             final_thread_id = str(final_binding.get("thread_id") or "")
@@ -167,7 +182,7 @@ async def run_codex_task(runtime: FdexAgentRuntime, task_id: str) -> None:
     try:
         with thread_lock(store, task.owner_id, source_thread_id):
             await asyncio.to_thread(reconcile_orphaned_thread, store, task.owner_id, source_thread_id)
-            await core_run_codex_task(runtime, task_id)
+            await _with_notification_capture(task.owner_id, task.id, core_run_codex_task(runtime, task_id))
             final_binding = await asyncio.to_thread(store.task_binding, task.owner_id, task.id)
             final_thread_id = str(final_binding.get("thread_id") or "") if final_binding else source_thread_id
             for thread_id in dict.fromkeys([source_thread_id, final_thread_id]):
@@ -189,7 +204,7 @@ async def compact_codex_thread(
     owner_id: str,
     task_id: str,
 ) -> dict[str, Any]:
-    """Queue active compaction or lease an idle shared Thread before starting a short Host."""
+    """Queue active compaction or lease/capture an idle Thread's short-lived Host."""
     from app.codex_host_runtime import compact_codex_thread as core_compact_codex_thread
 
     store = codex_host_store()
@@ -202,8 +217,6 @@ async def compact_codex_thread(
         raise AgentRuntimeError("Codex thread not found")
 
     if str(thread.get("status") or "") in {"running", "compacting"}:
-        # The active lease holder will claim this control after the model Turn.  No direct
-        # stdio access is attempted from this HTTP worker.
         return await asyncio.to_thread(
             store.enqueue_control,
             owner_id=owner_id,
@@ -216,10 +229,12 @@ async def compact_codex_thread(
     try:
         with thread_lock(store, owner_id, thread_id):
             await asyncio.to_thread(reconcile_orphaned_thread, store, owner_id, thread_id)
-            return await core_compact_codex_thread(runtime, owner_id=owner_id, task_id=task_id)
+            return await _with_notification_capture(
+                owner_id,
+                task_id,
+                core_compact_codex_thread(runtime, owner_id=owner_id, task_id=task_id),
+            )
     except CodexThreadBusy:
-        # Status can change between the read above and flock.  Treat that race exactly like an
-        # active Thread: persist one compact request for the real lease holder to consume.
         return await asyncio.to_thread(
             store.enqueue_control,
             owner_id=owner_id,

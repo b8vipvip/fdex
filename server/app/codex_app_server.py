@@ -6,6 +6,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.codex_notification_bus import publish_transport_notification
+
 JsonObject = dict[str, Any]
 NotificationHandler = Callable[[str, JsonObject], Awaitable[None]]
 ServerRequestHandler = Callable[[str, JsonObject], Awaitable[Any]]
@@ -270,6 +272,9 @@ class CodexAppServerClient:
             raise
 
     async def _publish_notification(self, method: str, params: JsonObject) -> None:
+        # Persist the complete bounded protocol stream before higher-level handlers reduce it to
+        # human progress summaries. The capture is a no-op outside an owner/task Host context.
+        await publish_transport_notification(method, params)
         if self._notifications.full():
             try:
                 self._notifications.get_nowait()
