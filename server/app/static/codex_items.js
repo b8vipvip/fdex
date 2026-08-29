@@ -159,6 +159,8 @@
     const key = cardKey(threadId, turnId, itemId);
     let card = cards.get(key);
     if (!card) {
+      const empty = document.getElementById("codex-item-empty");
+      if (empty) empty.remove();
       card = document.createElement("article");
       card.className = "repo codex-item-card";
       card.dataset.threadId = threadId;
@@ -194,6 +196,14 @@
     statusNode.className = `${badgeClass(statusText)} codex-item-status`;
     const body = card.querySelector(".codex-item-body");
     body.replaceChildren(describeItem(payload));
+
+    if (Object.prototype.hasOwnProperty.call(record, "delta_text")) {
+      const live = card.querySelector(".codex-item-live");
+      const persisted = String(record.delta_text || "");
+      live.textContent = bounded(persisted);
+      live.hidden = !persisted;
+    }
+
     counter.textContent = String(cards.size);
     return card;
   };
@@ -230,10 +240,16 @@
     }
     if (!card) return;
     const live = card.querySelector(".codex-item-live");
-    const delta = params.delta !== undefined ? params.delta : (params.textDelta !== undefined ? params.textDelta : params.outputDelta);
+    const delta = params.delta !== undefined
+      ? params.delta
+      : (params.textDelta !== undefined
+          ? params.textDelta
+          : (params.outputDelta !== undefined
+              ? params.outputDelta
+              : (params.contentDelta !== undefined ? params.contentDelta : params.summaryTextDelta)));
     if (delta === undefined || delta === null) return;
     live.hidden = false;
-    live.textContent = bounded((live.textContent || "") + String(delta));
+    live.textContent = bounded((live.textContent || "") + (typeof delta === "string" ? delta : jsonText(delta, 12000)));
   };
 
   const reconcileTurn = (event) => {
@@ -259,7 +275,8 @@
       upsertItem(itemRecordFromNotification(event));
       return;
     }
-    if (String(event.method || "").includes("/delta") || String(event.method || "").endsWith("Delta")) {
+    const method = String(event.method || "");
+    if (method.toLowerCase().includes("/delta") || method.endsWith("Delta")) {
       appendDelta(event);
       return;
     }
