@@ -2,9 +2,9 @@
 
 ## 中文
 
-Phase 7.32 把 Codex 的安全边界从“直接管理一个 `codex app-server` 子进程”提升为“由 FDEX 拥有整个 Codex 进程树”。它同时加入官方 Codex Runtime 的受管安装、完整性验证、原子激活与回滚，并把本地 Plugin install/uninstall 的开放条件绑定到真实进程树隔离状态。
+Phase 7.32 把 Codex 的外层安全边界从“管理一个 `codex app-server` PID”提升为“由 FDEX 拥有整个 Codex 进程树”，并加入官方 Codex Runtime 的受管安装、完整性验证、原子切换、回滚和跨 worker 启动/切换 fence。
 
-## 1. 进程树归属
+### 1. 整个进程树由 FDEX 持有
 
 真实 FDEX Provider Host 使用 transient systemd service：
 
@@ -15,97 +15,89 @@ fdex.service
        ├─ official sub-agents
        ├─ shell / command descendants
        ├─ stdio MCP helpers
-       └─ executable Plugin descendants
+       └─ Plugin descendants
 ```
 
-unit 名由 owner scope + Host isolation key 的 SHA-256 派生，只暴露固定前缀和哈希，不把用户 ID、任务名、项目路径写入 systemd unit 名称。
+unit 名由 owner scope + Host isolation key 的 SHA-256 派生，不暴露用户 ID、任务名或项目路径。低层公共 app-server 握手测试若没有 FDEX Provider credential，则继续直接启动 binary；这类测试只验证协议 transport，不冒充生产 Host。
 
-低层协议握手测试如果没有 FDEX Provider credential，则继续直接启动官方 binary；它们用于验证公共 app-server transport，不冒充生产 Host。
+### 2. cgroup v2 资源边界
 
-## 2. cgroup v2 资源边界
+生产真实 Provider Host 要求 Linux、systemd 和 cgroup v2 的 `cpu`、`memory`、`pids` controller。缺少要求的外层边界时 fail-closed。
 
-Phase 7.32 要求 Linux、systemd 和 cgroup v2 的 `cpu`、`memory`、`pids` controller。生产真实 Provider Host 在缺少这些条件且隔离被要求时 fail-closed。
+每个 transient service 使用：
 
-每个 transient service 使用现有 Agent sandbox 资源配置映射：
-
-- `MemoryMax=<FDEX Agent memory MB>`
-- `CPUQuota=<FDEX Agent CPU percent>`
-- `TasksMax=<FDEX Agent PID limit>`
+- `MemoryMax=<Agent memory limit>`
+- `CPUQuota=<Agent CPU percent>`
+- `TasksMax=<Agent PID limit>`
 - `KillMode=control-group`
 - `SendSIGKILL=yes`
-- `TimeoutStopSec=<configured grace>`
+- `TimeoutStopSec=<grace>`
 - `BindsTo=<FDEX service>`
 - `After=<FDEX service>`
 
-因此限制作用于 app-server 与其后代总树，而不是只限制父 PID。
+限制作用于 app-server 与全部后代总树，而不是单一父 PID。
 
-## 3. Provider secret 不进入 argv
+### 3. Provider secret 不进入 argv
 
-FDEX 仍先构造净化后的 Codex 环境。启动 transient service 时，环境变量以 `--setenv=NAME` 的“变量名”形式交给 `systemd-run`，实际 secret value 从调用进程的净化环境继承，不出现在 systemd-run argv/process listing 中。
+FDEX 先生成净化后的 Codex 环境。transient service 通过 `systemd-run --setenv=NAME` 传递环境变量名称，实际 secret value 从净化 launcher 环境继承，不写入 `systemd-run` argv/process listing。
 
-`systemd-run`/PID 1 可能解释 ExecStart 中的 `$` 和 `%`，因此 FDEX 在交给 systemd 前将它们分别转义为 `$$` 和 `%%`，保证官方 Codex 收到原始配置值。
+systemd 可能解释 ExecStart 中的 `$` 和 `%`，因此 FDEX 在交给 PID 1 前做 `$$` / `%%` 转义，保证官方 Codex 接收原始配置内容。
 
-## 4. 整树终止与残留清理
+### 4. 整树终止
 
-正常关闭：
+关闭 Host 时：
 
 1. 关闭 JSON-RPC stdin；
 2. `systemctl stop <fdex-codex-unit>`；
-3. 等待 configured grace period；
-4. 若 unit 仍 active，执行 `systemctl kill --kill-who=all --signal=SIGKILL`；
+3. 等待 grace period；
+4. 必要时 `systemctl kill --kill-who=all --signal=SIGKILL`；
 5. 再次确认 unit 已不 active；
-6. 只有确认整树清理后才把关闭视为完成。
+6. 只有确认整树退出才把清理视为成功。
 
-Runtime 切换前，FDEX 会通过 `fdex-codex-*.service` 枚举候选 unit，但只操作满足精确 `fdex-codex-[0-9a-f]{32}.service` 规则的服务，避免通配符误伤其他 systemd unit。所有匹配 Codex trees 必须停止后才允许修改 Runtime pin。
+Runtime 切换前同样枚举并停止全部精确匹配 `fdex-codex-[0-9a-f]{32}.service` 的旧树。`BindsTo=fdex.service` 还保证 Center stop/restart 时 Codex trees 一并退出。
 
-`BindsTo=fdex.service` 还保证 Center 服务停止/重启时 transient Codex service 随父服务退出。
+### 5. Runtime 官方来源与 supply-chain 校验
 
-## 5. 官方 Runtime 来源约束
+Runtime Manager 只接受 OpenAI Codex 官方 GitHub Releases：
 
-Runtime Manager 只接受官方 OpenAI Codex GitHub Releases：
+- metadata：`api.github.com/repos/openai/codex/releases/...`
+- asset URL 必须属于 `github.com/openai/codex/releases/download/<tag>/...`
+- tag 必须是 `rust-v<semver>`
+- draft/prerelease 拒绝
+- Linux x86_64 / arm64 只接受对应官方 musl 资产
+- 必须存在官方 `sha256:` digest
 
-- metadata API：`api.github.com/repos/openai/codex/releases/...`
-- asset URL 必须精确位于 `github.com/openai/codex/releases/download/<tag>/...`
-- tag 必须符合 `rust-v<semver>`
-- draft/prerelease 被拒绝
-- Linux x86_64 使用 `codex-x86_64-unknown-linux-musl.tar.gz`
-- Linux arm64 使用 `codex-aarch64-unknown-linux-musl.tar.gz`
+下载过程使用 staging：校验 asset id/size、流式 SHA-256、实际字节数、tar 路径安全；拒绝 symlink、hardlink、device、path traversal；只提取唯一预期 Codex executable；不使用 `tar.extractall()`。
 
-FDEX 不执行下载到的安装脚本，也不通过 npm/pip 的可变解析链升级生产 Runtime。
-
-## 6. 下载与归档完整性
-
-安装使用 staging directory：
-
-1. 读取官方 release asset metadata；
-2. 要求 GitHub asset 提供 `sha256:` digest；
-3. 校验 asset id 与大小边界；
-4. 流式下载并同步计算 SHA-256；
-5. 实际字节数必须等于 release metadata size；
-6. 实际 SHA-256 必须等于官方 asset digest；
-7. tar member 路径必须是安全相对路径；
-8. symlink、hardlink、device member 全部拒绝；
-9. 只提取唯一预期 Codex executable；
-10. binary 大小必须与 tar member 声明一致；
-11. staging 验证全部通过后才移动到 immutable version directory。
-
-没有使用 `tar.extractall()`，归档中的其他普通文件不会被安装到 Runtime 目录。
-
-## 7. 激活前 Runtime 能力验证
+### 6. 激活前 Runtime 能力验证
 
 候选 binary 必须通过：
 
-- executable check；
-- `codex --version`，版本必须与目标 release 匹配；
-- 注入当前 Phase 7.31 Multi-Agent/Rollout governance CLI overrides；
-- `codex ... app-server --help` 必须成功，由官方 CLI 实际解析这些参数；
-- 安装后记录 binary SHA-256 与 manifest。
+- executable check
+- `codex --version` 与目标 release 一致
+- Phase 7.31 Multi-Agent/Rollout CLI governance overrides
+- `codex ... app-server --help` 成功解析
+- managed Runtime manifest SHA-256 校验
 
-已经安装的 managed Runtime 在后续激活/回滚前会重新检查 manifest SHA-256 和官方 CLI 能力，不只相信目录名。
+因此目录名或 release metadata 本身都不是充分信任依据。
 
-## 8. 原子激活与回滚
+### 7. Runtime switch / launch fence
 
-受管版本存放于：
+Phase 7.32 最终安全审查发现了一个跨 worker 竞态：如果切换流程执行“清理旧 trees → 写新 pin”，另一个 worker 可能恰好在二者之间启动旧 Runtime Host。
+
+最终实现增加 Linux `flock` fence：
+
+- Runtime Manager 在“整树清理 + 激活 pin”期间持有 **exclusive switch lock**；
+- trusted `codex_env_wrapper.py` 在 transient service 内、`execve()` 官方 Runtime 前持有 **shared launch lock**；
+- 第一次受管 Runtime switch 后记录实际有效 Runtime 路径；
+- 如果旧 Host 在切换后才进入 exec boundary，会发现路径已 stale 并 fail-closed；
+- 如果 Host 先取得 shared lock，switch 随后取得 exclusive lock 时会看到该 transient unit，并在改 pin 前将其清掉。
+
+下载和大文件完整性校验仍发生在 exclusive lock 外，避免升级下载期间冻结正常 Host 启动。
+
+### 8. 激活与回滚
+
+受管版本位于：
 
 ```text
 server/data/codex-runtimes/releases/<version>/
@@ -113,140 +105,100 @@ server/data/codex-runtimes/releases/<version>/
   manifest.json
 ```
 
-激活顺序：
+激活关键顺序：
 
-1. 要求 Phase 7.32 process isolation `enforced=true`；
-2. 终止并确认所有旧 `fdex-codex-*.service` process trees；
-3. 更新现有 `FDEX_AGENT_CODEX_BIN` pin；
-4. 清理 Settings cache；
-5. 写入 Runtime Manager state，包括 previous pin；
-6. 管理路由调度 FDEX service restart，让后续 Host 全部使用新 pin。
+1. 下载/验证候选 Runtime；
+2. 获取 exclusive Runtime switch fence；
+3. 要求 process isolation 可用；
+4. 停止并确认所有旧 Codex trees；
+5. 更新 `FDEX_AGENT_CODEX_BIN`；
+6. 写 Runtime state / previous pin；
+7. 记录 fence 的实际有效 binary；
+8. 管理路由调度 FDEX service restart。
 
-回滚会先重新验证 previous pin；如果是 managed Runtime，则重新校验 manifest/binary；如果 previous pin 为空，则验证 bundled official fallback。切换仍执行同样的整树清理。rollback 后旧 current pin 被保存为新的 previous pin，因此可以反向恢复。
+rollback 同样在 exclusive fence 中完成。previous pin 为空时，校验优先级与 `codex_engine` 保持一致：system `codex` 优先于 bundled fallback，避免“验证 A、实际启动 B”。
 
-## 9. 管理入口
+### 9. 管理入口
 
-管理员入口：
+管理员入口：`/admin/agent/runtime`
 
-```text
-/admin/agent/runtime
-```
+页面展示当前 Runtime pin/version/path、active validation、process-isolation 状态、managed releases、SHA-256、previous pin 与 upgrade/rollback 操作，不展示 Provider API key 或其他 secret。
 
-页面展示：
+### 10. Plugin 最终安全边界
 
-- 当前 Runtime pin / version / path；
-- active validation 状态；
-- process isolation 状态；
-- managed releases；
-- SHA-256；
-- previous pin / rollback availability；
-- upgrade / rollback 操作。
+Phase 7.32 **不开放** Plugin install/uninstall。
 
-页面不展示 Provider API key 或其他 secret。
+原因不是 cgroup 失败，而是 cgroup 的能力边界：它解决资源与生命周期，不等价于文件系统 sandbox。对 bundled Codex 0.147 的审计确认，本地 stdio MCP 使用本地 child-process launcher；Plugin MCP 配置可包含 host-side command。因此即使 cgroup enforced=true，Plugin command 仍可能读取 FDEX service user 原本可读的宿主文件。
 
-## 10. Plugin 安全门耦合
+所以当前策略是：
 
-Phase 7.32 不使用“管理员打开某个开关”作为 Plugin 执行安全证明。`plugin/install` / `plugin/uninstall` 每次进入写路径前都调用真实 `codex_process_isolation_status()`；只有 `enforced=true` 才继续。
+- `plugin/list` / `plugin/installed` / `plugin/read`：允许，只读；
+- `plugin/install`：fail-closed；
+- `plugin/uninstall`：fail-closed；
+- Marketplace add/remove/upgrade：fail-closed；
+- remote catalog install：fail-closed；
+- `plugin/share/*`：fail-closed。
 
-开放范围仍是最小白名单：verified local install + exact installed-ID uninstall。Marketplace add/remove/upgrade、remote catalog install、`plugin/share/*` 继续 fail-closed。详见 `docs/CODEX_CAPABILITY_CONTROL.md`。
+兼容写路由只返回明确拒绝并写安全审计，不创建 mutation Host，也不调用 mutation RPC。将来只有在增加独立文件系统/执行沙箱并验证实际 Runtime 启动链后，才可重新评估开放。
 
-## 11. CI 与生产预检
+### 11. CI / production preflight
 
-CI 覆盖：
+Phase 7.32 回归覆盖：
 
-- systemd launch argument/resource-property construction；
-- secret 不进入 argv；
-- `$` / `%` escaping；
-- fail-closed platform/cgroup preflight；
-- whole-unit termination wiring；
-- official release metadata validation；
-- malicious/path-traversal/link tar rejection；
-- Runtime version/governance validation；
-- staged immutable install；
-- activation order：tree kill 必须先于 Runtime pin write；
-- Plugin mutation isolation gate 与 inventory revalidation。
+- systemd launch/resource properties
+- secret 不进入 argv
+- `$` / `%` escaping
+- Linux/systemd/cgroup fail-closed preflight
+- whole-tree TERM/KILL wiring
+- Runtime official release metadata / digest / tar 安全
+- immutable staged install / manifest
+- kill-before-pin activation order
+- Runtime launch/switch fence
+- rollback resolver precedence
+- Plugin mutation 在 cgroup 生效时仍保持 fail-closed
 
-GitHub hosted runner 的单测不会把 FDEX 本身部署成真实生产 systemd service，因此生产部署仍必须依赖运行时 preflight；preflight 不满足时真实 FDEX Provider Codex Host 和 Runtime activation 会 fail-closed，而不是静默降级成无 cgroup 的生产执行。
+GitHub hosted runner 不会把 FDEX 本身部署成真实 production systemd unit，因此生产仍依赖运行时 preflight；不满足时真实 Provider Host 和 Runtime activation 必须 fail-closed。
 
 ---
 
 ## English
 
-Phase 7.32 upgrades the Codex boundary from managing one direct `codex app-server` child process to FDEX ownership of the complete Codex process tree. It also introduces managed official Runtime install, integrity verification, activation and rollback, and ties local Plugin mutation to actual process-tree isolation.
+Phase 7.32 upgrades the outer Codex boundary from managing one app-server PID to FDEX ownership of the entire Codex process tree. It also adds managed official Runtime installation, integrity verification, atomic activation/rollback, and a cross-worker Runtime launch/switch fence.
 
-## 1. Process-tree ownership
+### Whole-tree isolation
 
-Real FDEX-provider Hosts run as transient systemd services:
+Real FDEX-provider Hosts run as transient systemd services with cgroup v2 `MemoryMax`, `CPUQuota`, `TasksMax`, `KillMode=control-group`, `SendSIGKILL=yes`, and `BindsTo=<FDEX service>`. The limits and lifecycle therefore cover app-server and all descendants.
 
-```text
-fdex.service
-  └─ fdex-codex-<sha256-prefix>.service
-       ├─ codex app-server
-       ├─ official sub-agents
-       ├─ shell / command descendants
-       ├─ stdio MCP helpers
-       └─ executable Plugin descendants
-```
+Provider secret values are inherited through the sanitized environment and are not embedded in systemd-run argv. `$` and `%` are escaped before PID 1 receives ExecStart arguments.
 
-The unit name is derived from owner scope + Host isolation key through SHA-256. User IDs, task names, and project paths are not exposed in the unit name.
+Shutdown performs graceful stop, bounded wait, whole-unit SIGKILL fallback, and verifies that the unit is no longer active. Runtime switches perform the same cleanup for every exact FDEX Codex transient unit before the active binary pin changes.
 
-Low-level public protocol handshake tests without an FDEX Provider credential remain direct; they validate app-server transport and are not treated as production Hosts.
+### Official Runtime supply-chain boundary
 
-## 2. cgroup v2 resource boundary
+The Runtime Manager accepts only stable OpenAI Codex GitHub Releases with validated tag, exact official asset URL, architecture-specific Linux musl asset, size, and official SHA-256 digest. Downloads are staged and streamed; unsafe tar paths, links, devices, and traversal are rejected; only the expected executable is extracted; `tar.extractall()` is not used.
 
-Phase 7.32 requires Linux, systemd, and the cgroup v2 `cpu`, `memory`, and `pids` controllers. When isolation is required, a real Provider Host fails closed if these prerequisites are unavailable.
+Candidates must pass executable/version checks, parse the current Phase 7.31 governance overrides with `app-server --help`, and match managed manifest hashes before activation or rollback.
 
-Each transient service maps the existing Agent sandbox resource settings to:
+### Runtime launch/switch fence
 
-- `MemoryMax`
-- `CPUQuota`
-- `TasksMax`
-- `KillMode=control-group`
-- `SendSIGKILL=yes`
-- `TimeoutStopSec`
-- `BindsTo=<FDEX service>`
-- `After=<FDEX service>`
+A final Phase 7.32 review found a cross-worker race between old-tree cleanup and pin update. The final design adds a Linux `flock` fence:
 
-The limits therefore apply to the entire app-server descendant tree, not only the parent PID.
+- managed activation/rollback holds an exclusive switch lock across whole-tree cleanup and pin activation;
+- the trusted wrapper holds a shared launch lock immediately before `execve()` of the official Runtime;
+- after the first managed switch, the actually effective Runtime path is recorded;
+- a stale Host that reaches the exec boundary after a switch is rejected;
+- a Host that wins the shared launch lock first becomes a transient unit that the subsequent switch must stop before changing the pin.
 
-## 3. Provider secrets stay out of argv
+Release download and heavy verification stay outside the exclusive lock.
 
-FDEX first constructs the existing sanitized Codex environment. Environment variables are then forwarded to `systemd-run` by variable **name** using `--setenv=NAME`; the secret value is inherited from the sanitized launcher environment and is not embedded in systemd-run argv/process listings.
+Rollback uses the same resolution precedence as the main Runtime resolver when the previous configured pin is empty: system Codex before the bundled fallback.
 
-Because systemd may expand `$` variables and `%` specifiers in ExecStart arguments, FDEX doubles them to `$$` and `%%` before handing the command to PID 1, preserving the original bytes delivered to Codex.
+### Plugin boundary
 
-## 4. Whole-tree termination and stale cleanup
+Phase 7.32 does **not** enable executable Plugin mutation. Cgroup isolation provides resource/lifecycle containment, not filesystem confidentiality. Bundled Codex 0.147 local stdio MCP execution uses a local child-process path, and host-side Plugin MCP configuration may include commands. Therefore an executable Plugin could still read host files available to the FDEX service user even when cgroup enforcement is active.
 
-Normal shutdown closes JSON-RPC stdin, stops the transient unit, waits the configured grace interval, escalates to `systemctl kill --kill-who=all --signal=SIGKILL` if needed, and verifies the unit is no longer active.
+The final policy is read-only Plugin inventory/detail (`plugin/list`, `plugin/installed`, `plugin/read`) with `plugin/install`, `plugin/uninstall`, Marketplace mutation, remote-catalog install, and `plugin/share/*` all fail-closed. Compatibility write endpoints return an audited rejection without creating a mutation Host or invoking mutation RPCs.
 
-Before a Runtime switch, FDEX enumerates `fdex-codex-*.service` but only acts on units matching the exact `fdex-codex-[0-9a-f]{32}.service` naming scheme. Every matching Codex tree must be stopped before the Runtime pin can change. `BindsTo=fdex.service` also tears down transient Codex services when the Center service stops or restarts.
+A separate filesystem/execution sandbox plus runtime-level regression verification is required before executable Plugin mutation can be reconsidered.
 
-## 5. Official Runtime source constraint
-
-The Runtime Manager accepts only official OpenAI Codex GitHub Releases. Metadata, tag format, exact asset URL, architecture-specific Linux musl asset, stable-release status, asset digest, and size are all validated. FDEX does not execute downloaded install scripts and does not use a mutable npm/pip resolution chain to upgrade the production Runtime.
-
-## 6. Download and archive integrity
-
-Installation occurs in a staging directory. FDEX verifies the immutable GitHub SHA-256 digest and exact asset length, rejects unsafe tar paths, symlinks, hardlinks, and device members, extracts only the unique expected Codex executable, checks the binary length, validates it, writes a manifest, and only then moves staging into an immutable version directory. `tar.extractall()` is not used.
-
-## 7. Runtime capability validation before activation
-
-A candidate executable must pass `codex --version` with the expected release version and must successfully parse the current Phase 7.31 Multi-Agent/Rollout governance overrides while executing `app-server --help`. Managed installations record a binary SHA-256 manifest and are reverified before later activation or rollback.
-
-## 8. Atomic activation and rollback
-
-Managed versions live under `server/data/codex-runtimes/releases/<version>/`. Activation first requires enforced process isolation, then terminates all old FDEX Codex trees, updates the existing `FDEX_AGENT_CODEX_BIN` pin, records previous state, and schedules the FDEX service restart. Rollback revalidates the previous managed/configured/bundled target and follows the same whole-tree cleanup path. The former current pin becomes the next previous pin, keeping rollback reversible.
-
-## 9. Admin entry
-
-Administrators use `/admin/agent/runtime` to inspect active Runtime validation, process-isolation status, installed managed versions, SHA-256 values, previous pin, and upgrade/rollback actions. Provider keys and other secrets are not displayed.
-
-## 10. Plugin-gate coupling
-
-Plugin install/uninstall does not trust a configuration toggle as proof of isolation. Each mutation path queries `codex_process_isolation_status()` and continues only when `enforced=true`. The allowlist remains limited to verified local installs and exact installed-ID uninstalls; Marketplace mutations, remote-catalog installs, and `plugin/share/*` remain fail-closed.
-
-## 11. CI and production preflight
-
-CI covers launch construction, resource properties, argv secret hygiene, systemd escaping, platform/cgroup fail-closed behavior, whole-unit termination wiring, official release validation, malicious archive rejection, Runtime governance validation, staged immutable installation, kill-before-pin activation ordering, and Plugin mutation revalidation.
-
-A GitHub hosted test runner does not deploy FDEX itself as the production systemd unit. Production therefore still relies on the runtime preflight: if the required systemd/cgroup boundary is not actually available, real FDEX-provider Codex Hosts and Runtime activation fail closed rather than silently running without the Phase 7.32 boundary.
+Admin Runtime management is available at `/admin/agent/runtime`.
