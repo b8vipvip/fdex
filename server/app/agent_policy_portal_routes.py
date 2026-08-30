@@ -7,6 +7,7 @@ from starlette.responses import Response
 
 from app.agent_projects import agent_project_store
 from app.config import SERVER_DIR
+from app.remote_mcp_credentials import remote_mcp_credential_store
 from app.remote_mcp_registry import remote_mcp_registry
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -33,6 +34,7 @@ def runtime_policy_page(request: Request) -> Response:
         sync_status = store.sync_status(owner_id)
         projects = store.list_projects(owner_id, enabled_only=True)
         remote_mcp_servers = remote_mcp_registry().list(owner_id)
+        remote_mcp_credentials = remote_mcp_credential_store().list_metadata(owner_id)
     except (ValueError, RuntimeError) as exc:
         _flash(request, str(exc), "error")
         return RedirectResponse("/account/agent", status_code=303)
@@ -45,6 +47,7 @@ def runtime_policy_page(request: Request) -> Response:
             sync_status=sync_status,
             repository_count=len(projects),
             remote_mcp_servers=remote_mcp_servers,
+            remote_mcp_credentials=remote_mcp_credentials,
         ),
     )
 
@@ -170,6 +173,59 @@ def remote_mcp_update(
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
 
 
+@router.post("/mcp/{server_id}/bearer", response_model=None)
+def remote_mcp_bearer_save(
+    server_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    bearer_token: str = Form(...),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        server = remote_mcp_registry().get(owner_id, server_id)
+        if server is None:
+            raise KeyError("Remote MCP 不存在")
+        metadata = remote_mcp_credential_store().set_bearer(owner_id, server_id, bearer_token)
+        _flash(
+            request,
+            f"Remote MCP Bearer 已加密保存：{server['name']} · 指纹 {metadata['fingerprint']}。"
+            "当前任务旧 lease 已立即失效；后续新任务 / resume / fork 才会使用新凭据。",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP Bearer 保存失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/bearer/delete", response_model=None)
+def remote_mcp_bearer_delete(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        server = remote_mcp_registry().get(owner_id, server_id)
+        if server is None:
+            raise KeyError("Remote MCP 不存在")
+        removed = remote_mcp_credential_store().delete(owner_id, server_id)
+        if not removed:
+            raise KeyError("当前 Remote MCP 没有已保存的 Bearer")
+        _flash(
+            request,
+            f"Remote MCP Bearer 已删除：{server['name']}。当前任务旧 lease 已立即失效；"
+            "后续新任务将以匿名模式连接，除非再次配置凭据。",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP Bearer 删除失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
 @router.post("/mcp/{server_id}/disable", response_model=None)
 def remote_mcp_disable(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
     user = _current_user(request)
@@ -193,11 +249,17 @@ def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(.
     user = _current_user(request)
     if user is None:
         return _login_redirect(request)
+    owner_id = str(user["id"])
     try:
         _verify_csrf(request, csrf_token)
-        if not remote_mcp_registry().delete(str(user["id"]), server_id):
+        if remote_mcp_registry().get(owner_id, server_id) is None:
             raise KeyError("Remote MCP 不存在")
-        _flash(request, "Remote MCP 已从当前账号移除；对应现存 lease 将立即失效", "success")
+        # Destroy the secret first. If a later registry delete unexpectedly fails, the surviving
+        # server is credential-free rather than leaving an orphan secret behind.
+        remote_mcp_credential_store().delete(owner_id, server_id)
+        if not remote_mcp_registry().delete(owner_id, server_id):
+            raise RuntimeError("Remote MCP 删除未完成")
+        _flash(request, "Remote MCP 及其 FDEX 凭据已移除；对应现存 lease 将立即失效", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 删除失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
