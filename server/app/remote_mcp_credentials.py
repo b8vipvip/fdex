@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
 import threading
@@ -34,10 +35,6 @@ def _clean_bearer(value: str) -> str:
     return token
 
 
-def _fingerprint(token: str) -> str:
-    return hashlib.sha256(token.encode("ascii")).hexdigest()[:16]
-
-
 class RemoteMcpCredentialStore:
     """FDEX-held owner/server Remote MCP secrets.
 
@@ -57,13 +54,14 @@ class RemoteMcpCredentialStore:
             key_path
             or (SERVER_DIR / "data" / "remote-mcp-secrets" / "credential-vault.key")
         ).resolve()
+        self._key_value: bytes | None = None
         self._cipher_value: Fernet | None = None
         self._initialized = False
         self._lock = threading.Lock()
 
-    def _cipher(self) -> Fernet:
-        if self._cipher_value is not None:
-            return self._cipher_value
+    def _load_key(self, *, allow_create: bool) -> bytes:
+        if self._key_value is not None:
+            return self._key_value
         self.key_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.key_path.parent, 0o700)
@@ -71,6 +69,10 @@ class RemoteMcpCredentialStore:
             pass
 
         if not self.key_path.exists():
+            if not allow_create:
+                raise RuntimeError(
+                    "Remote MCP credential vault key is missing while encrypted credentials exist"
+                )
             generated = Fernet.generate_key()
             temp = self.key_path.with_name(
                 f".{self.key_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
@@ -94,15 +96,46 @@ class RemoteMcpCredentialStore:
 
         key = self.key_path.read_bytes().strip()
         try:
-            cipher = Fernet(key)
+            Fernet(key)
         except (TypeError, ValueError) as exc:
             raise RuntimeError("Remote MCP credential vault key is invalid") from exc
         try:
             os.chmod(self.key_path, 0o600)
         except OSError:
             pass
-        self._cipher_value = cipher
-        return cipher
+        self._key_value = key
+        return key
+
+    def _cipher(self) -> Fernet:
+        if self._cipher_value is None:
+            self._cipher_value = Fernet(self._load_key(allow_create=True))
+        return self._cipher_value
+
+    def _fingerprint(self, token: str) -> str:
+        # A raw SHA fingerprint would expose an offline verifier for low-entropy bearer values to
+        # anyone who obtained only the SQLite database. Key the display fingerprint with the
+        # separate vault key so database-only compromise still cannot test token guesses.
+        return hmac.new(
+            self._load_key(allow_create=False),
+            token.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()[:16]
+
+    @staticmethod
+    def _revoke_server_leases(conn: Any, owner_id: str, server_id: str, now: str) -> int:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_mcp_leases'"
+        ).fetchone()
+        if table is None:
+            return 0
+        cursor = conn.execute(
+            """
+            UPDATE remote_mcp_leases SET state='revoked',revoked_at=?
+            WHERE owner_id=? AND server_id=? AND state='active'
+            """,
+            (now, owner_id, server_id),
+        )
+        return max(0, int(cursor.rowcount))
 
     def init(self) -> None:
         if self._initialized:
@@ -111,7 +144,6 @@ class RemoteMcpCredentialStore:
             if self._initialized:
                 return
             self.registry.init()
-            self._cipher()
             with self.registry.db() as conn:
                 conn.executescript(
                     """
@@ -129,6 +161,21 @@ class RemoteMcpCredentialStore:
                         ON remote_mcp_credentials(owner_id,updated_at DESC);
                     """
                 )
+                credential_count = int(
+                    conn.execute("SELECT COUNT(*) FROM remote_mcp_credentials").fetchone()[0]
+                )
+                sample = conn.execute(
+                    "SELECT secret_cipher FROM remote_mcp_credentials LIMIT 1"
+                ).fetchone()
+            key = self._load_key(allow_create=credential_count == 0)
+            self._cipher_value = Fernet(key)
+            if sample is not None:
+                try:
+                    self._cipher_value.decrypt(str(sample["secret_cipher"]).encode("ascii"))
+                except (InvalidToken, UnicodeEncodeError) as exc:
+                    raise RuntimeError(
+                        "Remote MCP credential vault key does not match stored credentials"
+                    ) from exc
             self._initialized = True
 
     def metadata(self, owner_id: str, server_id: str) -> dict[str, Any] | None:
@@ -191,6 +238,7 @@ class RemoteMcpCredentialStore:
         clean = _clean_bearer(token)
         now = _now()
         cipher_text = self._cipher().encrypt(clean.encode("ascii")).decode("ascii")
+        fingerprint = self._fingerprint(clean)
         with self.registry.db() as conn:
             current = conn.execute(
                 "SELECT created_at FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
@@ -206,8 +254,9 @@ class RemoteMcpCredentialStore:
                     auth_type='bearer',secret_cipher=excluded.secret_cipher,
                     fingerprint=excluded.fingerprint,updated_at=excluded.updated_at
                 """,
-                (owner_id, server_id, cipher_text, _fingerprint(clean), created_at, now),
+                (owner_id, server_id, cipher_text, fingerprint, created_at, now),
             )
+            self._revoke_server_leases(conn, owner_id, server_id, now)
         metadata = self.metadata(owner_id, server_id)
         if metadata is None:
             raise RuntimeError("Remote MCP credential write failed")
@@ -253,21 +302,20 @@ class RemoteMcpCredentialStore:
 
     def delete(self, owner_id: str, server_id: str) -> bool:
         self.init()
+        now = _now()
         with self.registry.db() as conn:
             cursor = conn.execute(
                 "DELETE FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
                 (owner_id, server_id),
             )
+            if cursor.rowcount:
+                self._revoke_server_leases(conn, owner_id, server_id, now)
         return bool(cursor.rowcount)
 
     def delete_server(self, owner_id: str, server_id: str) -> bool:
-        """Atomically delete one owner-scoped registry entry and its secret, if any.
-
-        Both tables share the registry SQLite database. Keeping the mutation in one transaction
-        prevents an enabled server from surviving as an accidental anonymous configuration when
-        a two-step delete fails halfway through.
-        """
+        """Atomically delete one owner-scoped registry entry, secret and live leases."""
         self.init()
+        now = _now()
         with self.registry.db() as conn:
             row = conn.execute(
                 "SELECT id FROM remote_mcp_servers WHERE owner_id=? AND id=?",
@@ -275,6 +323,7 @@ class RemoteMcpCredentialStore:
             ).fetchone()
             if row is None:
                 return False
+            self._revoke_server_leases(conn, owner_id, server_id, now)
             conn.execute(
                 "DELETE FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
                 (owner_id, server_id),
