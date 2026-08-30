@@ -21,7 +21,8 @@
             <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
             <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
             <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
-            <a href="/account/agent" class="{% if current_path.startswith('/account/agent') %}active{% endif %}">Coding Agent</a>
+            <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
+            <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
             <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
             <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
             <a href="/account/me" class="{% if current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') or current_path.startswith('/account/deleted') or current_path.startswith('/account/info/') %}active{% endif %}">我的</a>
