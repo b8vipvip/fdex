@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import shutil
 import sqlite3
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -49,8 +50,15 @@ def _safe_mention(value: str) -> str:
     if not clean or len(clean) > 1000 or any(ord(ch) < 32 for ch in clean):
         raise ValueError("Mention 路径无效")
     path = PurePosixPath(clean)
-    if path.is_absolute() or ".." in path.parts or path.parts[0] in {".git", "server/data"}:
-        raise ValueError("Mention 只能引用当前任务仓库内的相对路径")
+    parts = path.parts
+    if (
+        path.is_absolute()
+        or ".." in parts
+        or not parts
+        or parts[0] == ".git"
+        or tuple(parts[:2]) == ("server", "data")
+    ):
+        raise ValueError("Mention 只能引用当前任务仓库内的非敏感相对路径")
     return str(path)
 
 
@@ -149,10 +157,11 @@ class CodexTaskInputStore:
             raise ValueError(f"{clean_kind} 文件为空或超过 {limit // (1024 * 1024)} MiB")
         task_dir = self._task_dir(owner_id, task_id)
         asset_id = f"asset_{secrets.token_hex(16)}"
-        path = (task_dir / f"{asset_id}{suffix}").resolve()
-        if task_dir not in path.parents:
+        path = task_dir / f"{asset_id}{suffix}"
+        resolved = path.resolve()
+        if task_dir not in resolved.parents:
             raise ValueError("Codex input path escaped task directory")
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        descriptor = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(descriptor, data)
             os.fsync(descriptor)
@@ -164,7 +173,7 @@ class CodexTaskInputStore:
             "task_id": task_id,
             "kind": clean_kind,
             "display_name": _safe_name(filename),
-            "stored_path": str(path),
+            "stored_path": str(resolved),
             "value": "",
             "mime_type": mime,
             "size_bytes": len(data),
@@ -183,7 +192,7 @@ class CodexTaskInputStore:
                     )),
                 )
         except Exception:
-            path.unlink(missing_ok=True)
+            resolved.unlink(missing_ok=True)
             raise
         return row
 
@@ -217,7 +226,7 @@ class CodexTaskInputStore:
         return row
 
     def add_skill(self, owner_id: str, task_id: str, *, name: str, path: str) -> dict[str, Any]:
-        """Internal seam for Phase 7.30's owner-scoped skill registry; not a client path API."""
+        """Internal seam for Phase 7.30's owner-scoped skill registry; never a client path API."""
         self.init()
         self._ensure_capacity(owner_id, task_id)
         resolved = Path(path).expanduser().resolve()
@@ -263,10 +272,14 @@ class CodexTaskInputStore:
             )
         stored = str(row["stored_path"] or "")
         if stored:
-            path = Path(stored).resolve()
+            original = Path(stored)
             base = self.root.resolve()
-            if base in path.parents:
-                path.unlink(missing_ok=True)
+            if original.is_symlink():
+                original.unlink(missing_ok=True)
+            else:
+                path = original.resolve()
+                if base in path.parents:
+                    path.unlink(missing_ok=True)
         return True
 
     def build_user_input(self, owner_id: str, task_id: str, *, prompt: str, worktree: Path) -> list[dict[str, Any]]:
@@ -275,18 +288,22 @@ class CodexTaskInputStore:
         for row in self.list(owner_id, task_id):
             kind = str(row["kind"])
             if kind in {"image", "audio"}:
-                path = Path(str(row["stored_path"])).resolve()
-                if self.root.resolve() not in path.parents or not path.is_file() or path.is_symlink():
+                original = Path(str(row["stored_path"]))
+                if original.is_symlink():
+                    raise ValueError("Codex input asset symlink is not allowed")
+                path = original.resolve()
+                if self.root.resolve() not in path.parents or not path.is_file():
                     raise ValueError("Codex input asset is missing or escaped owner storage")
                 result.append({"type": "localImage" if kind == "image" else "localAudio", "path": str(path)})
             elif kind == "mention":
                 relative = _safe_mention(str(row["value"]))
-                path = (worktree_root / relative).resolve()
-                if worktree_root not in path.parents and path != worktree_root:
+                candidate = worktree_root / relative
+                resolved = candidate.resolve()
+                if worktree_root not in resolved.parents and resolved != worktree_root:
                     raise ValueError("Mention escaped task worktree")
-                if not path.exists():
+                if not resolved.exists():
                     raise ValueError(f"Mention path does not exist in task worktree: {relative}")
-                result.append({"type": "mention", "name": str(row["display_name"]), "path": str(path)})
+                result.append({"type": "mention", "name": str(row["display_name"]), "path": str(resolved)})
             elif kind == "skill":
                 path = Path(str(row["stored_path"])).resolve()
                 if not path.exists():
@@ -298,24 +315,32 @@ class CodexTaskInputStore:
 
     def delete_owner(self, owner_id: str) -> dict[str, int]:
         self.init()
-        rows = self.list(owner_id, "task_placeholder") if False else []
+        clean_owner = _safe_id(owner_id, "usr_")
         with self.db() as conn:
-            paths = [str(row[0]) for row in conn.execute(
-                "SELECT stored_path FROM codex_task_inputs WHERE owner_id=? AND stored_path<>''",
-                (owner_id,),
-            ).fetchall()]
-            cursor = conn.execute("DELETE FROM codex_task_inputs WHERE owner_id=?", (owner_id,))
+            paths = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT stored_path FROM codex_task_inputs WHERE owner_id=? AND stored_path<>''",
+                    (clean_owner,),
+                ).fetchall()
+            ]
+            cursor = conn.execute("DELETE FROM codex_task_inputs WHERE owner_id=?", (clean_owner,))
         removed = 0
         base = self.root.resolve()
         for value in paths:
-            path = Path(value).resolve()
+            original = Path(value)
+            if original.is_symlink():
+                original.unlink(missing_ok=True)
+                removed += 1
+                continue
+            path = original.resolve()
             if base in path.parents and path.exists():
                 path.unlink(missing_ok=True)
                 removed += 1
-        owner_hash = hashlib.sha256(_safe_id(owner_id, "usr_").encode()).hexdigest()[:24]
+        owner_hash = hashlib.sha256(clean_owner.encode()).hexdigest()[:24]
         owner_dir = (self.root / "owners" / owner_hash).resolve()
-        if base in owner_dir.parents and owner_dir.exists():
-            import shutil
+        owners_root = (self.root / "owners").resolve()
+        if owners_root in owner_dir.parents and owner_dir.exists():
             shutil.rmtree(owner_dir)
         return {"records": max(0, int(cursor.rowcount)), "files": removed}
 
