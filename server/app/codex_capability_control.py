@@ -19,12 +19,10 @@ from app.config import fresh_settings
 T = TypeVar("T")
 
 PLUGIN_MUTATION_BLOCK_REASON = (
-    "Plugin 本地安装/卸载只有在 Phase 7.32 Codex 整个进程树 cgroup v2 隔离真实生效时才开放；"
-    "Marketplace add/remove/upgrade、远程 catalog 安装和 plugin/share/* 仍保持禁用。"
-)
-PLUGIN_MUTATION_ALLOWED_REASON = (
-    "Phase 7.32 cgroup v2 进程树隔离已生效。仅允许对当前官方 local plugin/list 清单中的 AVAILABLE Plugin "
-    "执行 plugin/install，以及对当前 plugin/installed 精确 ID 执行 plugin/uninstall；Marketplace/share 写操作仍禁用。"
+    "Phase 7.32 的 cgroup v2 边界限制 Codex 整个进程树的 CPU、内存、PID 和生命周期，但不是文件系统执行沙箱。"
+    "官方 bundled Codex 0.147 的本地 stdio MCP/Plugin 命令会作为 app-server 的本地子进程启动，因此 plugin/install、"
+    "plugin/uninstall、Marketplace 写入、远程 catalog 安装及 plugin/share/* 在 FDEX 多租户 Center 中继续 fail-closed；"
+    "必须等额外的文件系统/执行沙箱边界完成后才能开放。"
 )
 
 
@@ -43,15 +41,15 @@ def _list(value: Any) -> list[Any]:
 def _plugin_mutation_policy() -> tuple[bool, str]:
     status = codex_process_isolation_status()
     if bool(status.get("enforced")):
-        return True, PLUGIN_MUTATION_ALLOWED_REASON
-    reason = str(status.get("reason") or "cgroup v2 process isolation is unavailable")
-    return False, f"{PLUGIN_MUTATION_BLOCK_REASON} 当前隔离状态：{reason}"
+        detail = "当前 cgroup 进程树隔离已生效，但它不提供文件系统保密边界。"
+    else:
+        detail = f"当前进程树隔离也未生效：{status.get('reason') or 'unknown'}。"
+    return False, f"{PLUGIN_MUTATION_BLOCK_REASON} {detail}"
 
 
 def _require_plugin_mutation_isolation() -> None:
-    allowed, reason = _plugin_mutation_policy()
-    if not allowed:
-        raise CodexCapabilityError(reason)
+    _allowed, reason = _plugin_mutation_policy()
+    raise CodexCapabilityError(reason)
 
 
 def _project_cwd(owner_id: str, project_id: int | None) -> tuple[Path, dict[str, Any] | None]:
@@ -379,6 +377,8 @@ async def install_local_plugin(
     plugin_name: str,
     project_id: int | None = None,
 ) -> dict[str, Any]:
+    # Intentionally blocked before creating a mutation Host. Keep the validated prototype below
+    # unreachable until FDEX has a real filesystem/execution sandbox for local stdio Plugin MCPs.
     _require_plugin_mutation_isolation()
     requested_market = str(marketplace_path or "").strip()
     requested_name = str(plugin_name or "").strip()
@@ -409,9 +409,6 @@ async def install_local_plugin(
             raise CodexCapabilityError(
                 f"Plugin 当前 installPolicy={install_policy or 'unknown'} 不允许安装，已 fail-closed"
             )
-
-        # Re-read the exact local plugin through the official protocol before the mutation. This
-        # ensures the marketplace path/name still resolves inside the same owner-scoped Host.
         await client.request(
             "plugin/read",
             {
@@ -453,6 +450,9 @@ async def uninstall_plugin(
     plugin_id: str,
     project_id: int | None = None,
 ) -> dict[str, Any]:
+    # Also blocked before Host creation: initializing a Host with already-installed local Plugin
+    # MCPs can itself spawn local stdio children, so even a removal endpoint cannot be treated as
+    # safe until the execution/filesystem sandbox exists.
     _require_plugin_mutation_isolation()
     requested_id = str(plugin_id or "").strip()
     if not requested_id or len(requested_id) > 240:
@@ -487,7 +487,4 @@ async def uninstall_plugin(
 
 def assert_plugin_mutation_blocked(action: str) -> None:
     clean = str(action or "plugin mutation").strip()[:120]
-    raise CodexCapabilityError(
-        f"{clean} 未在 Phase 7.32 安全白名单中。只开放 verified local plugin/install 与 exact plugin/uninstall；"
-        "marketplace/add、marketplace/remove、marketplace/upgrade、远程 catalog 安装和 plugin/share/* 继续 fail-closed。"
-    )
+    raise CodexCapabilityError(f"{clean} 已被 FDEX 安全策略阻止。{PLUGIN_MUTATION_BLOCK_REASON}")
