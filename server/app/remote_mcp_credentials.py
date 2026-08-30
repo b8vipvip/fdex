@@ -260,6 +260,33 @@ class RemoteMcpCredentialStore:
             )
         return bool(cursor.rowcount)
 
+    def delete_server(self, owner_id: str, server_id: str) -> bool:
+        """Atomically delete one owner-scoped registry entry and its secret, if any.
+
+        Both tables share the registry SQLite database. Keeping the mutation in one transaction
+        prevents an enabled server from surviving as an accidental anonymous configuration when
+        a two-step delete fails halfway through.
+        """
+        self.init()
+        with self.registry.db() as conn:
+            row = conn.execute(
+                "SELECT id FROM remote_mcp_servers WHERE owner_id=? AND id=?",
+                (owner_id, server_id),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "DELETE FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
+                (owner_id, server_id),
+            )
+            cursor = conn.execute(
+                "DELETE FROM remote_mcp_servers WHERE owner_id=? AND id=?",
+                (owner_id, server_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Remote MCP atomic delete failed")
+        return True
+
     def delete_owner(self, owner_id: str) -> int:
         self.init()
         with self.registry.db() as conn:
