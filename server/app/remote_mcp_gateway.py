@@ -140,14 +140,18 @@ class RemoteMcpLeaseStore:
                     ON remote_mcp_leases(owner_id,server_id,state,expires_at);
                 """
             )
+            # Rolling upgrades can start several Uvicorn workers against the same SQLite file.
+            # Serialize PRAGMA/ALTER so only one worker changes the schema; waiters then re-read
+            # the final columns instead of racing into duplicate-column failures.
+            conn.execute("BEGIN IMMEDIATE")
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(remote_mcp_leases)").fetchall()}
             if "server_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN server_updated_at TEXT NOT NULL DEFAULT ''")
             if "credential_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN credential_updated_at TEXT NOT NULL DEFAULT ''")
             # Revisionless pre-final 7.26 leases cannot prove which registry revision they were
-            # authorized against. Revoke only those; an empty credential revision is valid and
-            # means that no FDEX-held credential existed when a 7.26/7.27 lease was issued.
+            # authorized against. Revoke only those; empty credential revision is valid and means
+            # no FDEX-held credential existed when the lease was issued.
             conn.execute(
                 """
                 UPDATE remote_mcp_leases
@@ -373,8 +377,8 @@ def _forward_request_headers(request: Request, *, bearer_token: str | None = Non
     result["Accept-Encoding"] = "identity"
     result["User-Agent"] = "FDEX-Remote-MCP-Gateway/1"
     if bearer_token:
-        # This value comes only from the FDEX credential vault after owner/server/revision checks.
-        # A Codex-supplied Authorization header is never forwarded.
+        # Only FDEX-held vault material can create the upstream Authorization header. A header
+        # supplied by Codex/user input is never part of the forwarding allowlist.
         result["Authorization"] = f"Bearer {bearer_token}"
     return result
 
@@ -532,6 +536,10 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
                 request.headers.get("content-type", ""),
                 [str(item) for item in server.get("enabled_tools") or []],
             )
+        # Preserve anonymous 7.26 call semantics and never expose a meaningless bearer kwarg to
+        # test/runtime adapters. Authenticated requests explicitly opt into the injection path.
+        if bearer_token is None:
+            return await _relay(request, server=server, body=body)
         return await _relay(request, server=server, body=body, bearer_token=bearer_token)
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403, headers={"Cache-Control": "no-store"})
