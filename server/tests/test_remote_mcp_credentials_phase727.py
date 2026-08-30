@@ -88,7 +88,7 @@ def test_vault_encrypts_secret_uses_keyed_fingerprint_and_owner_scope(tmp_path: 
     assert store.get_bearer(
         OWNER,
         str(server["id"]),
-        expected_revision=str(metadata["updated_at"]),
+        expected_revision=str(metadata["lease_revision"]),
     ) == TOKEN_ONE
     assert store.metadata(OTHER, str(server["id"])) is None
     with pytest.raises(KeyError):
@@ -139,10 +139,10 @@ def test_add_rotate_delete_credentials_revoke_existing_leases(tmp_path: Path) ->
     first = credentials.set_bearer(OWNER, str(server["id"]), TOKEN_ONE)
     assert leases.resolve(str(anonymous["id"]), anonymous_token) is None
     first_lease, first_token = leases.issue(OWNER, TASK, str(server["id"]))
-    assert first_lease["credential_updated_at"] == first["updated_at"]
+    assert first_lease["credential_updated_at"] == first["lease_revision"]
 
     second = credentials.set_bearer(OWNER, str(server["id"]), TOKEN_TWO)
-    assert second["updated_at"] != first["updated_at"]
+    assert second["lease_revision"] != first["lease_revision"]
     assert leases.resolve(str(first_lease["id"]), first_token) is None
     second_lease, second_token = leases.issue(OWNER, TASK, str(server["id"]))
 
@@ -157,7 +157,7 @@ def test_credential_toctou_changes_fail_closed(tmp_path: Path) -> None:
     registry, server = _registry(tmp_path)
     store = _credentials(tmp_path, registry)
     metadata = store.set_bearer(OWNER, str(server["id"]), TOKEN_ONE)
-    revision = str(metadata["updated_at"])
+    revision = str(metadata["lease_revision"])
 
     assert store.delete(OWNER, str(server["id"])) is True
     with pytest.raises(RuntimeError, match="disappeared"):
@@ -188,6 +188,10 @@ def test_gateway_ignores_codex_authorization_and_injects_only_vault_bearer(
             )
 
     class FakeCredentialStore:
+        def metadata(self, owner_id: str, server_id: str):
+            assert (owner_id, server_id) == (OWNER, "mcp_one")
+            return {"auth_type": "bearer", "lease_revision": "credential-rev-1"}
+
         def get_bearer(self, owner_id: str, server_id: str, *, expected_revision: str | None = None):
             assert (owner_id, server_id, expected_revision) == (OWNER, "mcp_one", "credential-rev-1")
             return TOKEN_ONE
@@ -301,4 +305,8 @@ def test_lifecycle_export_ui_and_codex_config_do_not_expose_remote_secret() -> N
     config_section = gateway.split("def build_codex_remote_mcp_config", 1)[1].split("class PinnedResolver", 1)[0]
     assert "Authorization" not in config_section
     assert "bearer_token" not in config_section
-    assert "remote_mcp_credential_store().get_bearer" in gateway
+    # Phase 7.28 adds auth-type dispatch, but the Phase 7.27 invariant remains: static Bearer
+    # retrieval happens only after the FDEX credential revision check and before FDEX-owned relay.
+    assert "def _authorization_bearer" in gateway
+    assert ".get_bearer(" in gateway
+    assert "Authorization" in gateway
