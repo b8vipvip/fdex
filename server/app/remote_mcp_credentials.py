@@ -36,12 +36,7 @@ def _clean_bearer(value: str) -> str:
 
 
 class RemoteMcpCredentialStore:
-    """FDEX-held owner/server Remote MCP secrets.
-
-    The public registry intentionally remains credential-free. This store keeps only encrypted
-    secret material, never exposes ciphertext through account export/UI, and verifies that every
-    credential belongs to a live registry row for the same owner before it can be created/read.
-    """
+    """FDEX-held owner/server Remote MCP secrets."""
 
     def __init__(
         self,
@@ -112,9 +107,6 @@ class RemoteMcpCredentialStore:
         return self._cipher_value
 
     def _fingerprint(self, token: str) -> str:
-        # A raw SHA fingerprint would expose an offline verifier for low-entropy bearer values to
-        # anyone who obtained only the SQLite database. Key the display fingerprint with the
-        # separate vault key so database-only compromise still cannot test token guesses.
         return hmac.new(
             self._load_key(allow_create=False),
             token.encode("ascii"),
@@ -233,13 +225,18 @@ class RemoteMcpCredentialStore:
 
     def set_bearer(self, owner_id: str, server_id: str, token: str) -> dict[str, Any]:
         self.init()
-        if self.registry.get(owner_id, server_id) is None:
-            raise KeyError("Remote MCP 不存在或不属于当前账号")
         clean = _clean_bearer(token)
         now = _now()
         cipher_text = self._cipher().encrypt(clean.encode("ascii")).decode("ascii")
         fingerprint = self._fingerprint(clean)
         with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            server = conn.execute(
+                "SELECT id FROM remote_mcp_servers WHERE owner_id=? AND id=?",
+                (owner_id, server_id),
+            ).fetchone()
+            if server is None:
+                raise KeyError("Remote MCP 不存在或不属于当前账号")
             current = conn.execute(
                 "SELECT created_at FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
                 (owner_id, server_id),
@@ -284,8 +281,6 @@ class RemoteMcpCredentialStore:
                 (owner_id, server_id),
             ).fetchone()
         if row is None:
-            # If the task lease was issued while a credential existed, deletion between lease
-            # validation and secret read must fail closed rather than silently becoming anonymous.
             if expected:
                 raise RuntimeError("Remote MCP credential disappeared")
             return None
@@ -304,6 +299,7 @@ class RemoteMcpCredentialStore:
         self.init()
         now = _now()
         with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 "DELETE FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
                 (owner_id, server_id),
@@ -313,10 +309,10 @@ class RemoteMcpCredentialStore:
         return bool(cursor.rowcount)
 
     def delete_server(self, owner_id: str, server_id: str) -> bool:
-        """Atomically delete one owner-scoped registry entry, secret and live leases."""
         self.init()
         now = _now()
         with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT id FROM remote_mcp_servers WHERE owner_id=? AND id=?",
                 (owner_id, server_id),
