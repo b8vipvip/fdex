@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.responses import Response
 
 from app.config import fresh_settings
+from app.remote_mcp_credentials import RemoteMcpCredentialStore, remote_mcp_credential_store
 from app.remote_mcp_registry import RemoteMcpRegistry, remote_mcp_registry, resolve_public_addresses
 
 router = APIRouter(prefix="/internal/codex-mcp", include_in_schema=False)
@@ -70,12 +71,6 @@ def _token_hash(value: str) -> str:
 
 
 def _direct_loopback_client(request: Request) -> bool:
-    """Accept only a direct loopback request, not a request forwarded by a reverse proxy.
-
-    The unguessable capability remains the primary authentication boundary. This direct-peer
-    check is defense in depth so a normal Nginx/Caddy public reverse-proxy path cannot turn an
-    external caller into an apparent loopback caller at the FastAPI layer.
-    """
     host = request.client.host if request.client else ""
     try:
         address = ipaddress.ip_address(host.split("%", 1)[0])
@@ -95,20 +90,33 @@ def _safe_server_config_name(name: str, server_id: str) -> str:
 class RemoteMcpLeaseStore:
     """Cross-worker ephemeral capability leases for the local MCP gateway.
 
-    Raw capability tokens are never persisted. A lease is also bound to the exact registry
-    revision that existed when it was issued. Editing, disabling or re-enabling a server changes
-    ``updated_at`` and therefore invalidates every older task lease immediately rather than
-    silently retargeting an already-running Codex task to a new URL or tool policy.
+    A lease is bound to both the public registry revision and the FDEX-held credential revision.
+    Editing the server or adding/rotating/removing credentials therefore invalidates old task
+    capabilities immediately instead of silently changing the authority of a running Codex task.
     """
 
-    def __init__(self, registry: RemoteMcpRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: RemoteMcpRegistry | None = None,
+        credential_store: RemoteMcpCredentialStore | None = None,
+    ) -> None:
         self.registry = registry or remote_mcp_registry()
+        if credential_store is not None:
+            self.credentials = credential_store
+        elif registry is None:
+            self.credentials = remote_mcp_credential_store()
+        else:
+            self.credentials = RemoteMcpCredentialStore(
+                self.registry,
+                key_path=self.registry.path.with_name(f".{self.registry.path.name}.credentials.key"),
+            )
         self._initialized = False
 
     def init(self) -> None:
         if self._initialized:
             return
         self.registry.init()
+        self.credentials.init()
         with self.registry.db() as conn:
             conn.executescript(
                 """
@@ -118,6 +126,7 @@ class RemoteMcpLeaseStore:
                     task_id TEXT NOT NULL,
                     server_id TEXT NOT NULL,
                     server_updated_at TEXT NOT NULL DEFAULT '',
+                    credential_updated_at TEXT NOT NULL DEFAULT '',
                     token_hash TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL,
@@ -131,12 +140,14 @@ class RemoteMcpLeaseStore:
                     ON remote_mcp_leases(owner_id,server_id,state,expires_at);
                 """
             )
-            # If an early/pre-final 7.26 worker created leases before registry revision binding
-            # existed, fail closed during rolling upgrade. We cannot prove which registry revision
-            # those capabilities authorized, so revoke them instead of retroactively blessing them.
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(remote_mcp_leases)").fetchall()}
             if "server_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN server_updated_at TEXT NOT NULL DEFAULT ''")
+            if "credential_updated_at" not in columns:
+                conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN credential_updated_at TEXT NOT NULL DEFAULT ''")
+            # Revisionless pre-final 7.26 leases cannot prove which registry revision they were
+            # authorized against. Revoke only those; an empty credential revision is valid and
+            # means that no FDEX-held credential existed when a 7.26/7.27 lease was issued.
             conn.execute(
                 """
                 UPDATE remote_mcp_leases
@@ -157,6 +168,7 @@ class RemoteMcpLeaseStore:
         server_updated_at = str(server.get("updated_at") or "")
         if not server_updated_at:
             raise ValueError("Remote MCP registry revision is missing")
+        credential_updated_at = self.credentials.revision(owner_id, server_id)
         raw_token = secrets.token_urlsafe(32)
         lease_id = f"lease_{secrets.token_hex(16)}"
         now = _now()
@@ -165,9 +177,9 @@ class RemoteMcpLeaseStore:
             conn.execute(
                 """
                 INSERT INTO remote_mcp_leases(
-                    id,owner_id,task_id,server_id,server_updated_at,token_hash,state,
-                    created_at,expires_at,last_used_at,revoked_at
-                ) VALUES(?,?,?,?,?,?,'active',?,?,?,'')
+                    id,owner_id,task_id,server_id,server_updated_at,credential_updated_at,
+                    token_hash,state,created_at,expires_at,last_used_at,revoked_at
+                ) VALUES(?,?,?,?,?,?,?,'active',?,?,?,'')
                 """,
                 (
                     lease_id,
@@ -175,6 +187,7 @@ class RemoteMcpLeaseStore:
                     task_id,
                     server_id,
                     server_updated_at,
+                    credential_updated_at,
                     _token_hash(raw_token),
                     _iso(now),
                     _iso(expires),
@@ -188,6 +201,7 @@ class RemoteMcpLeaseStore:
                 "task_id": task_id,
                 "server_id": server_id,
                 "server_updated_at": server_updated_at,
+                "credential_updated_at": credential_updated_at,
                 "expires_at": _iso(expires),
             },
             raw_token,
@@ -213,14 +227,17 @@ class RemoteMcpLeaseStore:
             owner_id = str(row["owner_id"])
             server_id = str(row["server_id"])
             server = self.registry.get(owner_id, server_id)
-            current_revision = str((server or {}).get("updated_at") or "")
-            issued_revision = str(row["server_updated_at"] or "")
+            current_server_revision = str((server or {}).get("updated_at") or "")
+            issued_server_revision = str(row["server_updated_at"] or "")
+            current_credential_revision = self.credentials.revision(owner_id, server_id)
+            issued_credential_revision = str(row["credential_updated_at"] or "")
             if (
                 server is None
                 or not bool(server.get("enabled"))
                 or not server.get("enabled_tools")
-                or not current_revision
-                or current_revision != issued_revision
+                or not current_server_revision
+                or current_server_revision != issued_server_revision
+                or current_credential_revision != issued_credential_revision
             ):
                 conn.execute(
                     "UPDATE remote_mcp_leases SET state='revoked',revoked_at=? WHERE id=? AND state='active'",
@@ -236,7 +253,8 @@ class RemoteMcpLeaseStore:
                 "owner_id": owner_id,
                 "task_id": str(row["task_id"]),
                 "server_id": server_id,
-                "server_updated_at": issued_revision,
+                "server_updated_at": issued_server_revision,
+                "credential_updated_at": issued_credential_revision,
                 "expires_at": str(row["expires_at"]),
             }
         return lease, server
@@ -282,7 +300,6 @@ def remote_mcp_lease_store() -> RemoteMcpLeaseStore:
 
 
 def build_codex_remote_mcp_config(owner_id: str, task_id: str) -> dict[str, dict[str, Any]]:
-    """Issue fresh localhost gateway leases for every enabled owner registry entry."""
     registry = remote_mcp_registry()
     leases = remote_mcp_lease_store()
     leases.revoke_task(owner_id, task_id)
@@ -300,9 +317,6 @@ def build_codex_remote_mcp_config(owner_id: str, task_id: str) -> dict[str, dict
         local_url = f"http://127.0.0.1:{port}/internal/codex-mcp/{lease['id']}"
         result[_safe_server_config_name(str(server["name"]), str(server["id"]))] = {
             "url": local_url,
-            # This is an ephemeral localhost gateway capability, not a remote server credential.
-            # Keeping it in a header prevents Uvicorn's normal access log from recording the raw
-            # token as part of the request path. The gateway never forwards this header remotely.
             "http_headers": {_CAPABILITY_HEADER: token},
             "enabled": True,
             "required": False,
@@ -315,8 +329,6 @@ def build_codex_remote_mcp_config(owner_id: str, task_id: str) -> dict[str, dict
 
 
 class PinnedResolver(AbstractResolver):
-    """aiohttp resolver that can return only the addresses FDEX just admitted."""
-
     def __init__(self, hostname: str, addresses: tuple[str, ...]) -> None:
         self.hostname = hostname.casefold().rstrip(".")
         self.addresses = addresses
@@ -353,13 +365,17 @@ class PinnedResolver(AbstractResolver):
         return None
 
 
-def _forward_request_headers(request: Request) -> dict[str, str]:
+def _forward_request_headers(request: Request, *, bearer_token: str | None = None) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in request.headers.items():
         if key.lower() in _REQUEST_HEADER_ALLOWLIST:
             result[key] = value
     result["Accept-Encoding"] = "identity"
     result["User-Agent"] = "FDEX-Remote-MCP-Gateway/1"
+    if bearer_token:
+        # This value comes only from the FDEX credential vault after owner/server/revision checks.
+        # A Codex-supplied Authorization header is never forwarded.
+        result["Authorization"] = f"Bearer {bearer_token}"
     return result
 
 
@@ -414,13 +430,16 @@ async def _bounded_body(request: Request) -> bytes:
     return body
 
 
-async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Response:
+async def _relay(
+    request: Request,
+    *,
+    server: dict[str, Any],
+    body: bytes,
+    bearer_token: str | None = None,
+) -> Response:
     target = str(server["url"])
     parsed = urlsplit(target)
     hostname = str(parsed.hostname or "").rstrip(".").lower()
-    # Request-time DNS is checked, then pinned into aiohttp's custom resolver. The URL remains the
-    # original hostname, preserving TLS SNI and certificate verification while preventing a second
-    # DNS lookup from observing a rebinding answer.
     addresses = resolve_public_addresses(hostname)
     resolver = PinnedResolver(hostname, addresses)
     connector = aiohttp.TCPConnector(
@@ -449,7 +468,7 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
             request.method,
             target,
             data=body if body else None,
-            headers=_forward_request_headers(request),
+            headers=_forward_request_headers(request, bearer_token=bearer_token),
             allow_redirects=False,
             ssl=True,
         )
@@ -457,9 +476,6 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
         await session.close()
         raise
 
-    # Never expose redirects: a Codex HTTP client could otherwise follow Location directly and
-    # bypass the gateway. Never expose auth challenges either, because Phase 7.26 intentionally
-    # has no bearer/OAuth credential broker and must not trigger Codex's own MCP OAuth handling.
     if 300 <= upstream.status < 400:
         upstream.release()
         await session.close()
@@ -472,7 +488,7 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
         upstream.release()
         await session.close()
         return JSONResponse(
-            {"error": "Remote MCP authentication is not enabled in Phase 7.26"},
+            {"error": "Remote MCP authentication failed"},
             status_code=502,
             headers={"Cache-Control": "no-store"},
         )
@@ -502,8 +518,13 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
     resolved = remote_mcp_lease_store().resolve(lease_id, token)
     if resolved is None:
         return PlainTextResponse("expired or invalid capability", status_code=404)
-    _lease, server = resolved
+    lease, server = resolved
     try:
+        bearer_token = remote_mcp_credential_store().get_bearer(
+            str(lease["owner_id"]),
+            str(lease["server_id"]),
+            expected_revision=str(lease.get("credential_updated_at") or ""),
+        )
         body = await _bounded_body(request)
         if request.method == "POST":
             enforce_tool_allowlist(
@@ -511,11 +532,17 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
                 request.headers.get("content-type", ""),
                 [str(item) for item in server.get("enabled_tools") or []],
             )
-        return await _relay(request, server=server, body=body)
+        return await _relay(request, server=server, body=body, bearer_token=bearer_token)
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403, headers={"Cache-Control": "no-store"})
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400, headers={"Cache-Control": "no-store"})
+    except RuntimeError:
+        return JSONResponse(
+            {"error": "Remote MCP credential is unavailable or changed"},
+            status_code=502,
+            headers={"Cache-Control": "no-store"},
+        )
     except (aiohttp.ClientError, OSError, TimeoutError) as exc:
         return JSONResponse(
             {"error": f"Remote MCP transport failed: {type(exc).__name__}"},
