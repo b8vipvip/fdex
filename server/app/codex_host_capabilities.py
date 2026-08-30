@@ -78,14 +78,12 @@ def _validate_call(params: dict[str, Any]) -> tuple[AgentTask, str]:
 async def handle_dynamic_tool(params: dict[str, Any]) -> dict[str, Any]:
     task, tool = _validate_call(params)
     if tool == "task_info":
-        # Intentionally omit provider keys, GitHub credentials, absolute server paths and runtime env.
         return _output(
             {
                 "task_id": task.id,
                 "project_id": task.project_id,
                 "status": task.status,
                 "branch": task.branch,
-                "network_allowed": None,
             }
         )
     rows = codex_task_input_store().list(task.owner_id, task.id)
@@ -112,6 +110,10 @@ def install_codex_host_capabilities() -> None:
     import app.codex_host_runtime as host
     import app.codex_interaction_install as interaction_install
 
+    # Phase 7.23 owns the interactive client seam. Install it first, then compose the dynamic-tool
+    # dispatcher on top so approvals/requestUserInput/MCP elicitation continue to use the durable
+    # broker while only item/tool/call reaches this compiled host-tool table.
+    interaction_install.install_codex_interaction_runtime()
     original_common = host._thread_common_params
     original_turn_start = host.turn_start_params
     original_client = interaction_install.ContextInteractiveCodexAppServerClient
@@ -130,8 +132,6 @@ def install_codex_host_capabilities() -> None:
             raise RuntimeError("FDEX rich input scope is missing")
         worktree = Path(str(task.worktree or "")).expanduser().resolve()
         if not worktree.is_dir():
-            # The host prepares worktree before calling turn_start_params. Treat any violation as
-            # an internal lifecycle error rather than silently dropping mentions/assets.
             raise RuntimeError("FDEX task worktree is unavailable while building Codex UserInput")
         payload["input"] = codex_task_input_store().build_user_input(
             task.owner_id,
@@ -142,24 +142,23 @@ def install_codex_host_capabilities() -> None:
         return payload
 
     class CapabilityCodexAppServerClient(original_client):
-        def __init__(self, *args: Any, interactive_request_handler: Any = None, **kwargs: Any) -> None:
-            # ContextInteractiveCodexAppServerClient ignores server_request_handler and installs
-            # the durable interaction broker. Capture its broker handler, then route only the
-            # official dynamic-tool method to the compiled FDEX host tool table.
-            super().__init__(*args, interactive_request_handler=interactive_request_handler, **kwargs)
-            existing = self._interactive_request_handler
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # Do not forward an interactive_request_handler: the Phase 7.23 Context client owns
+            # creation of the owner/task durable broker handler. We wrap that concrete handler only
+            # after its constructor has installed it.
+            kwargs.pop("interactive_request_handler", None)
+            super().__init__(*args, **kwargs)
+            existing = self.interactive_request_handler
 
             async def dispatch(request_id: int | str, method: str, params: dict[str, Any]) -> Any:
                 if method == _DYNAMIC_METHOD:
                     return await handle_dynamic_tool(params)
                 return await existing(request_id, method, params)
 
-            self._interactive_request_handler = dispatch
+            self.interactive_request_handler = dispatch
 
     host._thread_common_params = capability_common
     host.turn_start_params = rich_turn_start
-    # The interaction installer owns host.CodexAppServerClient. Replace both the installed class
-    # reference and the host seam so future task scopes use this composite dispatcher.
     interaction_install.ContextInteractiveCodexAppServerClient = CapabilityCodexAppServerClient
     host.CodexAppServerClient = CapabilityCodexAppServerClient
     _installed = True
