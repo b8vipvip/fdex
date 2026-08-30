@@ -11,12 +11,14 @@ from starlette.responses import Response
 from app.agent_projects import agent_project_store
 from app.audit import write_audit
 from app.codex_engine import codex_runtime_status, normalize_engine_mode
+from app.codex_subagent_admin_routes import router as codex_subagent_admin_router
 from app.config import SERVER_DIR, fresh_settings, get_settings
 from app.env_manager import write_env
 from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, verify_csrf
 from app.system_info import schedule_service_restart
 
 router = APIRouter(prefix="/admin/agent", include_in_schema=False)
+router.include_router(codex_subagent_admin_router)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
 
 
