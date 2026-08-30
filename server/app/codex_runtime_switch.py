@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app import codex_runtime_manager as manager
-from app.codex_runtime_fence import runtime_switch_fence
+from app.codex_runtime_fence import record_switched_runtime, runtime_switch_fence
 
 
 def upgrade_runtime_safely(tag: str | None = None) -> dict[str, Any]:
@@ -20,7 +20,9 @@ def upgrade_runtime_safely(tag: str | None = None) -> dict[str, Any]:
         "binary_sha256": str(installed["binary_sha256"]),
     }
     with runtime_switch_fence():
-        return manager._activate_pin(str(binary), current, action="upgrade")
+        result = manager._activate_pin(str(binary), current, action="upgrade")
+        record_switched_runtime(binary)
+        return result
 
 
 def _fallback_validation() -> dict[str, str]:
@@ -60,6 +62,9 @@ def rollback_runtime_safely() -> dict[str, Any]:
             ),
         }
         result = manager._activate_pin(previous, target, action="rollback")
+        # Record the effective executable, not the configured pin. An empty pin may resolve to a
+        # system Codex ahead of the bundled fallback.
+        record_switched_runtime(Path(str(validation["path"])))
         # Keep rollback reversible: _activate_pin records the old current pin, but preserve it
         # explicitly if a future state-format change stops doing so.
         after_state = manager._state()
