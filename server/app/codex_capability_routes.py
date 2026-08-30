@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
+
+from app.agent_projects import agent_project_store
+from app.codex_capability_control import (
+    CodexCapabilityError,
+    PLUGIN_MUTATION_BLOCK_REASON,
+    assert_plugin_mutation_blocked,
+    capability_inventory,
+    read_local_plugin,
+    set_skill_enabled,
+)
+from app.codex_dynamic_tool_policy import dynamic_tool_policy
+from app.config import SERVER_DIR
+from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
+
+router = APIRouter(prefix="/capabilities", include_in_schema=False)
+templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
+
+
+def _redirect(project_id: int | None = None) -> RedirectResponse:
+    query = urlencode({"project_id": int(project_id)}) if project_id else ""
+    return RedirectResponse(
+        "/account/agent/capabilities/" + (f"?{query}" if query else ""),
+        status_code=303,
+    )
+
+
+@router.get("/", response_class=HTMLResponse, response_model=None)
+async def codex_capability_center(
+    request: Request,
+    project_id: int = 0,
+    refresh: bool = False,
+    marketplace_path: str = "",
+    plugin_name: str = "",
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    projects = agent_project_store().list_projects(owner_id, enabled_only=True)
+    selected_project = int(project_id) if int(project_id or 0) > 0 else None
+    inventory: dict[str, object] = {
+        "cwd": "",
+        "skills": [],
+        "skill_errors": [],
+        "hooks": [],
+        "hook_diagnostics": [],
+        "marketplaces": [],
+        "installed_marketplaces": [],
+        "plugin_diagnostics": [],
+        "plugin_mutation_allowed": False,
+        "plugin_mutation_reason": PLUGIN_MUTATION_BLOCK_REASON,
+        "project": None,
+    }
+    error = ""
+    plugin_detail: dict[str, object] | None = None
+    try:
+        inventory = await capability_inventory(
+            owner_id,
+            project_id=selected_project,
+            force_reload=bool(refresh),
+        )
+        if marketplace_path.strip() or plugin_name.strip():
+            plugin_detail = await read_local_plugin(
+                owner_id,
+                marketplace_path=marketplace_path,
+                plugin_name=plugin_name,
+                project_id=selected_project,
+            )
+    except (CodexCapabilityError, KeyError, ValueError) as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        "user_agent_capabilities.html",
+        _ctx(
+            request,
+            user,
+            projects=projects,
+            selected_project_id=selected_project or 0,
+            inventory=inventory,
+            plugin_detail=plugin_detail,
+            capability_error=error,
+            dynamic_tool=dynamic_tool_policy(),
+        ),
+    )
+
+
+@router.post("/skills/toggle", response_model=None)
+async def codex_skill_toggle(
+    request: Request,
+    csrf_token: str = Form(...),
+    path: str = Form(...),
+    enabled: bool = Form(...),
+    project_id: int = Form(default=0),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    selected_project = int(project_id) if int(project_id or 0) > 0 else None
+    try:
+        _verify_csrf(request, csrf_token)
+        skill = await set_skill_enabled(
+            owner_id,
+            path=path,
+            enabled=bool(enabled),
+            project_id=selected_project,
+        )
+        state = "启用" if bool(enabled) else "禁用"
+        _flash(request, f"已通过官方 skills/config/write {state} Skill：{skill.get('name') or path}", "success")
+    except (CodexCapabilityError, KeyError, ValueError) as exc:
+        _flash(request, str(exc), "error")
+    return _redirect(selected_project)
+
+
+@router.post("/plugins/mutate", response_model=None)
+async def codex_plugin_mutation_gate(
+    request: Request,
+    csrf_token: str = Form(...),
+    action: str = Form(default="plugin/install"),
+    project_id: int = Form(default=0),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    selected_project = int(project_id) if int(project_id or 0) > 0 else None
+    try:
+        _verify_csrf(request, csrf_token)
+        # There is deliberately no call to plugin/install, plugin/uninstall, marketplace/* or
+        # plugin/share/*. This endpoint is a visible policy probe so operators/users can verify
+        # that the dangerous mutation boundary still fails closed before Phase 7.32.
+        assert_plugin_mutation_blocked(action)
+    except (CodexCapabilityError, ValueError) as exc:
+        _flash(request, str(exc), "error")
+    return _redirect(selected_project)

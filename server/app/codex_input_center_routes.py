@@ -6,11 +6,13 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from app.agent_tasks import agent_task_store
+from app.codex_capability_routes import router as codex_capability_router
 from app.codex_task_inputs import codex_task_input_store
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _login_redirect
 
 router = APIRouter(prefix="/account/agent", include_in_schema=False)
+router.include_router(codex_capability_router)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
 
 
