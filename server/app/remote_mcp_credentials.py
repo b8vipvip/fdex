@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -222,7 +221,10 @@ class RemoteMcpCredentialStore:
         expected_revision: str | None = None,
     ) -> str | None:
         self.init()
+        expected = None if expected_revision is None else str(expected_revision)
         if self.registry.get(owner_id, server_id) is None:
+            if expected:
+                raise RuntimeError("Remote MCP credential owner/server disappeared")
             return None
         with self.registry.db() as conn:
             row = conn.execute(
@@ -233,11 +235,15 @@ class RemoteMcpCredentialStore:
                 (owner_id, server_id),
             ).fetchone()
         if row is None:
+            # If the task lease was issued while a credential existed, deletion between lease
+            # validation and secret read must fail closed rather than silently becoming anonymous.
+            if expected:
+                raise RuntimeError("Remote MCP credential disappeared")
             return None
         if str(row["auth_type"]) != "bearer":
             raise RuntimeError("Remote MCP credential type is unsupported")
         revision = str(row["updated_at"])
-        if expected_revision is not None and revision != expected_revision:
+        if expected is not None and revision != expected:
             raise RuntimeError("Remote MCP credential revision changed")
         try:
             token = self._cipher().decrypt(str(row["secret_cipher"]).encode("ascii")).decode("ascii")
