@@ -19,7 +19,7 @@
         <h2>扫描范围</h2>
         <p>页面不会为了扫描能力自动 clone/fetch 仓库；未落地的项目使用当前账号 CODEX_HOME 做安全扫描。</p>
       </div>
-      <span class="badge">Phase 7.30</span>
+      <span class="badge">Phase 7.32</span>
     </div>
     <form method="get" action="/account/agent/capabilities/" class="row" style="align-items:end">
       <label style="min-width:280px">项目范围
@@ -64,27 +64,18 @@
     {% else %}
     <div class="empty-state"><p>当前范围未发现 Skill。</p></div>
     {% endfor %}
-    {% for item in inventory.skill_errors %}
-    <div class="alert alert-error">Skill 扫描错误：{{ item.message }}</div>
-    {% endfor %}
+    {% for item in inventory.skill_errors %}<div class="alert alert-error">Skill 扫描错误：{{ item.message }}</div>{% endfor %}
   </section>
 
   <section class="card span-12 stack">
     <div class="card-head">
-      <div><h2>Hooks</h2><p>只读展示官方 <code>hooks/list</code> 状态。7.30 不提供创建命令 Hook 的 FDEX 旁路。</p></div>
+      <div><h2>Hooks</h2><p>只读展示官方 <code>hooks/list</code> 状态。FDEX 不提供绕过官方 Hook 解析器的旁路。</p></div>
       <span class="badge">{{ inventory.hooks|length }}</span>
     </div>
     {% for hook in inventory.hooks %}
-    <div class="conversation-card">
-      <div><strong>{{ hook.event or 'Hook' }}</strong><div class="fine">{{ hook.source }} · {{ hook.trust }}</div></div>
-      <div class="conversation-preview">{{ hook.handler }}</div>
-    </div>
-    {% else %}
-    <div class="empty-state"><p>当前范围未发现 Hook。</p></div>
-    {% endfor %}
-    {% for message in inventory.hook_diagnostics %}
-    <div class="alert alert-error">{{ message }}</div>
-    {% endfor %}
+    <div class="conversation-card"><div><strong>{{ hook.event or 'Hook' }}</strong><div class="fine">{{ hook.source }} · {{ hook.trust }}</div></div><div class="conversation-preview">{{ hook.handler }}</div></div>
+    {% else %}<div class="empty-state"><p>当前范围未发现 Hook。</p></div>{% endfor %}
+    {% for message in inventory.hook_diagnostics %}<div class="alert alert-error">{{ message }}</div>{% endfor %}
   </section>
 
   <section class="card span-12 stack">
@@ -94,15 +85,16 @@
     </div>
     <div class="alert alert-error">{{ dynamic_tool.reason }}</div>
     <div class="fine">兼容基线：<code>{{ dynamic_tool.runtime_fallback }}</code> · 激活字段：<code>{{ dynamic_tool.activation_field }}</code></div>
-    <div class="fine">当前 FDEX 的 thread/start 继续省略 <code>dynamicTools</code>，未知 server-request 工具调用仍由 Host 默认拒绝。</div>
   </section>
 
   <section class="card span-12 stack">
     <div class="card-head">
-      <div><h2>Plugins</h2><p>7.30 仅查询本地 marketplace，<code>forceRefetch=false</code>；打开页面不会触发远程 Plugin catalog 拉取。</p></div>
-      <span class="badge">安装写操作已锁定</span>
+      <div><h2>Plugins</h2><p>只查询 local marketplace 且 <code>forceRefetch=false</code>。Phase 7.32 增加了整棵 Codex 进程树的 cgroup 资源/生命周期隔离，但 bundled 0.147 的本地 stdio Plugin MCP 仍可作为 app-server 本地子进程启动，因此写操作继续锁定。</p></div>
+      <span class="badge">写操作已锁定</span>
     </div>
     <div class="alert alert-error">{{ inventory.plugin_mutation_reason }}</div>
+
+    <h3>本地 Marketplace · 只读</h3>
     {% for market in inventory.marketplaces %}
     <div class="stack">
       <div><strong>{{ market.name or 'Local marketplace' }}</strong><div class="fine"><code>{{ market.path }}</code></div></div>
@@ -111,6 +103,7 @@
         <div>
           <strong>{{ plugin.name }}</strong>
           <div class="fine">{{ plugin.version }}{% if plugin.id %} · {{ plugin.id }}{% endif %}</div>
+          <div class="fine">availability={{ plugin.availability or 'unknown' }} · installPolicy={{ plugin.install_policy or 'unknown' }}{% if plugin.installed %} · 已安装{% endif %}</div>
           <div class="conversation-preview">{{ plugin.description }}</div>
         </div>
         {% if market.path %}
@@ -124,27 +117,34 @@
       </div>
       {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state"><p>当前范围未发现本地 Plugin marketplace。</p></div>
-    {% endfor %}
-    {% for message in inventory.plugin_diagnostics %}
-    <div class="alert alert-error">{{ message }}</div>
-    {% endfor %}
+    {% else %}<div class="empty-state"><p>当前范围未发现本地 Plugin marketplace。</p></div>{% endfor %}
 
+    <h3>已安装 Plugins · 只读</h3>
+    {% set installed_count = namespace(value=0) %}
+    {% for market in inventory.installed_marketplaces %}
+      {% for plugin in market.plugins %}
+        {% if plugin.installed %}
+        {% set installed_count.value = installed_count.value + 1 %}
+        <div class="conversation-card">
+          <div><strong>{{ plugin.name }}</strong><div class="fine">{{ plugin.version }}{% if plugin.id %} · {{ plugin.id }}{% endif %}</div></div>
+          <span class="badge">不可在 Center 中执行卸载</span>
+        </div>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+    {% if installed_count.value == 0 %}<div class="empty-state"><p>当前范围未发现已安装 Plugin。</p></div>{% endif %}
+
+    {% for message in inventory.plugin_diagnostics %}<div class="alert alert-error">{{ message }}</div>{% endfor %}
     {% if plugin_detail %}
-    <div class="card stack" style="margin-top:12px">
-      <div><strong>Plugin 详情：{{ plugin_detail.name }}</strong></div>
-      <div class="conversation-preview">{{ plugin_detail.description }}</div>
-      {% if plugin_detail.path %}<div class="fine"><code>{{ plugin_detail.path }}</code></div>{% endif %}
-    </div>
+    <div class="card stack" style="margin-top:12px"><div><strong>Plugin 详情：{{ plugin_detail.name }}</strong></div><div class="conversation-preview">{{ plugin_detail.description }}</div>{% if plugin_detail.path %}<div class="fine"><code>{{ plugin_detail.path }}</code></div>{% endif %}</div>
     {% endif %}
 
     <form method="post" action="/account/agent/capabilities/plugins/mutate" class="row">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="project_id" value="{{ selected_project_id }}">
       <input type="hidden" name="action" value="plugin/install">
-      <button type="submit" class="button button-secondary">验证 Plugin 安装安全门</button>
-      <span class="fine">该按钮不会安装任何内容，只验证 7.32 之前安装路径仍然 fail-closed。</span>
+      <button type="submit" class="button button-secondary">验证 Plugin 写安全门</button>
+      <span class="fine">plugin/install、plugin/uninstall、marketplace/*、远程 catalog 安装与 plugin/share/* 全部 fail-closed。</span>
     </form>
   </section>
 </div>

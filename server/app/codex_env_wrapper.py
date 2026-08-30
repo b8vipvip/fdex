@@ -64,17 +64,32 @@ def main() -> int:
 
     try:
         codex_args = _inject_governance_args(list(sys.argv[2:]))
+        # _inject_governance_args adds the trusted server package root to sys.path for app-server
+        # launches. Import the Phase 7.32 cross-worker fence only from that trusted root.
+        from app.codex_runtime_fence import CodexRuntimeFenceError, runtime_launch_fence
     except Exception as exc:
         # Never fall back to an ungoverned official runtime when Center policy cannot be loaded.
         print(f"FDEX Codex governance configuration is invalid: {exc}", file=sys.stderr)
         return 2
 
-    clean_env = {name: os.environ[name] for name in _SAFE_ENV_NAMES if os.environ.get(name)}
-    clean_env.setdefault("LANG", "C.UTF-8")
-    clean_env.setdefault("LC_ALL", "C.UTF-8")
-    clean_env["CI"] = "true"
-    os.environ.clear()
-    os.environ.update(clean_env)
+    try:
+        # This wrapper is already the ExecStart process of the transient systemd service. The
+        # shared fence prevents a Runtime switch from passing the tree-enumeration boundary while
+        # we validate the path. If a switch already won, a stale launch is rejected before exec.
+        with runtime_launch_fence(real_codex):
+            clean_env = {name: os.environ[name] for name in _SAFE_ENV_NAMES if os.environ.get(name)}
+            clean_env.setdefault("LANG", "C.UTF-8")
+            clean_env.setdefault("LC_ALL", "C.UTF-8")
+            clean_env["CI"] = "true"
+            os.environ.clear()
+            os.environ.update(clean_env)
+    except CodexRuntimeFenceError as exc:
+        print(f"FDEX Codex Runtime launch rejected: {exc}", file=sys.stderr)
+        return 2
+
+    # The shared lock is released immediately before exec. At this point the transient service
+    # already exists, so a switch acquiring the exclusive fence must enumerate/terminate this unit
+    # before it can change the active pin.
     os.execve(real_codex, [real_codex, *codex_args], clean_env)
     return 127
 
