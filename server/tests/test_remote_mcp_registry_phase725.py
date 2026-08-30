@@ -195,7 +195,9 @@ def test_cross_owner_cannot_overwrite_existing_registry_id(tmp_path: Path, monke
     assert store.get(OWNER, first["id"])["name"] == "docs"  # type: ignore[index]
 
 
-def test_phase725_registry_is_not_injected_into_codex_runtime_yet(tmp_path: Path) -> None:
+def test_phase725_registry_base_config_and_lifecycle_invariants_survive_runtime_activation(tmp_path: Path) -> None:
+    # Phase 7.26 activates MCP only through the task-scoped Host seam. The underlying Codex engine
+    # config helper must remain MCP-free so no user URL/capability can leak into unrelated callers.
     config = _codex_thread_config(tmp_path / "codex-home", allow_network=True)
     assert "mcp_servers" not in config
     assert "mcpServers" not in config
@@ -209,8 +211,9 @@ def test_phase725_registry_is_not_injected_into_codex_runtime_yet(tmp_path: Path
     assert 'remote_mcp_registry().save(' in route
     assert 'remote_mcp_registry().set_enabled(str(user["id"]), server_id, False)' in route
     template = template_source.read_text(encoding="utf-8")
-    assert "Remote MCP 注册表" in template
-    assert "Runtime 激活仍保持关闭" in template
+    # UI wording can advance in later phases; the durable 7.25 invariants are the owner registry,
+    # explicit emergency disable and credential-free lifecycle/export contract.
+    assert "Remote MCP" in template
     assert "立即停用（不依赖 DNS）" in template
     assert "remote_mcp_registry().delete_owner(clean)" in cleanup_source.read_text(encoding="utf-8")
     assert '"remote_mcp_servers": remote_mcp_registry().export_owner(user_id)' in export_source.read_text(encoding="utf-8")

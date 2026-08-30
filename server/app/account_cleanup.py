@@ -15,6 +15,7 @@ from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
+from app.remote_mcp_gateway import remote_mcp_lease_store
 from app.remote_mcp_registry import remote_mcp_registry
 from app.web_workspace import web_workspace_store
 
@@ -24,6 +25,20 @@ def _safe_owner_path(root: Path, user_id: str) -> Path:
     target = (owners / user_id).resolve()
     if owners not in target.parents or target == owners:
         raise ValueError("invalid FDEX owner path")
+    return target
+
+
+def _safe_direct_owner_path(root: Path, user_id: str) -> Path:
+    """Resolve an owner directory stored directly below a configured root.
+
+    Codex HOME predates the Agent sandbox ``owners/`` layout and is rooted as
+    ``<fdex_agent_codex_home_root>/<owner_id>``. Resolve symlinks before deletion and refuse any
+    target that escapes the configured root.
+    """
+    base = root.resolve()
+    target = (base / user_id).resolve()
+    if base not in target.parents or target == base:
+        raise ValueError("invalid FDEX direct owner path")
     return target
 
 
@@ -96,8 +111,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
     github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
-    # Remote MCP Phase 7.25 contains no credentials, but it is still owner-scoped account data and
-    # must not survive identity deletion. Remove it before the task/Host stores disappear.
+    # Capability leases must disappear before their registry rows. Only token hashes are durable,
+    # but deleting them first also guarantees no localhost capability can survive identity erasure.
+    remote_mcp_lease_count = remote_mcp_lease_store().delete_owner(clean)
     remote_mcp_count = remote_mcp_registry().delete_owner(clean)
     # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
     # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
@@ -115,6 +131,15 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
             shutil.rmtree(target)
             removed_dirs += 1
 
+    # CODEX_HOME may contain official Runtime rollout/state files for this owner. Account erasure
+    # must remove that filesystem state as well as FDEX's durable Host/Item/Interaction databases.
+    codex_home_root = Path(settings.fdex_agent_codex_home_root).expanduser().resolve()
+    codex_home_target = _safe_direct_owner_path(codex_home_root, clean)
+    codex_home_removed = 0
+    if codex_home_target.exists():
+        shutil.rmtree(codex_home_target)
+        codex_home_removed = 1
+
     return {
         "projects": project_count,
         "github_connections": connection_count,
@@ -124,12 +149,14 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "github_app_installations_revoked": len(installation_ids),
         "agent_account_policies": policy_count,
         "github_installation_sync_states": sync_state_count,
+        "remote_mcp_leases": remote_mcp_lease_count,
         "remote_mcp_servers": remote_mcp_count,
         "agent_tasks": task_count,
         "codex_interactions": codex_interaction_cleanup,
         "codex_items": codex_item_cleanup,
         "codex_host": codex_cleanup,
         "owner_directories": removed_dirs,
+        "codex_home_directories": codex_home_removed,
     }
 
 
