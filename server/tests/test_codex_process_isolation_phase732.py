@@ -57,8 +57,10 @@ def test_phase732_transient_service_owns_limits_without_secret_in_argv(monkeypat
         "PATH": "/usr/bin:/bin",
         "CI": "true",
     }
+    original_config = 'base_url="https://example.test/$tenant%25"'
+    escaped_config = 'base_url="https://example.test/$$tenant%%25"'
     wrapped = spec.wrap_launch_args(
-        ("/srv/fdex/codex_env_wrapper.py", "--config", "base_url=\"https://example.test/$tenant%25\"", "app-server"),
+        ("/srv/fdex/codex_env_wrapper.py", "--config", original_config, "app-server"),
         env,
     )
     joined = "\n".join(wrapped)
@@ -73,10 +75,8 @@ def test_phase732_transient_service_owns_limits_without_secret_in_argv(monkeypat
     assert "--property=BindsTo=fdex.service" in wrapped
     assert "--setenv=FDEX_CODEX_PROVIDER_KEY" in wrapped
     assert "super-secret-provider-key" not in joined
-    assert "$tenant" not in joined
-    assert "$$tenant" in joined
-    assert "%25" not in joined
-    assert "%%25" in joined
+    assert original_config not in wrapped
+    assert escaped_config in wrapped
 
 
 def test_phase732_unit_name_is_stable_but_does_not_expose_owner_or_task(monkeypatch: pytest.MonkeyPatch) -> None:
