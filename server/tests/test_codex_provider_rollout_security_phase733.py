@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,7 @@ def _request(*, token: str, headers: list[tuple[bytes, bytes]], body: bytes = b"
     return Request(scope, receive)
 
 
-@pytest.mark.asyncio
-async def test_smoke_mcp_rejects_reverse_proxied_request_even_when_peer_is_loopback(
+def test_smoke_mcp_rejects_reverse_proxied_request_even_when_peer_is_loopback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -53,14 +53,13 @@ async def test_smoke_mcp_rejects_reverse_proxied_request_even_when_peer_is_loopb
         body=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
     )
 
-    response = await smoke_mcp.codex_provider_smoke_mcp(token, request)
+    response = asyncio.run(smoke_mcp.codex_provider_smoke_mcp(token, request))
 
     assert response.status_code == 404
     assert store.smoke_capability(token) is not None
 
 
-@pytest.mark.asyncio
-async def test_smoke_mcp_accepts_direct_loopback_capability_request(
+def test_smoke_mcp_accepts_direct_loopback_capability_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -73,7 +72,7 @@ async def test_smoke_mcp_accepts_direct_loopback_capability_request(
         body=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
     )
 
-    response = await smoke_mcp.codex_provider_smoke_mcp(token, request)
+    response = asyncio.run(smoke_mcp.codex_provider_smoke_mcp(token, request))
 
     assert response.status_code == 200
     assert b"fdex-codex-provider-smoke" in response.body
@@ -168,13 +167,14 @@ class _FakeCodexClient:
         return self.notifications.pop(0)
 
 
-@pytest.mark.asyncio
-async def test_turn_evidence_distinguishes_completed_collaboration_and_subagent_lifecycle() -> None:
-    result = await smoke._run_turn(
-        _FakeCodexClient(),  # type: ignore[arg-type]
-        "thread-733",
-        "run sub-agent smoke",
-        timeout=30.0,
+def test_turn_evidence_distinguishes_completed_collaboration_and_subagent_lifecycle() -> None:
+    result = asyncio.run(
+        smoke._run_turn(
+            _FakeCodexClient(),  # type: ignore[arg-type]
+            "thread-733",
+            "run sub-agent smoke",
+            timeout=30.0,
+        )
     )
 
     assert result["text"] == "PHASE733-DONE"
