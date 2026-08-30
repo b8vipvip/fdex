@@ -115,7 +115,7 @@
             <button type="submit" class="button button-secondary">官方 plugin/read</button>
           </form>
           {% endif %}
-          {% if inventory.plugin_mutation_allowed and market.path and not plugin.installed and plugin.availability == 'AVAILABLE' and plugin.install_policy != 'NOT_AVAILABLE' %}
+          {% if inventory.plugin_mutation_allowed and market.path and not plugin.installed and plugin.availability == 'AVAILABLE' and plugin.install_policy in ['AVAILABLE', 'INSTALLED_BY_DEFAULT'] %}
           <form method="post" action="/account/agent/capabilities/plugins/install" data-confirm="将通过官方 plugin/install 安装该本地 Plugin，并由 FDEX 进程树隔离约束其运行。确定继续吗？">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="project_id" value="{{ selected_project_id }}">
