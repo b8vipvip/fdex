@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.codex_notification_bus import publish_transport_notification
+from app.codex_process_isolation import CodexProcessIsolationSpec
 
 JsonObject = dict[str, Any]
 NotificationHandler = Callable[[str, JsonObject], Awaitable[None]]
@@ -36,6 +37,11 @@ class CodexAppServerClient:
     keeps this client schema-light: new methods/notifications can pass through without
     waiting for a matching Python SDK release. Typed validation belongs at the FDEX feature
     boundary that actually consumes a method.
+
+    Phase 7.32 optionally launches the transport through an operator-owned transient systemd
+    service. That service owns the complete cgroup beneath app-server, including shell commands,
+    sub-agents, stdio MCP helpers and future executable plugins. Closing a transport must then
+    terminate the whole control group, not merely the direct relay process.
     """
 
     def __init__(
@@ -49,6 +55,7 @@ class CodexAppServerClient:
         notification_handler: NotificationHandler | None = None,
         server_request_handler: ServerRequestHandler | None = None,
         experimental_api: bool = True,
+        process_isolation: CodexProcessIsolationSpec | None = None,
     ) -> None:
         if not launch_args:
             raise ValueError("Codex launch_args cannot be empty")
@@ -60,6 +67,8 @@ class CodexAppServerClient:
         self.notification_handler = notification_handler
         self.server_request_handler = server_request_handler
         self.experimental_api = bool(experimental_api)
+        self.process_isolation = process_isolation
+        self.effective_launch_args = self.launch_args
 
         self.process: asyncio.subprocess.Process | None = None
         self._next_id = 1
@@ -84,13 +93,22 @@ class CodexAppServerClient:
     def stderr_tail(self) -> str:
         return "\n".join(self._stderr_lines)
 
+    @property
+    def process_unit(self) -> str:
+        return self.process_isolation.unit_name if self.process_isolation is not None else ""
+
     async def start(self) -> JsonObject:
         if self.process is not None:
             return self.initialize_result
         if self._closed:
             raise CodexTransportClosed("Codex app-server client is closed")
+        launch_args = self.launch_args
+        if self.process_isolation is not None:
+            await asyncio.to_thread(self.process_isolation.prepare)
+            launch_args = self.process_isolation.wrap_launch_args(self.launch_args, self.env)
+        self.effective_launch_args = tuple(launch_args)
         self.process = await asyncio.create_subprocess_exec(
-            *self.launch_args,
+            *self.effective_launch_args,
             cwd=str(self.cwd),
             env=self.env,
             stdin=asyncio.subprocess.PIPE,
@@ -173,6 +191,7 @@ class CodexAppServerClient:
             return
         self._closed = True
         proc = self.process
+        tree_error: Exception | None = None
         if proc is not None:
             if proc.stdin is not None:
                 try:
@@ -180,14 +199,23 @@ class CodexAppServerClient:
                     await proc.stdin.wait_closed()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+            if proc.returncode is None and self.process_isolation is not None:
+                try:
+                    await asyncio.to_thread(self.process_isolation.terminate_tree)
+                except Exception as exc:
+                    tree_error = exc
             if proc.returncode is None:
+                if self.process_isolation is None:
+                    try:
+                        proc.terminate()
+                    except ProcessLookupError:
+                        pass
                 try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
+                    # When isolation is enabled this kills only the systemd-run relay. The cgroup
+                    # controller above has already performed TERM -> KILL against the complete
+                    # service tree and verified it inactive before this fallback is reached.
                     try:
                         proc.kill()
                     except ProcessLookupError:
@@ -204,6 +232,8 @@ class CodexAppServerClient:
                 except asyncio.CancelledError:
                     pass
         self._fail_pending(CodexTransportClosed(self._closed_message()))
+        if tree_error is not None:
+            raise CodexTransportClosed(f"Codex cgroup tree cleanup failed: {tree_error}") from tree_error
 
     async def _send(self, payload: JsonObject) -> None:
         proc = self.process
@@ -345,6 +375,8 @@ class CodexAppServerClient:
         proc = self.process
         code = proc.returncode if proc is not None else None
         suffix = f" exit={code}" if code is not None else ""
+        if self.process_unit:
+            suffix += f" unit={self.process_unit}"
         stderr = self.stderr_tail[-2000:]
         if stderr:
             suffix += f" stderr={stderr}"
