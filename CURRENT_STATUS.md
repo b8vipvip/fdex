@@ -89,13 +89,15 @@ Completed:
 - `KillMode=control-group`, graceful stop and verified all-process SIGKILL fallback;
 - `BindsTo=<FDEX service>` lifecycle ownership;
 - Provider secret values stay out of systemd-run argv;
+- systemd `$` / `%` ExecStart escaping is enforced for transient service launch arguments;
 - fail-closed Linux/systemd/cgroup-v2 production preflight;
 - official OpenAI Codex Release source/tag/asset/digest/size validation;
 - staged SHA-256 download and safe tar extraction;
 - candidate Runtime version + Phase 7.31 governance/app-server parsing validation;
 - immutable managed Runtime installs and `/admin/agent/runtime` upgrade/rollback surface;
 - stale Codex trees stop before Runtime pin changes;
-- cross-worker Runtime launch/switch `flock` fence closes the old-runtime launch race.
+- cross-worker Runtime launch/switch `flock` fence closes the old-runtime launch race;
+- rollback fallback validation uses the same runtime resolution precedence as launch: configured pin when present, otherwise system Codex before bundled fallback.
 
 #### Plugin security conclusion
 
