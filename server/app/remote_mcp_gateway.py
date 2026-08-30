@@ -19,6 +19,7 @@ from starlette.responses import Response
 
 from app.config import fresh_settings
 from app.remote_mcp_credentials import RemoteMcpCredentialStore, remote_mcp_credential_store
+from app.remote_mcp_oauth import oauth_access_token
 from app.remote_mcp_registry import RemoteMcpRegistry, remote_mcp_registry, resolve_public_addresses
 
 router = APIRouter(prefix="/internal/codex-mcp", include_in_schema=False)
@@ -90,9 +91,9 @@ def _safe_server_config_name(name: str, server_id: str) -> str:
 class RemoteMcpLeaseStore:
     """Cross-worker ephemeral capability leases for the local MCP gateway.
 
-    A lease is bound to both the public registry revision and the FDEX-held credential revision.
-    Editing the server or adding/rotating/removing credentials therefore invalidates old task
-    capabilities immediately instead of silently changing the authority of a running Codex task.
+    A lease is bound to both the public registry revision and the FDEX-held credential grant
+    revision. Static Bearer rotation changes that revision. OAuth access-token refresh keeps the
+    same grant revision, while OAuth reauthorization/revocation changes it and invalidates leases.
     """
 
     def __init__(
@@ -140,18 +141,12 @@ class RemoteMcpLeaseStore:
                     ON remote_mcp_leases(owner_id,server_id,state,expires_at);
                 """
             )
-            # Rolling upgrades can start several Uvicorn workers against the same SQLite file.
-            # Serialize PRAGMA/ALTER so only one worker changes the schema; waiters then re-read
-            # the final columns instead of racing into duplicate-column failures.
             conn.execute("BEGIN IMMEDIATE")
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(remote_mcp_leases)").fetchall()}
             if "server_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN server_updated_at TEXT NOT NULL DEFAULT ''")
             if "credential_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN credential_updated_at TEXT NOT NULL DEFAULT ''")
-            # Revisionless pre-final 7.26 leases cannot prove which registry revision they were
-            # authorized against. Revoke only those; empty credential revision is valid and means
-            # no FDEX-held credential existed when the lease was issued.
             conn.execute(
                 """
                 UPDATE remote_mcp_leases
@@ -377,8 +372,6 @@ def _forward_request_headers(request: Request, *, bearer_token: str | None = Non
     result["Accept-Encoding"] = "identity"
     result["User-Agent"] = "FDEX-Remote-MCP-Gateway/1"
     if bearer_token:
-        # Only FDEX-held vault material can create the upstream Authorization header. A header
-        # supplied by Codex/user input is never part of the forwarding allowlist.
         result["Authorization"] = f"Bearer {bearer_token}"
     return result
 
@@ -512,6 +505,27 @@ async def _relay(
     return StreamingResponse(stream(), status_code=upstream.status, headers=response_headers, media_type=None)
 
 
+async def _authorization_bearer(lease: dict[str, Any]) -> str | None:
+    owner_id = str(lease["owner_id"])
+    server_id = str(lease["server_id"])
+    expected = str(lease.get("credential_updated_at") or "")
+    credentials = remote_mcp_credential_store()
+    metadata = credentials.metadata(owner_id, server_id)
+    if metadata is None:
+        if expected:
+            raise RuntimeError("Remote MCP credential disappeared after lease admission")
+        return None
+    current_revision = str(metadata.get("lease_revision") or "")
+    if current_revision != expected:
+        raise RuntimeError("Remote MCP credential changed after lease admission")
+    auth_type = str(metadata.get("auth_type") or "")
+    if auth_type == "bearer":
+        return credentials.get_bearer(owner_id, server_id, expected_revision=expected)
+    if auth_type == "oauth":
+        return await oauth_access_token(owner_id, server_id, expected)
+    raise RuntimeError("Remote MCP credential type is unsupported")
+
+
 @router.api_route("/{lease_id}", methods=["GET", "POST", "DELETE"], response_model=None)
 async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
     if not _direct_loopback_client(request):
@@ -524,11 +538,7 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
         return PlainTextResponse("expired or invalid capability", status_code=404)
     lease, server = resolved
     try:
-        bearer_token = remote_mcp_credential_store().get_bearer(
-            str(lease["owner_id"]),
-            str(lease["server_id"]),
-            expected_revision=str(lease.get("credential_updated_at") or ""),
-        )
+        bearer_token = await _authorization_bearer(lease)
         body = await _bounded_body(request)
         if request.method == "POST":
             enforce_tool_allowlist(
@@ -536,8 +546,6 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
                 request.headers.get("content-type", ""),
                 [str(item) for item in server.get("enabled_tools") or []],
             )
-        # Preserve anonymous 7.26 call semantics and never expose a meaningless bearer kwarg to
-        # test/runtime adapters. Authenticated requests explicitly opt into the injection path.
         if bearer_token is None:
             return await _relay(request, server=server, body=body)
         return await _relay(request, server=server, body=body, bearer_token=bearer_token)
@@ -547,7 +555,7 @@ async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=400, headers={"Cache-Control": "no-store"})
     except RuntimeError:
         return JSONResponse(
-            {"error": "Remote MCP credential is unavailable or changed"},
+            {"error": "Remote MCP credential is unavailable, expired or changed"},
             status_code=502,
             headers={"Cache-Control": "no-store"},
         )
