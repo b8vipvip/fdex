@@ -15,7 +15,7 @@ def test_switch_fence_blocks_new_launch_fence_until_release(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(fence, "_LOCK_PATH", tmp_path / "runtime.lock")
-    monkeypatch.setattr(fence, "effective_runtime_path", lambda: Path("/opt/codex/current").resolve())
+    monkeypatch.setattr(fence, "_recorded_runtime_path", lambda: Path("/opt/codex/current").resolve())
 
     switch_entered = threading.Event()
     allow_switch_exit = threading.Event()
@@ -49,21 +49,32 @@ def test_stale_runtime_path_is_rejected_before_exec_boundary(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(fence, "_LOCK_PATH", tmp_path / "runtime.lock")
-    monkeypatch.setattr(fence, "effective_runtime_path", lambda: Path("/opt/codex/new").resolve())
+    monkeypatch.setattr(fence, "_recorded_runtime_path", lambda: Path("/opt/codex/new").resolve())
     with pytest.raises(fence.CodexRuntimeFenceError, match="stale launch was rejected"):
         with fence.runtime_launch_fence("/opt/codex/old"):
             raise AssertionError("stale Host must never enter the exec boundary")
 
 
-def test_effective_runtime_path_matches_configured_system_bundled_precedence(
+def test_no_managed_switch_record_preserves_existing_environment_based_pin(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(fence, "read_env", lambda: {"FDEX_AGENT_CODEX_BIN": "/srv/codex/pinned"})
-    monkeypatch.setattr(fence.shutil, "which", lambda name: "/usr/bin/codex")
-    assert fence.effective_runtime_path() == Path("/srv/codex/pinned").resolve()
+    monkeypatch.setattr(fence, "_LOCK_PATH", tmp_path / "runtime.lock")
+    monkeypatch.setattr(fence, "_ACTIVE_PATH", tmp_path / "runtime.active")
+    # The fence deliberately does not infer the initial pin source. A service-level Environment=
+    # FDEX_AGENT_CODEX_BIN deployment remains valid until FDEX performs its first managed switch.
+    with fence.runtime_launch_fence("/operator/environment/codex"):
+        pass
 
-    monkeypatch.setattr(fence, "read_env", lambda: {})
-    assert fence.effective_runtime_path() == Path("/usr/bin/codex").resolve()
+
+def test_managed_switch_record_is_atomic_and_exact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(fence, "_ACTIVE_PATH", tmp_path / "runtime.active")
+    fence.record_switched_runtime("/srv/fdex/codex/releases/1.2.3/codex")
+    assert fence._recorded_runtime_path() == Path("/srv/fdex/codex/releases/1.2.3/codex").resolve()
+    assert (tmp_path / "runtime.active").read_text(encoding="utf-8").strip().endswith("/1.2.3/codex")
 
 
 def test_upgrade_download_and_verification_happen_before_exclusive_activation(
@@ -104,10 +115,15 @@ def test_upgrade_download_and_verification_happen_before_exclusive_activation(
         "_activate_pin",
         lambda pin, current, action: events.append("activate") or {"active_pin": pin},
     )
+    monkeypatch.setattr(
+        runtime_switch,
+        "record_switched_runtime",
+        lambda path: events.append("record"),
+    )
 
     result = runtime_switch.upgrade_runtime_safely()
     assert result["active_pin"] == str(binary)
-    assert events == ["fetch", "install", "lock", "activate", "unlock"]
+    assert events == ["fetch", "install", "lock", "activate", "record", "unlock"]
 
 
 def test_empty_rollback_target_uses_same_system_before_bundled_precedence(
@@ -129,9 +145,12 @@ def test_trusted_wrapper_and_admin_routes_use_runtime_fence() -> None:
     root = Path(__file__).parents[1] / "app"
     wrapper = (root / "codex_env_wrapper.py").read_text(encoding="utf-8")
     routes = (root / "codex_runtime_admin_routes.py").read_text(encoding="utf-8")
+    switch_source = (root / "codex_runtime_switch.py").read_text(encoding="utf-8")
     assert "runtime_launch_fence(real_codex)" in wrapper
     assert wrapper.index("runtime_launch_fence(real_codex)") < wrapper.index("os.execve(real_codex")
     assert "upgrade_runtime_safely" in routes
     assert "rollback_runtime_safely" in routes
     assert "upgrade_runtime(requested)" not in routes
     assert "rollback_runtime()" not in routes
+    assert "record_switched_runtime(binary)" in switch_source
+    assert "record_switched_runtime(Path(str(validation[\"path\"])))" in switch_source
