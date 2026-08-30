@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.codex_notification_bus import publish_transport_notification
-from app.codex_process_isolation import CodexProcessIsolationSpec
+from app.codex_process_isolation import CodexProcessIsolationSpec, build_codex_process_isolation
 
 JsonObject = dict[str, Any]
 NotificationHandler = Callable[[str, JsonObject], Awaitable[None]]
@@ -38,10 +39,11 @@ class CodexAppServerClient:
     waiting for a matching Python SDK release. Typed validation belongs at the FDEX feature
     boundary that actually consumes a method.
 
-    Phase 7.32 optionally launches the transport through an operator-owned transient systemd
+    Phase 7.32 launches every FDEX-provider Host through an operator-owned transient systemd
     service. That service owns the complete cgroup beneath app-server, including shell commands,
     sub-agents, stdio MCP helpers and future executable plugins. Closing a transport must then
-    terminate the whole control group, not merely the direct relay process.
+    terminate the whole control group, not merely the direct relay process. Low-level transport
+    tests that intentionally start the public binary without an FDEX provider key stay direct.
     """
 
     def __init__(
@@ -68,6 +70,10 @@ class CodexAppServerClient:
         self.server_request_handler = server_request_handler
         self.experimental_api = bool(experimental_api)
         self.process_isolation = process_isolation
+        self._auto_isolation = process_isolation is None and bool(
+            self.env.get("FDEX_CODEX_PROVIDER_KEY") and self.env.get("CODEX_HOME")
+        )
+        self._isolation_nonce = uuid.uuid4().hex
         self.effective_launch_args = self.launch_args
 
         self.process: asyncio.subprocess.Process | None = None
@@ -97,11 +103,24 @@ class CodexAppServerClient:
     def process_unit(self) -> str:
         return self.process_isolation.unit_name if self.process_isolation is not None else ""
 
+    async def _resolve_process_isolation(self) -> None:
+        if not self._auto_isolation or self.process_isolation is not None:
+            return
+        # CODEX_HOME is already owner-scoped by FDEX. It is hashed by the isolation module and is
+        # never exposed in the unit name. A per-client nonce prevents read-only capability Hosts
+        # that share one cwd from terminating each other.
+        self.process_isolation = await asyncio.to_thread(
+            build_codex_process_isolation,
+            str(self.env.get("CODEX_HOME") or "owner"),
+            f"{self.cwd}\0{self._isolation_nonce}",
+        )
+
     async def start(self) -> JsonObject:
         if self.process is not None:
             return self.initialize_result
         if self._closed:
             raise CodexTransportClosed("Codex app-server client is closed")
+        await self._resolve_process_isolation()
         launch_args = self.launch_args
         if self.process_isolation is not None:
             await asyncio.to_thread(self.process_isolation.prepare)
@@ -213,9 +232,8 @@ class CodexAppServerClient:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
-                    # When isolation is enabled this kills only the systemd-run relay. The cgroup
-                    # controller above has already performed TERM -> KILL against the complete
-                    # service tree and verified it inactive before this fallback is reached.
+                    # With isolation this only kills the systemd-run relay. The cgroup controller
+                    # above has already performed TERM -> KILL against the complete service tree.
                     try:
                         proc.kill()
                     except ProcessLookupError:
