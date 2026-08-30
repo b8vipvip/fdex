@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.config import SERVER_DIR, fresh_settings
+from app.config import SERVER_DIR
 
 _OWNER = re.compile(r"^[A-Za-z0-9_.@-]{1,80}$")
 _TASK = re.compile(r"^[0-9a-f]{32}$")
@@ -210,8 +210,10 @@ class CodexTaskInputStore:
         target = self._asset_dir(owner_id, task_id) / f"{item_id}{suffix}"
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.write(descriptor, data)
-            os.fsync(descriptor)
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
         finally:
             os.close(descriptor)
         row = {
