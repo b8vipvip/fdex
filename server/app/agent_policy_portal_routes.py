@@ -160,7 +160,11 @@ def remote_mcp_update(
             tool_timeout_sec=tool_timeout_sec,
             server_id=server_id,
         )
-        _flash(request, f"Remote MCP 已更新：{server['name']}；启停/allowlist 会由 FDEX 网关实时执行", "success")
+        if server["enabled"]:
+            detail = "旧任务 lease 已立即失效；新配置只会由后续新启动/续接任务重新签发"
+        else:
+            detail = "已停用，现存 task lease 的后续请求会立即失效"
+        _flash(request, f"Remote MCP 已更新：{server['name']}；{detail}", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 更新失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
