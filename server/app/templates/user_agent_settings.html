@@ -50,14 +50,14 @@
     <div class="card-head">
       <div>
         <h2>Remote MCP 安全网关</h2>
-        <p>当前 FDEX 账号独立配置。Phase 7.26 已支持匿名 HTTPS Streamable HTTP MCP，通过 FDEX 本地网关接入 Codex。</p>
+        <p>Phase 7.27 支持匿名或静态 Bearer 的 HTTPS Streamable HTTP MCP；远端凭据始终由 FDEX 持有，不交给 Codex。</p>
       </div>
       <span class="badge">{{ remote_mcp_servers|length }}</span>
     </div>
     <div class="alert alert-warning">
-      <strong>安全边界：</strong>Codex 不会直接连接你填写的远端 URL。每个新任务只拿到一个 <code>127.0.0.1</code> 临时 capability；FDEX 在每次远端请求前重新解析 DNS，要求全部地址为公网 IP，并把该次连接固定到已验证地址，同时继续按原域名验证 TLS SNI/证书。3xx 重定向和 401/403/407 认证挑战不会透传。本阶段仍不保存 bearer token、OAuth token、任意远端 HTTP Header，也不开放本地 stdio command/args/env/cwd。
+      <strong>安全边界：</strong>Codex 只连接 <code>127.0.0.1</code> 的任务临时 capability，不直接拿到远端 URL 或 Bearer。FDEX 每次请求重新验证公网 DNS、固定实际连接 IP、按原域名验证 TLS，并在这些检查和 owner/server/lease 版本校验全部通过后，才从加密 vault 解密并注入 <code>Authorization: Bearer …</code>。3xx 不跟随，认证挑战不透传，仍不开放任意远端 Header、OAuth 或本地 stdio command/args/env/cwd。
     </div>
-    <p class="fine">临时 capability 原文不落库，只保存 SHA-256；capability 放在本机请求 Header 中，不进入 URL、普通访问日志或 Codex shell 环境。任何编辑、停用、重新启用都会改变注册项版本并立即让旧 task lease 失效。</p>
+    <p class="fine">Bearer 使用 FDEX 独立 Fernet vault 加密保存；页面只显示是否配置和不可逆短指纹，从不回显 token。新增、轮换或删除 Bearer 都会立即使旧 task lease 失效，新凭据只能由后续新任务 / resume / fork 使用。</p>
 
     <form action="/account/agent/runtime/mcp" method="post" class="stack repo">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -78,16 +78,43 @@
 
     {% if remote_mcp_servers %}
       {% for server in remote_mcp_servers %}
+      {% set credential = remote_mcp_credentials.get(server.id) %}
       <article class="repo stack">
         <div class="row between">
           <div>
             <strong>{{ server.name }}</strong>
             <div class="mono fine">{{ server.url }}</div>
           </div>
-          {% if server.enabled %}<span class="badge ok">已启用 · FDEX 网关</span>{% else %}<span class="badge">已停用</span>{% endif %}
+          <div class="row">
+            {% if credential %}<span class="badge ok">Bearer 已配置 · FDEX 持有</span>{% else %}<span class="badge">匿名</span>{% endif %}
+            {% if server.enabled %}<span class="badge ok">已启用 · FDEX 网关</span>{% else %}<span class="badge">已停用</span>{% endif %}
+          </div>
         </div>
         <div class="fine">上次保存时公网解析：{% if server.resolved_addresses %}{{ server.resolved_addresses|join(', ') }}{% else %}未记录{% endif %}</div>
         <p class="fine">真正发起每次远端请求时还会重新 DNS 校验并固定连接地址；这里显示的只是最近一次保存/启用时的准入快照。</p>
+
+        <section class="stack">
+          <div><strong>远端认证</strong></div>
+          {% if credential %}
+          <p class="fine">静态 Bearer 已加密保存。不可逆指纹：<span class="mono">{{ credential.fingerprint }}</span> · 最近更新 {{ credential.updated_at }}。FDEX 不会在页面、账号导出或 Codex 配置中返回 token。</p>
+          {% else %}
+          <p class="fine">当前为匿名模式。只在远端 MCP 服务明确要求静态 Bearer 时配置；OAuth 不属于本阶段。</p>
+          {% endif %}
+          <form action="/account/agent/runtime/mcp/{{ server.id }}/bearer" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>静态 Bearer token</label>
+            <input type="password" name="bearer_token" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="输入新的 Bearer；保存后不会再次显示" required>
+            <button class="secondary" type="submit">{% if credential %}轮换 Bearer{% else %}保存 Bearer{% endif %}</button>
+          </form>
+          {% if credential %}
+          <form action="/account/agent/runtime/mcp/{{ server.id }}/bearer/delete" method="post" onsubmit="return confirm('确定删除这个 Bearer 吗？现有任务的旧 lease 会立即失效，后续任务将回到匿名模式。');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="danger-button" type="submit">删除 Bearer</button>
+          </form>
+          {% endif %}
+          <p class="fine">保存、轮换或删除凭据不会把秘密注入 Codex shell；它只改变 FDEX vault 的 credential revision，并使旧 lease 立即失效。</p>
+        </section>
+
         {% if server.enabled %}
         <form action="/account/agent/runtime/mcp/{{ server.id }}/disable" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -95,6 +122,7 @@
         </form>
         <p class="fine">停用无需当前 DNS 正常；点击后当前任务持有的旧 lease 从下一次请求起也会失效。</p>
         {% endif %}
+
         <form action="/account/agent/runtime/mcp/{{ server.id }}" method="post" class="stack">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="grid">
@@ -110,10 +138,10 @@
           </div>
           <button class="secondary" type="submit">保存此 Remote MCP</button>
         </form>
-        <p class="fine">保存任何修改都会让当前旧 lease 失效，防止运行中的任务被静默改指向新 URL 或新权限；新配置由下一次新任务 / resume / fork 重新签发。</p>
-        <form action="/account/agent/runtime/mcp/{{ server.id }}/delete" method="post" onsubmit="return confirm('确定删除这个 Remote MCP 注册项吗？');">
+        <p class="fine">保存任何注册项修改都会让当前旧 lease 失效；新 URL、工具策略或凭据版本只能由下一次新任务 / resume / fork 重新获得。</p>
+        <form action="/account/agent/runtime/mcp/{{ server.id }}/delete" method="post" onsubmit="return confirm('确定删除这个 Remote MCP 注册项及其 FDEX 凭据吗？');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="danger-button" type="submit">删除</button>
+          <button class="danger-button" type="submit">删除 Remote MCP</button>
         </form>
       </article>
       {% endfor %}

@@ -15,6 +15,7 @@ from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
+from app.remote_mcp_credentials import remote_mcp_credential_store
 from app.remote_mcp_gateway import remote_mcp_lease_store
 from app.remote_mcp_registry import remote_mcp_registry
 from app.web_workspace import web_workspace_store
@@ -29,12 +30,7 @@ def _safe_owner_path(root: Path, user_id: str) -> Path:
 
 
 def _safe_direct_owner_path(root: Path, user_id: str) -> Path:
-    """Resolve an owner directory stored directly below a configured root.
-
-    Codex HOME predates the Agent sandbox ``owners/`` layout and is rooted as
-    ``<fdex_agent_codex_home_root>/<owner_id>``. Resolve symlinks before deletion and refuse any
-    target that escapes the configured root.
-    """
+    """Resolve an owner directory stored directly below a configured root."""
     base = root.resolve()
     target = (base / user_id).resolve()
     if base not in target.parents or target == base:
@@ -111,9 +107,11 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 
     web_oauth_flow_count = GitHubWebOAuthStore(project_store=store).delete_owner(clean)
     github_app_flow_count = GitHubAppInstallationFlowStore(project_store=store).delete_owner(clean)
-    # Capability leases must disappear before their registry rows. Only token hashes are durable,
-    # but deleting them first also guarantees no localhost capability can survive identity erasure.
+    # Invalidate localhost capabilities first, then destroy encrypted Remote MCP secrets, then
+    # remove the public registry. This ordering guarantees no still-valid lease can outlive the
+    # credential it was authorized against and no orphan secret survives registry deletion.
     remote_mcp_lease_count = remote_mcp_lease_store().delete_owner(clean)
+    remote_mcp_credential_count = remote_mcp_credential_store().delete_owner(clean)
     remote_mcp_count = remote_mcp_registry().delete_owner(clean)
     # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
     # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
@@ -132,7 +130,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
             removed_dirs += 1
 
     # CODEX_HOME may contain official Runtime rollout/state files for this owner. Account erasure
-    # must remove that filesystem state as well as FDEX's durable Host/Item/Interaction databases.
+    # removes that filesystem state after all live task/Host guards have already passed.
     codex_home_root = Path(settings.fdex_agent_codex_home_root).expanduser().resolve()
     codex_home_target = _safe_direct_owner_path(codex_home_root, clean)
     codex_home_removed = 0
@@ -150,6 +148,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "agent_account_policies": policy_count,
         "github_installation_sync_states": sync_state_count,
         "remote_mcp_leases": remote_mcp_lease_count,
+        "remote_mcp_credentials": remote_mcp_credential_count,
         "remote_mcp_servers": remote_mcp_count,
         "agent_tasks": task_count,
         "codex_interactions": codex_interaction_cleanup,
@@ -161,16 +160,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
 
 
 def purge_owned_agent_resources(user_id: str) -> dict[str, object]:
-    """Delete every server-owned resource for one FDEX user before identity removal.
-
-    An account cannot be deleted while a queued/running Coding Agent request, Codex Host control,
-    or interactive Codex request can still write task/worktree/thread/item state. These guards run
-    before remote-memory erasure so a rejected deletion attempt does not partially erase data.
-    Once no operation is active, memory erasure remains fail-closed and durable Agent/Codex rows
-    are removed with the other resources. Web workspace rows and uploaded assets are also erased
-    so account deletion has identical privacy semantics whether initiated from Android, Web or
-    the JSON API.
-    """
+    """Delete every server-owned resource for one FDEX user before identity removal."""
     clean = _validate_user_id(user_id)
     if agent_task_store().active_count(clean):
         raise ValueError("请先停止当前账号正在等待或执行中的 Coding Agent 任务，再注销账号")
