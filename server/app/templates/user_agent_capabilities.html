@@ -1,0 +1,141 @@
+{% extends "user_base.html" %}
+{% block title %}Codex 能力控制 · FDEX{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>Codex 能力控制</h1>
+    <p>直接读取官方 Codex Skills / Hooks / Plugins 能力；FDEX 只增加账号、项目与执行安全边界，不重新实现 Plugin Engine。</p>
+  </div>
+  <div class="row">
+    <a class="button button-secondary" href="/account/agent/inputs">Agent 输入</a>
+    <a class="button button-secondary" href="/account/agent">Coding Agent</a>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card span-12 stack">
+    <div class="card-head">
+      <div>
+        <h2>扫描范围</h2>
+        <p>页面不会为了扫描能力自动 clone/fetch 仓库；未落地的项目使用当前账号 CODEX_HOME 做安全扫描。</p>
+      </div>
+      <span class="badge">Phase 7.30</span>
+    </div>
+    <form method="get" action="/account/agent/capabilities/" class="row" style="align-items:end">
+      <label style="min-width:280px">项目范围
+        <select name="project_id">
+          <option value="0" {% if not selected_project_id %}selected{% endif %}>账号级 CODEX_HOME</option>
+          {% for project in projects %}
+          <option value="{{ project.id }}" {% if selected_project_id == project.id %}selected{% endif %}>{{ project.name }} · {{ project.repo_full_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <input type="hidden" name="refresh" value="true">
+      <button type="submit" class="button button-primary">重新扫描官方能力</button>
+    </form>
+    {% if capability_error %}
+    <div class="alert alert-error">{{ capability_error }}</div>
+    {% else %}
+    <div class="fine">当前 Codex cwd：<code>{{ inventory.cwd }}</code></div>
+    {% endif %}
+  </section>
+
+  <section class="card span-12 stack">
+    <div class="card-head">
+      <div><h2>Skills</h2><p>来自官方 <code>skills/list</code>；开关写入前会强制重新扫描并逐路径验证，再调用 <code>skills/config/write</code>。</p></div>
+      <span class="badge">{{ inventory.skills|length }}</span>
+    </div>
+    {% for skill in inventory.skills %}
+    <div class="conversation-card">
+      <div>
+        <strong>{{ skill.name }}</strong>
+        <div class="fine">{{ skill.scope }}{% if skill.plugin_id %} · Plugin {{ skill.plugin_id }}{% endif %}</div>
+        <div class="conversation-preview">{{ skill.short_description or skill.description }}</div>
+        <div class="fine"><code>{{ skill.path }}</code></div>
+      </div>
+      <form method="post" action="/account/agent/capabilities/skills/toggle">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="project_id" value="{{ selected_project_id }}">
+        <input type="hidden" name="path" value="{{ skill.path }}">
+        <input type="hidden" name="enabled" value="{{ 'false' if skill.enabled else 'true' }}">
+        <button type="submit" class="button button-secondary">{{ '禁用' if skill.enabled else '启用' }}</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="empty-state"><p>当前范围未发现 Skill。</p></div>
+    {% endfor %}
+    {% for item in inventory.skill_errors %}
+    <div class="alert alert-error">Skill 扫描错误：{{ item.message }}</div>
+    {% endfor %}
+  </section>
+
+  <section class="card span-12 stack">
+    <div class="card-head">
+      <div><h2>Hooks</h2><p>只读展示官方 <code>hooks/list</code> 状态。7.30 不提供创建命令 Hook 的 FDEX 旁路。</p></div>
+      <span class="badge">{{ inventory.hooks|length }}</span>
+    </div>
+    {% for hook in inventory.hooks %}
+    <div class="conversation-card">
+      <div><strong>{{ hook.event or 'Hook' }}</strong><div class="fine">{{ hook.source }} · {{ hook.trust }}</div></div>
+      <div class="conversation-preview">{{ hook.handler }}</div>
+    </div>
+    {% else %}
+    <div class="empty-state"><p>当前范围未发现 Hook。</p></div>
+    {% endfor %}
+    {% for message in inventory.hook_diagnostics %}
+    <div class="alert alert-error">{{ message }}</div>
+    {% endfor %}
+  </section>
+
+  <section class="card span-12 stack">
+    <div class="card-head">
+      <div><h2>Plugins</h2><p>7.30 仅查询本地 marketplace，<code>forceRefetch=false</code>；打开页面不会触发远程 Plugin catalog 拉取。</p></div>
+      <span class="badge">安装写操作已锁定</span>
+    </div>
+    <div class="alert alert-error">{{ inventory.plugin_mutation_reason }}</div>
+    {% for market in inventory.marketplaces %}
+    <div class="stack">
+      <div><strong>{{ market.name or 'Local marketplace' }}</strong><div class="fine"><code>{{ market.path }}</code></div></div>
+      {% for plugin in market.plugins %}
+      <div class="conversation-card">
+        <div>
+          <strong>{{ plugin.name }}</strong>
+          <div class="fine">{{ plugin.version }}{% if plugin.id %} · {{ plugin.id }}{% endif %}</div>
+          <div class="conversation-preview">{{ plugin.description }}</div>
+        </div>
+        {% if market.path %}
+        <form method="get" action="/account/agent/capabilities/">
+          <input type="hidden" name="project_id" value="{{ selected_project_id }}">
+          <input type="hidden" name="marketplace_path" value="{{ market.path }}">
+          <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
+          <button type="submit" class="button button-secondary">官方 plugin/read</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><p>当前范围未发现本地 Plugin marketplace。</p></div>
+    {% endfor %}
+    {% for message in inventory.plugin_diagnostics %}
+    <div class="alert alert-error">{{ message }}</div>
+    {% endfor %}
+
+    {% if plugin_detail %}
+    <div class="card stack" style="margin-top:12px">
+      <div><strong>Plugin 详情：{{ plugin_detail.name }}</strong></div>
+      <div class="conversation-preview">{{ plugin_detail.description }}</div>
+      {% if plugin_detail.path %}<div class="fine"><code>{{ plugin_detail.path }}</code></div>{% endif %}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/account/agent/capabilities/plugins/mutate" class="row">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="project_id" value="{{ selected_project_id }}">
+      <input type="hidden" name="action" value="plugin/install">
+      <button type="submit" class="button button-secondary">验证 Plugin 安装安全门</button>
+      <span class="fine">该按钮不会安装任何内容，只验证 7.32 之前安装路径仍然 fail-closed。</span>
+    </form>
+  </section>
+</div>
+{% endblock %}
