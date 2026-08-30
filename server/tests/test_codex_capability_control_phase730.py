@@ -55,6 +55,8 @@ class FakeClient:
                         "id": "plugin.review",
                         "name": "review-plugin",
                         "description": "Review plugin",
+                        "availability": "AVAILABLE",
+                        "installPolicy": "AVAILABLE",
                     }],
                 }],
                 "marketplaceLoadErrors": [],
@@ -87,6 +89,8 @@ def test_official_capability_shapes_are_flattened() -> None:
     assert skills[0]["path"] == "/home/skills/review/SKILL.md"
     assert hooks[0]["event"] == "afterTurn"
     assert markets[0]["plugins"][0]["name"] == "review-plugin"
+    assert markets[0]["plugins"][0]["availability"] == "AVAILABLE"
+    assert markets[0]["plugins"][0]["install_policy"] == "AVAILABLE"
     assert errors == [] and hook_errors == [] and plugin_errors == []
 
 
@@ -172,8 +176,8 @@ def test_local_plugin_read_revalidates_inventory(monkeypatch: pytest.MonkeyPatch
     assert [method for method, _params in client.calls].count("plugin/read") == 1
 
 
-def test_plugin_mutations_are_hard_blocked_until_phase732() -> None:
-    for action in ("plugin/install", "plugin/uninstall", "marketplace/add", "plugin/share/save"):
+def test_wider_plugin_mutations_remain_hard_blocked_after_phase732() -> None:
+    for action in ("marketplace/add", "marketplace/remove", "marketplace/upgrade", "plugin/share/save"):
         with pytest.raises(control.CodexCapabilityError, match="Phase 7.32"):
             control.assert_plugin_mutation_blocked(action)
 
@@ -231,4 +235,6 @@ def test_phase730_route_ui_and_native_method_wiring() -> None:
     assert '"plugin/install",' not in inventory_section
     assert '"plugin/uninstall",' not in inventory_section
     assert "Phase 7.32" in source
-    assert "验证 Plugin 安装安全门" in template
+    assert 'action="/account/agent/capabilities/plugins/install"' in template
+    assert 'action="/account/agent/capabilities/plugins/uninstall"' in template
+    assert "验证 Marketplace / Share 安全门" in template
