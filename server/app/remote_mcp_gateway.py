@@ -131,20 +131,19 @@ class RemoteMcpLeaseStore:
                     ON remote_mcp_leases(owner_id,server_id,state,expires_at);
                 """
             )
-            # Development/rolling-upgrade safety if a pre-final 7.26 worker created the table.
+            # If an early/pre-final 7.26 worker created leases before registry revision binding
+            # existed, fail closed during rolling upgrade. We cannot prove which registry revision
+            # those capabilities authorized, so revoke them instead of retroactively blessing them.
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(remote_mcp_leases)").fetchall()}
             if "server_updated_at" not in columns:
                 conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN server_updated_at TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 UPDATE remote_mcp_leases
-                SET server_updated_at=COALESCE((
-                    SELECT updated_at FROM remote_mcp_servers
-                    WHERE remote_mcp_servers.owner_id=remote_mcp_leases.owner_id
-                      AND remote_mcp_servers.id=remote_mcp_leases.server_id
-                ), '')
-                WHERE server_updated_at=''
-                """
+                SET state='revoked',revoked_at=?
+                WHERE state='active' AND server_updated_at=''
+                """,
+                (_iso(_now()),),
             )
         self._initialized = True
 
