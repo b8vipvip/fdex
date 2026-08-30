@@ -8,6 +8,11 @@ from starlette.responses import Response
 from app.agent_projects import agent_project_store
 from app.config import SERVER_DIR
 from app.remote_mcp_credentials import remote_mcp_credential_store
+from app.remote_mcp_oauth import (
+    exchange_oauth_code,
+    remote_mcp_oauth_store,
+    revoke_oauth_grant,
+)
 from app.remote_mcp_registry import remote_mcp_registry
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -35,6 +40,7 @@ def runtime_policy_page(request: Request) -> Response:
         projects = store.list_projects(owner_id, enabled_only=True)
         remote_mcp_servers = remote_mcp_registry().list(owner_id)
         remote_mcp_credentials = remote_mcp_credential_store().list_metadata(owner_id)
+        remote_mcp_oauth = remote_mcp_oauth_store().list_configs(owner_id)
     except (ValueError, RuntimeError) as exc:
         _flash(request, str(exc), "error")
         return RedirectResponse("/account/agent", status_code=303)
@@ -48,6 +54,7 @@ def runtime_policy_page(request: Request) -> Response:
             repository_count=len(projects),
             remote_mcp_servers=remote_mcp_servers,
             remote_mcp_credentials=remote_mcp_credentials,
+            remote_mcp_oauth=remote_mcp_oauth,
         ),
     )
 
@@ -212,17 +219,142 @@ def remote_mcp_bearer_delete(server_id: str, request: Request, csrf_token: str =
         server = remote_mcp_registry().get(owner_id, server_id)
         if server is None:
             raise KeyError("Remote MCP 不存在")
-        removed = remote_mcp_credential_store().delete(owner_id, server_id)
-        if not removed:
+        metadata = remote_mcp_credential_store().metadata(owner_id, server_id)
+        if metadata is None or str(metadata.get("auth_type")) != "bearer":
+            raise KeyError("当前 Remote MCP 没有静态 Bearer")
+        if not remote_mcp_credential_store().delete(owner_id, server_id):
             raise KeyError("当前 Remote MCP 没有已保存的 Bearer")
         _flash(
             request,
             f"Remote MCP Bearer 已删除：{server['name']}。当前任务旧 lease 已立即失效；"
-            "后续新任务将以匿名模式连接，除非再次配置凭据。",
+            "后续新任务将以匿名模式连接，除非重新配置 OAuth/Bearer。",
             "success",
         )
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP Bearer 删除失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/oauth/config", response_model=None)
+def remote_mcp_oauth_config_save(
+    server_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    authorization_url: str = Form(...),
+    token_url: str = Form(...),
+    client_id: str = Form(...),
+    scopes: str = Form(default=""),
+    client_auth_method: str = Form(default="none"),
+    client_secret: str = Form(default=""),
+    revocation_url: str = Form(default=""),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        config = remote_mcp_oauth_store().save_config(
+            owner_id,
+            server_id,
+            authorization_url=authorization_url,
+            token_url=token_url,
+            client_id=client_id,
+            scopes=scopes,
+            client_auth_method=client_auth_method,
+            client_secret=client_secret,
+            revocation_url=revocation_url,
+        )
+        _flash(
+            request,
+            f"Remote MCP OAuth 配置已保存：client_id {config['client_id']}。旧 task lease 已撤销；"
+            "还需要点击“开始 OAuth 授权”才会产生访问权限。",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP OAuth 配置保存失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/oauth/start", response_model=None)
+def remote_mcp_oauth_start(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        flow = remote_mcp_oauth_store().begin_flow(str(user["id"]), server_id)
+        return RedirectResponse(str(flow["authorization_url"]), status_code=303)
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP OAuth 启动失败：{exc}", "error")
+        return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.get("/mcp/oauth/callback", response_model=None)
+async def remote_mcp_oauth_callback(request: Request) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    error = str(request.query_params.get("error") or "").strip()
+    if error:
+        _flash(request, f"Remote MCP OAuth 被授权端拒绝：{error[:160]}", "error")
+        return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+    state = str(request.query_params.get("state") or "")
+    code = str(request.query_params.get("code") or "")
+    flow: dict[str, object] | None = None
+    try:
+        flow = remote_mcp_oauth_store().claim_flow(str(user["id"]), state)
+        metadata = await exchange_oauth_code(str(user["id"]), flow, code)
+        _flash(
+            request,
+            f"Remote MCP OAuth 授权完成 · 凭据指纹 {metadata['fingerprint']}。"
+            "新任务 / resume / fork 会使用此 grant；access token 过期时由 FDEX 自动刷新。",
+            "success",
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP OAuth 回调失败：{exc}", "error")
+    finally:
+        if flow is not None:
+            remote_mcp_oauth_store().finish_flow(str(flow["id"]))
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/oauth/revoke", response_model=None)
+async def remote_mcp_oauth_revoke(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        metadata = remote_mcp_credential_store().metadata(owner_id, server_id)
+        if metadata is None or str(metadata.get("auth_type")) != "oauth":
+            raise KeyError("当前 Remote MCP 没有 OAuth grant")
+        if not await revoke_oauth_grant(owner_id, server_id):
+            raise RuntimeError("OAuth grant 撤销失败")
+        _flash(request, "Remote MCP OAuth grant 已撤销；现存 task lease 已立即失效", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP OAuth 撤销失败：{exc}", "error")
+    return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
+
+
+@router.post("/mcp/{server_id}/oauth/delete", response_model=None)
+async def remote_mcp_oauth_delete(server_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    owner_id = str(user["id"])
+    try:
+        _verify_csrf(request, csrf_token)
+        metadata = remote_mcp_credential_store().metadata(owner_id, server_id)
+        if metadata is not None and str(metadata.get("auth_type")) == "oauth":
+            if not await revoke_oauth_grant(owner_id, server_id):
+                raise RuntimeError("OAuth grant 撤销失败")
+        if not remote_mcp_oauth_store().delete_config(owner_id, server_id):
+            raise KeyError("当前 Remote MCP 没有 OAuth 配置")
+        _flash(request, "Remote MCP OAuth 配置已删除；旧 lease 已撤销", "success")
+    except (KeyError, ValueError, RuntimeError) as exc:
+        _flash(request, f"Remote MCP OAuth 配置删除失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
 
 
@@ -254,7 +386,7 @@ def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(.
         _verify_csrf(request, csrf_token)
         if not remote_mcp_credential_store().delete_server(owner_id, server_id):
             raise KeyError("Remote MCP 不存在")
-        _flash(request, "Remote MCP 及其 FDEX 凭据已原子移除；对应现存 lease 将立即失效", "success")
+        _flash(request, "Remote MCP、OAuth 流程/配置及 FDEX 凭据已原子移除；现存 lease 将立即失效", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 删除失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)

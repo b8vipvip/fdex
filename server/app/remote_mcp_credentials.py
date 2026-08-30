@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import threading
@@ -18,6 +19,7 @@ from app.remote_mcp_registry import RemoteMcpRegistry, remote_mcp_registry
 
 _BEARER_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 _MAX_BEARER_BYTES = 8192
+_MAX_SECRET_BYTES = 16384
 
 
 def _now() -> str:
@@ -35,8 +37,29 @@ def _clean_bearer(value: str) -> str:
     return token
 
 
+def _clean_oauth_secret(value: str, *, required: bool = False) -> str:
+    secret = str(value or "")
+    if not secret and not required:
+        return ""
+    if not secret:
+        raise ValueError("OAuth secret 不能为空")
+    if len(secret.encode("utf-8")) > _MAX_SECRET_BYTES:
+        raise ValueError("OAuth secret 超过 16 KiB 上限")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in secret):
+        raise ValueError("OAuth secret 包含控制字符")
+    return secret
+
+
 class RemoteMcpCredentialStore:
-    """FDEX-held owner/server Remote MCP secrets."""
+    """FDEX-held owner/server Remote MCP secrets.
+
+    ``lease_revision`` is intentionally different from the row ``updated_at`` for OAuth grants.
+    A static Bearer rotation is an authorization change and therefore changes the lease revision.
+    OAuth access-token refresh is only maintenance of the same authorization grant and keeps the
+    grant revision stable, so an otherwise-authorized long running task does not lose its lease
+    every time a short-lived access token refreshes. Reauthorization/revocation creates a new grant
+    revision and invalidates old leases.
+    """
 
     def __init__(
         self,
@@ -109,9 +132,36 @@ class RemoteMcpCredentialStore:
     def _fingerprint(self, token: str) -> str:
         return hmac.new(
             self._load_key(allow_create=False),
-            token.encode("ascii"),
+            token.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()[:16]
+
+    def seal_text(self, value: str) -> str:
+        clean = _clean_oauth_secret(value, required=True)
+        return self._cipher().encrypt(clean.encode("utf-8")).decode("ascii")
+
+    def open_text(self, value: str) -> str:
+        try:
+            plain = self._cipher().decrypt(str(value).encode("ascii")).decode("utf-8")
+        except (InvalidToken, UnicodeDecodeError, UnicodeEncodeError) as exc:
+            raise RuntimeError("Remote MCP encrypted secret cannot be decrypted") from exc
+        return _clean_oauth_secret(plain, required=True)
+
+    def _seal_json(self, value: dict[str, Any]) -> str:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 64 * 1024:
+            raise ValueError("Remote MCP OAuth credential bundle exceeds 64 KiB")
+        return self._cipher().encrypt(encoded.encode("utf-8")).decode("ascii")
+
+    def _open_json(self, value: str) -> dict[str, Any]:
+        try:
+            plain = self._cipher().decrypt(str(value).encode("ascii")).decode("utf-8")
+            payload = json.loads(plain)
+        except (InvalidToken, UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Remote MCP OAuth credential bundle cannot be decrypted") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Remote MCP OAuth credential bundle is invalid")
+        return payload
 
     @staticmethod
     def _revoke_server_leases(conn: Any, owner_id: str, server_id: str, now: str) -> int:
@@ -137,6 +187,7 @@ class RemoteMcpCredentialStore:
                 return
             self.registry.init()
             with self.registry.db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
                 conn.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS remote_mcp_credentials (
@@ -147,10 +198,26 @@ class RemoteMcpCredentialStore:
                         fingerprint TEXT NOT NULL DEFAULT '',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
+                        grant_revision TEXT NOT NULL DEFAULT '',
                         PRIMARY KEY(owner_id,server_id)
                     );
                     CREATE INDEX IF NOT EXISTS idx_remote_mcp_credentials_owner
                         ON remote_mcp_credentials(owner_id,updated_at DESC);
+                    """
+                )
+                columns = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(remote_mcp_credentials)").fetchall()
+                }
+                if "grant_revision" not in columns:
+                    conn.execute(
+                        "ALTER TABLE remote_mcp_credentials ADD COLUMN grant_revision TEXT NOT NULL DEFAULT ''"
+                    )
+                conn.execute(
+                    """
+                    UPDATE remote_mcp_credentials
+                    SET grant_revision=updated_at
+                    WHERE grant_revision=''
                     """
                 )
                 credential_count = int(
@@ -177,13 +244,14 @@ class RemoteMcpCredentialStore:
         with self.registry.db() as conn:
             row = conn.execute(
                 """
-                SELECT owner_id,server_id,auth_type,fingerprint,created_at,updated_at
+                SELECT owner_id,server_id,auth_type,fingerprint,created_at,updated_at,grant_revision
                 FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?
                 """,
                 (owner_id, server_id),
             ).fetchone()
         if row is None:
             return None
+        grant_revision = str(row["grant_revision"] or row["updated_at"])
         return {
             "owner_id": str(row["owner_id"]),
             "server_id": str(row["server_id"]),
@@ -191,11 +259,13 @@ class RemoteMcpCredentialStore:
             "fingerprint": str(row["fingerprint"]),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
+            "grant_revision": grant_revision,
+            "lease_revision": grant_revision,
         }
 
     def revision(self, owner_id: str, server_id: str) -> str:
         metadata = self.metadata(owner_id, server_id)
-        return str(metadata.get("updated_at") or "") if metadata else ""
+        return str(metadata.get("lease_revision") or "") if metadata else ""
 
     def list_metadata(self, owner_id: str) -> dict[str, dict[str, Any]]:
         self.init()
@@ -205,23 +275,28 @@ class RemoteMcpCredentialStore:
         with self.registry.db() as conn:
             rows = conn.execute(
                 """
-                SELECT owner_id,server_id,auth_type,fingerprint,created_at,updated_at
+                SELECT owner_id,server_id,auth_type,fingerprint,created_at,updated_at,grant_revision
                 FROM remote_mcp_credentials WHERE owner_id=? ORDER BY server_id
                 """,
                 (owner_id,),
             ).fetchall()
-        return {
-            str(row["server_id"]): {
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            server_id = str(row["server_id"])
+            if server_id not in server_ids:
+                continue
+            grant_revision = str(row["grant_revision"] or row["updated_at"])
+            result[server_id] = {
                 "owner_id": str(row["owner_id"]),
-                "server_id": str(row["server_id"]),
+                "server_id": server_id,
                 "auth_type": str(row["auth_type"]),
                 "fingerprint": str(row["fingerprint"]),
                 "created_at": str(row["created_at"]),
                 "updated_at": str(row["updated_at"]),
+                "grant_revision": grant_revision,
+                "lease_revision": grant_revision,
             }
-            for row in rows
-            if str(row["server_id"]) in server_ids
-        }
+        return result
 
     def set_bearer(self, owner_id: str, server_id: str, token: str) -> dict[str, Any]:
         self.init()
@@ -245,13 +320,14 @@ class RemoteMcpCredentialStore:
             conn.execute(
                 """
                 INSERT INTO remote_mcp_credentials(
-                    owner_id,server_id,auth_type,secret_cipher,fingerprint,created_at,updated_at
-                ) VALUES(?,?,'bearer',?,?,?,?)
+                    owner_id,server_id,auth_type,secret_cipher,fingerprint,created_at,updated_at,grant_revision
+                ) VALUES(?,?,'bearer',?,?,?,?,?)
                 ON CONFLICT(owner_id,server_id) DO UPDATE SET
                     auth_type='bearer',secret_cipher=excluded.secret_cipher,
-                    fingerprint=excluded.fingerprint,updated_at=excluded.updated_at
+                    fingerprint=excluded.fingerprint,updated_at=excluded.updated_at,
+                    grant_revision=excluded.grant_revision
                 """,
-                (owner_id, server_id, cipher_text, fingerprint, created_at, now),
+                (owner_id, server_id, cipher_text, fingerprint, created_at, now, now),
             )
             self._revoke_server_leases(conn, owner_id, server_id, now)
         metadata = self.metadata(owner_id, server_id)
@@ -275,7 +351,7 @@ class RemoteMcpCredentialStore:
         with self.registry.db() as conn:
             row = conn.execute(
                 """
-                SELECT auth_type,secret_cipher,updated_at FROM remote_mcp_credentials
+                SELECT auth_type,secret_cipher,updated_at,grant_revision FROM remote_mcp_credentials
                 WHERE owner_id=? AND server_id=?
                 """,
                 (owner_id, server_id),
@@ -285,8 +361,8 @@ class RemoteMcpCredentialStore:
                 raise RuntimeError("Remote MCP credential disappeared")
             return None
         if str(row["auth_type"]) != "bearer":
-            raise RuntimeError("Remote MCP credential type is unsupported")
-        revision = str(row["updated_at"])
+            raise RuntimeError("Remote MCP credential type is not static bearer")
+        revision = str(row["grant_revision"] or row["updated_at"])
         if expected is not None and revision != expected:
             raise RuntimeError("Remote MCP credential revision changed")
         try:
@@ -294,6 +370,157 @@ class RemoteMcpCredentialStore:
         except (InvalidToken, UnicodeDecodeError) as exc:
             raise RuntimeError("Remote MCP credential cannot be decrypted") from exc
         return _clean_bearer(token)
+
+    def set_oauth_grant(
+        self,
+        owner_id: str,
+        server_id: str,
+        *,
+        access_token: str,
+        refresh_token: str = "",
+        expires_at: str = "",
+        scope: str = "",
+        token_type: str = "Bearer",
+    ) -> dict[str, Any]:
+        self.init()
+        access = _clean_bearer(access_token)
+        refresh = _clean_oauth_secret(refresh_token)
+        token_type_clean = str(token_type or "Bearer").strip()
+        if token_type_clean.casefold() != "bearer":
+            raise ValueError("Remote MCP OAuth 仅支持 Bearer access token")
+        now = _now()
+        grant_revision = f"oauth:{now}:{uuid.uuid4().hex}"
+        payload = {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": str(expires_at or ""),
+            "scope": str(scope or "")[:4096],
+            "token_type": "Bearer",
+        }
+        cipher_text = self._seal_json(payload)
+        fingerprint = self._fingerprint(access)
+        with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            server = conn.execute(
+                "SELECT id FROM remote_mcp_servers WHERE owner_id=? AND id=?",
+                (owner_id, server_id),
+            ).fetchone()
+            if server is None:
+                raise KeyError("Remote MCP 不存在或不属于当前账号")
+            current = conn.execute(
+                "SELECT created_at FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
+                (owner_id, server_id),
+            ).fetchone()
+            created_at = str(current["created_at"]) if current is not None else now
+            conn.execute(
+                """
+                INSERT INTO remote_mcp_credentials(
+                    owner_id,server_id,auth_type,secret_cipher,fingerprint,created_at,updated_at,grant_revision
+                ) VALUES(?,?,'oauth',?,?,?,?,?)
+                ON CONFLICT(owner_id,server_id) DO UPDATE SET
+                    auth_type='oauth',secret_cipher=excluded.secret_cipher,
+                    fingerprint=excluded.fingerprint,updated_at=excluded.updated_at,
+                    grant_revision=excluded.grant_revision
+                """,
+                (owner_id, server_id, cipher_text, fingerprint, created_at, now, grant_revision),
+            )
+            self._revoke_server_leases(conn, owner_id, server_id, now)
+        metadata = self.metadata(owner_id, server_id)
+        if metadata is None:
+            raise RuntimeError("Remote MCP OAuth credential write failed")
+        return metadata
+
+    def get_oauth_grant(
+        self,
+        owner_id: str,
+        server_id: str,
+        *,
+        expected_revision: str | None = None,
+    ) -> dict[str, Any] | None:
+        self.init()
+        expected = None if expected_revision is None else str(expected_revision)
+        if self.registry.get(owner_id, server_id) is None:
+            if expected:
+                raise RuntimeError("Remote MCP OAuth owner/server disappeared")
+            return None
+        with self.registry.db() as conn:
+            row = conn.execute(
+                """
+                SELECT auth_type,secret_cipher,updated_at,grant_revision FROM remote_mcp_credentials
+                WHERE owner_id=? AND server_id=?
+                """,
+                (owner_id, server_id),
+            ).fetchone()
+        if row is None:
+            if expected:
+                raise RuntimeError("Remote MCP OAuth grant disappeared")
+            return None
+        if str(row["auth_type"]) != "oauth":
+            raise RuntimeError("Remote MCP credential type is not OAuth")
+        revision = str(row["grant_revision"] or row["updated_at"])
+        if expected is not None and revision != expected:
+            raise RuntimeError("Remote MCP OAuth grant revision changed")
+        payload = self._open_json(str(row["secret_cipher"]))
+        payload["access_token"] = _clean_bearer(str(payload.get("access_token") or ""))
+        payload["refresh_token"] = _clean_oauth_secret(str(payload.get("refresh_token") or ""))
+        payload["grant_revision"] = revision
+        payload["updated_at"] = str(row["updated_at"])
+        return payload
+
+    def refresh_oauth_grant(
+        self,
+        owner_id: str,
+        server_id: str,
+        *,
+        expected_revision: str,
+        access_token: str,
+        refresh_token: str = "",
+        expires_at: str = "",
+        scope: str = "",
+        token_type: str = "Bearer",
+    ) -> dict[str, Any]:
+        """Refresh short-lived OAuth tokens without changing the authorization grant revision."""
+        self.init()
+        access = _clean_bearer(access_token)
+        refresh = _clean_oauth_secret(refresh_token)
+        if str(token_type or "Bearer").strip().casefold() != "bearer":
+            raise ValueError("Remote MCP OAuth 仅支持 Bearer access token")
+        now = _now()
+        payload = {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": str(expires_at or ""),
+            "scope": str(scope or "")[:4096],
+            "token_type": "Bearer",
+        }
+        cipher_text = self._seal_json(payload)
+        fingerprint = self._fingerprint(access)
+        with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT auth_type,grant_revision FROM remote_mcp_credentials
+                WHERE owner_id=? AND server_id=?
+                """,
+                (owner_id, server_id),
+            ).fetchone()
+            if row is None or str(row["auth_type"]) != "oauth":
+                raise RuntimeError("Remote MCP OAuth grant disappeared during refresh")
+            revision = str(row["grant_revision"])
+            if not revision or revision != str(expected_revision):
+                raise RuntimeError("Remote MCP OAuth grant changed during refresh")
+            conn.execute(
+                """
+                UPDATE remote_mcp_credentials
+                SET secret_cipher=?,fingerprint=?,updated_at=?
+                WHERE owner_id=? AND server_id=? AND auth_type='oauth' AND grant_revision=?
+                """,
+                (cipher_text, fingerprint, now, owner_id, server_id, revision),
+            )
+        metadata = self.metadata(owner_id, server_id)
+        if metadata is None:
+            raise RuntimeError("Remote MCP OAuth refresh write failed")
+        return metadata
 
     def delete(self, owner_id: str, server_id: str) -> bool:
         self.init()
@@ -324,6 +551,20 @@ class RemoteMcpCredentialStore:
                 "DELETE FROM remote_mcp_credentials WHERE owner_id=? AND server_id=?",
                 (owner_id, server_id),
             )
+            tables = {
+                str(item[0])
+                for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "remote_mcp_oauth_flows" in tables:
+                conn.execute(
+                    "DELETE FROM remote_mcp_oauth_flows WHERE owner_id=? AND server_id=?",
+                    (owner_id, server_id),
+                )
+            if "remote_mcp_oauth_configs" in tables:
+                conn.execute(
+                    "DELETE FROM remote_mcp_oauth_configs WHERE owner_id=? AND server_id=?",
+                    (owner_id, server_id),
+                )
             cursor = conn.execute(
                 "DELETE FROM remote_mcp_servers WHERE owner_id=? AND id=?",
                 (owner_id, server_id),
@@ -335,7 +576,16 @@ class RemoteMcpCredentialStore:
     def delete_owner(self, owner_id: str) -> int:
         self.init()
         with self.registry.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute("DELETE FROM remote_mcp_credentials WHERE owner_id=?", (owner_id,))
+            tables = {
+                str(item[0])
+                for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "remote_mcp_oauth_flows" in tables:
+                conn.execute("DELETE FROM remote_mcp_oauth_flows WHERE owner_id=?", (owner_id,))
+            if "remote_mcp_oauth_configs" in tables:
+                conn.execute("DELETE FROM remote_mcp_oauth_configs WHERE owner_id=?", (owner_id,))
         return max(0, int(cursor.rowcount))
 
 

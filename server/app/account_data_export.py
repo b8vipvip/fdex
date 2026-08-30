@@ -10,6 +10,7 @@ from app.config import fresh_settings
 from app.fdex_memory import MemoryScope
 from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
+from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
 
 
@@ -139,30 +140,24 @@ def build_account_export(
     auth_store: CentralAuthStore | None = None,
     scope_registry: MemoryScopeRegistry | None = None,
 ) -> dict[str, object]:
-    """Build a portable user export without operational secrets.
-
-    Deliberately excluded: access/refresh tokens and hashes, password hashes, reset codes,
-    GitHub token ciphertext/plaintext, provider secrets, embeddings and sandbox cache files.
-    Android adds its per-user local SQLite business data to this server snapshot before the
-    user saves the final JSON file through the system document picker.
-    """
+    """Build a portable user export without operational secrets."""
     store = auth_store or central_auth_store()
     scopes = scope_registry or memory_scope_registry()
     user = store.get_user(user_id)
     projects = agent_project_store()
+    oauth_configs = remote_mcp_oauth_store().list_configs(user_id)
     return {
         "schema_version": 1,
         "generated_at": _now(),
         "account": user,
         "sessions": _public_sessions(store, user_id),
         "security_events": store.security_events(user_id, limit=100),
-        # Whitelist fields here even though the project store currently redacts token_cipher.
-        # This prevents a future store refactor from accidentally expanding a user export.
         "github_connections": _safe_connections(projects.list_connections(user_id)),
         "coding_agent_projects": _safe_projects(projects.list_projects(user_id, enabled_only=False)),
-        # Phase 7.25 Remote MCP registry is credential-free by design. Export only the exact
-        # user-owned control-plane fields; resolved IP snapshots are operational admission data.
         "remote_mcp_servers": remote_mcp_registry().export_owner(user_id),
+        # Export only non-secret OAuth client configuration. client_secret, state/PKCE material,
+        # access/refresh tokens and encrypted credential rows remain deliberately excluded.
+        "remote_mcp_oauth_configs": [oauth_configs[key] for key in sorted(oauth_configs)],
         "long_term_memory": {
             "status": memory_erasure_status(user_id),
             "registered_device_scopes": scopes.scope_count(user_id),
@@ -187,7 +182,10 @@ def build_account_export(
             "github_device_code_cipher",
             "provider_api_keys",
             "remote_mcp_bearer_tokens",
-            "remote_mcp_oauth_credentials",
+            "remote_mcp_oauth_client_secrets",
+            "remote_mcp_oauth_state_pkce",
+            "remote_mcp_oauth_access_tokens",
+            "remote_mcp_oauth_refresh_tokens",
             "embeddings",
             "sandbox_cache_files",
         ],
