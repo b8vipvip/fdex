@@ -17,6 +17,7 @@ from app.codex_engine import (
     resolve_codex_runtime,
     select_codex_provider_from,
 )
+from app.codex_process_isolation import codex_process_isolation_status
 from app.codex_provider_compatibility import (
     codex_provider_compatibility_store,
     provider_runtime_fingerprint,
@@ -71,6 +72,8 @@ async def _run_turn(
     item_types: list[str] = []
     mcp_tools: list[str] = []
     collab_tools: list[str] = []
+    completed_collab_tools: list[str] = []
+    subagent_activities: list[str] = []
     final_parts: list[str] = []
     final_item_text = ""
     status = ""
@@ -97,7 +100,13 @@ async def _run_turn(
                 if item_type == "mcpToolCall":
                     mcp_tools.append(f"{str(item.get('server') or '')}:{str(item.get('tool') or '')}")
                 if item_type == "collabAgentToolCall":
-                    collab_tools.append(str(item.get("tool") or ""))
+                    tool = str(item.get("tool") or "")
+                    if tool:
+                        collab_tools.append(tool)
+                    if method == "item/completed" and str(item.get("status") or "") == "completed" and tool:
+                        completed_collab_tools.append(tool)
+                if item_type == "subAgentActivity":
+                    subagent_activities.append(str(item.get("kind") or ""))
                 if method == "item/completed" and item_type == "agentMessage":
                     text = str(item.get("text") or "").strip()
                     if text:
@@ -126,6 +135,8 @@ async def _run_turn(
         "item_types": item_types,
         "mcp_tools": mcp_tools,
         "collab_tools": collab_tools,
+        "completed_collab_tools": completed_collab_tools,
+        "subagent_activities": subagent_activities,
     }
 
 
@@ -144,6 +155,12 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
     store = provider_store()
     provider = store.get(int(provider_id), include_secret=True)
     runtime = resolve_codex_runtime()
+    isolation = codex_process_isolation_status()
+    if not bool(isolation.get("enforced")):
+        raise CodexProviderSmokeError(
+            "Phase 7.32 production process-tree isolation 未生效，拒绝生成 rollout compatibility 证据："
+            + str(isolation.get("reason") or "unknown reason")
+        )
     spec = select_codex_provider_from([provider])
     if spec is None:
         raise CodexProviderSmokeError(
@@ -176,6 +193,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
         "subagent": False,
         "reasoning": False,
         "runtime": runtime.version,
+        "process_isolation": True,
     }
 
     async def deny_server_request(method: str, _params: dict[str, Any]) -> Any:
@@ -298,20 +316,32 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                 thread_id,
                 (
                     "Use the official collaboration spawnAgent tool to delegate one read-only reasoning subtask. "
-                    f"Tell the child to return exactly {agent_marker}. Wait for that child to finish, then reply with "
-                    f"{agent_marker}. Do not use shell or MCP in this stage."
+                    f"Tell the child to return exactly {agent_marker}. You must then call the official wait tool "
+                    "and wait for child activity/completion before producing your final response. After waiting, "
+                    f"reply with {agent_marker}. Do not use shell or MCP in this stage."
                 ),
                 timeout=stage_timeout,
             )
             _require_marker("sub-agent", subagent, agent_marker)
-            collab = list(subagent.get("collab_tools") or [])
-            if "spawnAgent" not in collab:
-                raise CodexProviderSmokeError("sub-agent turn has no official collabAgentToolCall spawnAgent evidence")
+            completed_collab = list(subagent.get("completed_collab_tools") or [])
+            if "spawnAgent" not in completed_collab:
+                raise CodexProviderSmokeError(
+                    "sub-agent turn has no completed official collabAgentToolCall spawnAgent evidence"
+                )
+            if "wait" not in completed_collab:
+                raise CodexProviderSmokeError(
+                    "sub-agent turn spawned a child but has no completed official wait collaboration evidence"
+                )
             sub_types = set(subagent.get("item_types") or [])
             if "collabAgentToolCall" not in sub_types:
                 raise CodexProviderSmokeError("sub-agent turn has no collabAgentToolCall Item evidence")
+            if "subAgentActivity" not in sub_types:
+                raise CodexProviderSmokeError(
+                    "sub-agent spawn completed without the official subAgentActivity lifecycle Item"
+                )
             evidence["subagent"] = True
-            evidence["collab_tools"] = collab[:20]
+            evidence["collab_tools"] = completed_collab[:20]
+            evidence["subagent_activities"] = list(subagent.get("subagent_activities") or [])[:20]
             evidence["reasoning"] = bool(evidence["reasoning"] or "reasoning" in sub_types)
             if not bool(evidence["reasoning"]):
                 raise CodexProviderSmokeError(
