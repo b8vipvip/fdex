@@ -14,10 +14,8 @@ from app.codex_capability_control import (
     PLUGIN_MUTATION_BLOCK_REASON,
     assert_plugin_mutation_blocked,
     capability_inventory,
-    install_local_plugin,
     read_local_plugin,
     set_skill_enabled,
-    uninstall_plugin,
 )
 from app.codex_dynamic_tool_policy import dynamic_tool_policy
 from app.config import SERVER_DIR
@@ -122,88 +120,83 @@ async def codex_skill_toggle(
     return _redirect(selected_project)
 
 
+def _plugin_write_block(
+    request: Request,
+    *,
+    action: str,
+    owner_id: str,
+    project_id: int | None,
+    plugin_ref: str,
+) -> None:
+    try:
+        assert_plugin_mutation_blocked(action)
+    except CodexCapabilityError as exc:
+        write_audit(
+            request,
+            "codex_plugin_mutation_blocked",
+            success=False,
+            action=action,
+            owner_id=owner_id,
+            project_id=project_id,
+            plugin_ref=plugin_ref[:240],
+            error=str(exc),
+        )
+        _flash(request, str(exc), "error")
+
+
 @router.post("/plugins/install", response_model=None)
-async def codex_plugin_install(
+async def codex_plugin_install_blocked(
     request: Request,
     csrf_token: str = Form(...),
     marketplace_path: str = Form(...),
     plugin_name: str = Form(...),
     project_id: int = Form(default=0),
 ) -> Response:
+    """Compatibility route that is intentionally fail-closed in Phase 7.32.
+
+    Keeping the endpoint avoids turning stale browser pages into 404s, but there is deliberately
+    no call to plugin/install and no mutation Host is created.
+    """
     user = _current_user(request)
     if user is None:
         return _login_redirect(request)
-    owner_id = str(user["id"])
     selected_project = int(project_id) if int(project_id or 0) > 0 else None
     try:
         _verify_csrf(request, csrf_token)
-        plugin = await install_local_plugin(
-            owner_id,
-            marketplace_path=marketplace_path,
-            plugin_name=plugin_name,
-            project_id=selected_project,
-        )
-        write_audit(
+        _plugin_write_block(
             request,
-            "codex_plugin_install",
-            owner_id=owner_id,
+            action="plugin/install",
+            owner_id=str(user["id"]),
             project_id=selected_project,
-            plugin_id=plugin.get("id") or "",
-            plugin_name=plugin.get("name") or plugin_name,
+            plugin_ref=f"{marketplace_path}:{plugin_name}",
         )
-        _flash(request, f"官方 plugin/installed 已确认安装：{plugin.get('name') or plugin_name}", "success")
-    except (CodexCapabilityError, KeyError, ValueError) as exc:
-        write_audit(
-            request,
-            "codex_plugin_install",
-            success=False,
-            owner_id=owner_id,
-            project_id=selected_project,
-            plugin_name=plugin_name[:200],
-            error=str(exc),
-        )
+    except ValueError as exc:
         _flash(request, str(exc), "error")
     return _redirect(selected_project)
 
 
 @router.post("/plugins/uninstall", response_model=None)
-async def codex_plugin_uninstall(
+async def codex_plugin_uninstall_blocked(
     request: Request,
     csrf_token: str = Form(...),
     plugin_id: str = Form(...),
     project_id: int = Form(default=0),
 ) -> Response:
+    """Compatibility route that never invokes plugin/uninstall in Phase 7.32."""
     user = _current_user(request)
     if user is None:
         return _login_redirect(request)
-    owner_id = str(user["id"])
     selected_project = int(project_id) if int(project_id or 0) > 0 else None
     try:
         _verify_csrf(request, csrf_token)
-        plugin = await uninstall_plugin(
-            owner_id,
-            plugin_id=plugin_id,
-            project_id=selected_project,
-        )
-        write_audit(
+        _plugin_write_block(
             request,
-            "codex_plugin_uninstall",
-            owner_id=owner_id,
+            action="plugin/uninstall",
+            owner_id=str(user["id"]),
             project_id=selected_project,
-            plugin_id=plugin_id[:240],
-            plugin_name=plugin.get("name") or "",
+            plugin_ref=plugin_id,
         )
-        _flash(request, f"官方 plugin/installed 已确认卸载：{plugin.get('name') or plugin_id}", "success")
-    except (CodexCapabilityError, KeyError, ValueError) as exc:
-        write_audit(
-            request,
-            "codex_plugin_uninstall",
-            success=False,
-            owner_id=owner_id,
-            project_id=selected_project,
-            plugin_id=plugin_id[:240],
-            error=str(exc),
-        )
+    except ValueError as exc:
         _flash(request, str(exc), "error")
     return _redirect(selected_project)
 
@@ -221,10 +214,13 @@ async def codex_plugin_mutation_gate(
     selected_project = int(project_id) if int(project_id or 0) > 0 else None
     try:
         _verify_csrf(request, csrf_token)
-        # Phase 7.32 opens only exact local install/uninstall routes above. This probe stays for
-        # marketplace/*, remote install and plugin/share/* so those wider mutation paths remain
-        # visibly fail-closed even after cgroup process-tree isolation exists.
-        assert_plugin_mutation_blocked(action)
-    except (CodexCapabilityError, ValueError) as exc:
+        _plugin_write_block(
+            request,
+            action=action,
+            owner_id=str(user["id"]),
+            project_id=selected_project,
+            plugin_ref="",
+        )
+    except ValueError as exc:
         _flash(request, str(exc), "error")
     return _redirect(selected_project)
