@@ -89,12 +89,12 @@
 
   <section class="card span-12 stack">
     <div class="card-head">
-      <div><h2>Plugins</h2><p>仍只查询 local marketplace 且 <code>forceRefetch=false</code>。Phase 7.32 只在 Codex cgroup 进程树隔离生效时开放精确本地安装与已安装 ID 卸载。</p></div>
-      <span class="badge">{{ '受控写操作已开放' if inventory.plugin_mutation_allowed else '写操作已锁定' }}</span>
+      <div><h2>Plugins</h2><p>只查询 local marketplace 且 <code>forceRefetch=false</code>。Phase 7.32 增加了整棵 Codex 进程树的 cgroup 资源/生命周期隔离，但 bundled 0.147 的本地 stdio Plugin MCP 仍可作为 app-server 本地子进程启动，因此写操作继续锁定。</p></div>
+      <span class="badge">写操作已锁定</span>
     </div>
-    <div class="alert {% if inventory.plugin_mutation_allowed %}alert-success{% else %}alert-error{% endif %}">{{ inventory.plugin_mutation_reason }}</div>
+    <div class="alert alert-error">{{ inventory.plugin_mutation_reason }}</div>
 
-    <h3>本地 Marketplace</h3>
+    <h3>本地 Marketplace · 只读</h3>
     {% for market in inventory.marketplaces %}
     <div class="stack">
       <div><strong>{{ market.name or 'Local marketplace' }}</strong><div class="fine"><code>{{ market.path }}</code></div></div>
@@ -106,31 +106,20 @@
           <div class="fine">availability={{ plugin.availability or 'unknown' }} · installPolicy={{ plugin.install_policy or 'unknown' }}{% if plugin.installed %} · 已安装{% endif %}</div>
           <div class="conversation-preview">{{ plugin.description }}</div>
         </div>
-        <div class="row">
-          {% if market.path %}
-          <form method="get" action="/account/agent/capabilities/">
-            <input type="hidden" name="project_id" value="{{ selected_project_id }}">
-            <input type="hidden" name="marketplace_path" value="{{ market.path }}">
-            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
-            <button type="submit" class="button button-secondary">官方 plugin/read</button>
-          </form>
-          {% endif %}
-          {% if inventory.plugin_mutation_allowed and market.path and not plugin.installed and plugin.availability == 'AVAILABLE' and plugin.install_policy in ['AVAILABLE', 'INSTALLED_BY_DEFAULT'] %}
-          <form method="post" action="/account/agent/capabilities/plugins/install" data-confirm="将通过官方 plugin/install 安装该本地 Plugin，并由 FDEX 进程树隔离约束其运行。确定继续吗？">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="project_id" value="{{ selected_project_id }}">
-            <input type="hidden" name="marketplace_path" value="{{ market.path }}">
-            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
-            <button type="submit" class="button button-primary">安装</button>
-          </form>
-          {% endif %}
-        </div>
+        {% if market.path %}
+        <form method="get" action="/account/agent/capabilities/">
+          <input type="hidden" name="project_id" value="{{ selected_project_id }}">
+          <input type="hidden" name="marketplace_path" value="{{ market.path }}">
+          <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
+          <button type="submit" class="button button-secondary">官方 plugin/read</button>
+        </form>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
     {% else %}<div class="empty-state"><p>当前范围未发现本地 Plugin marketplace。</p></div>{% endfor %}
 
-    <h3>已安装 Plugins</h3>
+    <h3>已安装 Plugins · 只读</h3>
     {% set installed_count = namespace(value=0) %}
     {% for market in inventory.installed_marketplaces %}
       {% for plugin in market.plugins %}
@@ -138,14 +127,7 @@
         {% set installed_count.value = installed_count.value + 1 %}
         <div class="conversation-card">
           <div><strong>{{ plugin.name }}</strong><div class="fine">{{ plugin.version }}{% if plugin.id %} · {{ plugin.id }}{% endif %}</div></div>
-          {% if inventory.plugin_mutation_allowed and plugin.id %}
-          <form method="post" action="/account/agent/capabilities/plugins/uninstall" data-confirm="将通过官方 plugin/uninstall 卸载该 Plugin，并再次查询 plugin/installed 确认结果。确定继续吗？">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="project_id" value="{{ selected_project_id }}">
-            <input type="hidden" name="plugin_id" value="{{ plugin.id }}">
-            <button type="submit" class="button button-secondary">卸载</button>
-          </form>
-          {% endif %}
+          <span class="badge">不可在 Center 中执行卸载</span>
         </div>
         {% endif %}
       {% endfor %}
@@ -160,9 +142,9 @@
     <form method="post" action="/account/agent/capabilities/plugins/mutate" class="row">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="project_id" value="{{ selected_project_id }}">
-      <input type="hidden" name="action" value="marketplace/add">
-      <button type="submit" class="button button-secondary">验证 Marketplace / Share 安全门</button>
-      <span class="fine">marketplace/add/remove/upgrade、远程 catalog 安装与 plugin/share/* 继续 fail-closed。</span>
+      <input type="hidden" name="action" value="plugin/install">
+      <button type="submit" class="button button-secondary">验证 Plugin 写安全门</button>
+      <span class="fine">plugin/install、plugin/uninstall、marketplace/*、远程 catalog 安装与 plugin/share/* 全部 fail-closed。</span>
     </form>
   </section>
 </div>
