@@ -5,19 +5,19 @@ Last updated / 最后更新：2026-08-30
 ## Current baseline / 当前基线
 
 - Default branch / 默认分支：`main`
-- Accepted Codex Host baseline：**Phase 7.32 — Whole Codex process-tree isolation + Runtime lifecycle**
-- Accepted `main` commit：`6c59b2b6c96132770589040c763c3ebd97793307`
-- Phase 7.32 PR：**#94**
-- Phase 7.32 final PR head：`7d06b17af7392a2bce8a3474fbba7070a19177cb`
-- Phase 7.32 final PR CI：FastAPI + Android unit + Android Debug APK — success
-- Phase 7.32 post-merge `main` run：`33306295953` — FastAPI + Android unit + Android Debug APK — success
-- Active development：**Phase 7.33 — Codex Provider compatibility + rollout seal**
-- Phase 7.33 branch：`agent/phase7-33-codex-provider-rollout-seal`
+- Accepted Codex Host baseline：**Phase 7.33 — Codex Provider compatibility + rollout seal**
+- Accepted Phase 7.33 code commit：`080c4ba962ce72cd43f0ee0802aef8050b290748`
 - Phase 7.33 PR：**#95**
+- Phase 7.33 final PR head：`94da1865f29caf043f756348a265a1a9378036a8`
+- Final PR CI：FastAPI **437 passed / 2 pre-existing skipped** + Android unit + Android Debug APK — success
+- Post-merge `main` run：`33307653585` — FastAPI + Android unit + Android Debug APK — success
+- Previous accepted Phase 7.32 commit：`6c59b2b6c96132770589040c763c3ebd97793307`
 - Current Android stable release：**v1.1.36**
-- `FDEX_AGENT_ENGINE=legacy` remains the production default. Merging Phase 7.33 does not by itself prove that a deployed Provider is full-compatible.
+- Production default：`FDEX_AGENT_ENGINE=legacy`
 
-A phase is accepted only from its final reviewed head. Do not reuse an older green CI run after the branch changes.
+Phase 7.33 code is accepted, but **a code merge is not a production Provider compatibility proof**. GitHub CI has no deployed Center Provider credentials. A deployed Provider becomes Codex-eligible only after the actual Center produces a fresh `full` smoke record from `/admin/agent/codex-providers`.
+
+A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse older green CI after a branch changes.
 
 ## Product and authority model / 产品与权限模型
 
@@ -62,7 +62,7 @@ Accepted in PR #92 at `main@c51afb04fad9b0265792c96688a1b0343c30a950`.
 - `plugin/installed` and verified `plugin/read`;
 - exact fresh Skill-path revalidation;
 - no implicit repository clone/fetch;
-- Dynamic Tool remains fail-closed on bundled compatibility line.
+- Dynamic Tool remains fail-closed on the bundled compatibility line.
 
 ### Phase 7.31 — Official Multi-Agent V2 governance ✅
 
@@ -89,66 +89,61 @@ Completed:
 - `KillMode=control-group`, graceful stop and verified all-process SIGKILL fallback;
 - `BindsTo=<FDEX service>` lifecycle ownership;
 - Provider secret values stay out of systemd-run argv;
-- systemd `$` / `%` ExecStart escaping;
 - fail-closed Linux/systemd/cgroup-v2 production preflight;
 - official OpenAI Codex Release source/tag/asset/digest/size validation;
 - staged SHA-256 download and safe tar extraction;
 - candidate Runtime version + Phase 7.31 governance/app-server parsing validation;
 - immutable managed Runtime installs and `/admin/agent/runtime` upgrade/rollback surface;
-- stale Codex trees are stopped before Runtime pin changes;
-- cross-worker Runtime launch/switch `flock` fence closes the old-runtime launch race;
-- rollback fallback uses the same system-before-bundled resolution precedence as normal launch.
+- stale Codex trees stop before Runtime pin changes;
+- cross-worker Runtime launch/switch `flock` fence closes the old-runtime launch race.
 
 #### Plugin security conclusion
 
-Executable Plugin mutation remains fail-closed. Bundled Codex 0.147 local stdio Plugin/MCP commands may run as local app-server children; cgroup v2 constrains resource/lifecycle but is not a filesystem confidentiality sandbox. Therefore `plugin/install`, `plugin/uninstall`, Marketplace mutation, remote-catalog install and `plugin/share/*` remain blocked. A separate filesystem/execution sandbox is required before reconsideration.
+Executable Plugin mutation remains fail-closed. Bundled Codex 0.147 local stdio Plugin/MCP commands may run as local app-server children; cgroup v2 constrains resource/lifecycle but is not a filesystem confidentiality sandbox. `plugin/install`, `plugin/uninstall`, Marketplace mutation, remote-catalog install and `plugin/share/*` therefore remain blocked. A separate filesystem/execution sandbox is required before reconsideration.
 
 See `docs/CODEX_PROCESS_ISOLATION_RUNTIME.md` and `docs/CODEX_CAPABILITY_CONTROL.md`.
 
-### Phase 7.33 — Codex Provider compatibility + rollout seal 🚧 PR #95
+### Phase 7.33 — Codex Provider compatibility + rollout seal ✅
 
-Current implementation branch: `agent/phase7-33-codex-provider-rollout-seal`.
+Accepted in PR #95 at `main@080c4ba962ce72cd43f0ee0802aef8050b290748`.
 
-Implemented so far:
+Completed:
 
-- a separate `codex-provider-compatibility.db`; generic Provider health is no longer treated as Codex compatibility;
-- fingerprint binding to Provider endpoint, API-key identity hash, model, protocol config, Runtime, Multi-Agent governance, cgroup resource settings and app version;
-- default compatibility freshness of 168 hours;
-- compatibility levels `none -> wire -> tools -> full`, with production selector requiring fresh `full`;
-- real official `codex app-server` smoke in an isolated scratch workspace, never a user repository;
-- wire evidence from real initialize/thread/turn completion;
-- tool evidence from official `commandExecution/fileChange` plus verified scratch-file contents;
-- loopback-only one-time MCP capability with server-side exact-marker call evidence plus official `mcpToolCall`;
-- full evidence additionally requires official `reasoning` and `collabAgentToolCall(spawnAgent)`;
-- Admin UI at `/admin/agent/codex-providers` with explicit upstream-cost warning and masked Provider metadata;
-- production Codex selector skips stale/unverified Providers only before Host start and chooses the next fresh full-compatible Provider;
-- no mid-task Provider switch after Codex Host/Turn starts;
-- Retry remains the fresh task/worktree boundary where Provider selection may occur again;
-- `auto` fallback to legacy remains pre-start only.
-
-Important production truth:
-
-GitHub CI does not hold the deployed Center's real Provider credentials and therefore cannot prove a production Provider is `full`. CI only verifies the smoke harness, evidence classifier and rollout safety semantics. After deployment, an administrator must run the real full smoke from `/admin/agent/codex-providers`. Without a matching fresh full record, Codex remains not ready for the rollout selector.
+- Codex compatibility is stored separately from generic Provider health in `codex-provider-compatibility.db`;
+- levels are `none -> wire -> tools -> full`; production selection requires a fresh `full` record, default freshness 168 hours;
+- fingerprint v2 binds Provider ID/Base URL, API-key identity hash, **complete effective text-model candidate order including backup-only configurations**, protocol order, timeout, Runtime path/version/source, Phase 7.31 governance, Phase 7.32 resource limits and FDEX app version;
+- API Key plaintext never enters the compatibility ledger;
+- any bound configuration drift invalidates the previous proof and requires a new smoke;
+- real smoke uses official `codex app-server` in an isolated scratch workspace, never a user repository;
+- `wire` requires a real initialize/thread/turn completion path;
+- `tools` requires official `commandExecution`/`fileChange` plus a verified scratch-file side effect;
+- MCP proof requires both official `mcpToolCall` and a real call reaching the short-lived FDEX loopback capability with the exact random marker;
+- smoke MCP reuses the hardened direct-loopback check and rejects proxy-marker headers, closing same-host reverse-proxy loopback confusion;
+- `full` requires official `reasoning`, completed `collabAgentToolCall(spawnAgent)`, completed `collabAgentToolCall(wait)`, and official `subAgentActivity` evidence;
+- Phase 7.32 process isolation must be enforced before a smoke can create rollout evidence;
+- `/admin/agent/codex-providers` exposes compatibility state and explicit-cost real smoke operation;
+- admin engine switching, Runtime status, capability-control Hosts and user task Hosts all use the same fresh-full rollout gate;
+- stale/unverified Providers may be skipped only **before** a Codex Host starts;
+- there is no Provider switch inside a started task/worktree;
+- Retry creates the fresh task/worktree boundary where Provider selection may run again;
+- `auto` may fall back to legacy only before Codex starts, never after a started Codex task fails;
+- final security regressions execute under the repository's actual pytest setup rather than being silently skipped.
 
 See `docs/CODEX_PROVIDER_ROLLOUT.md`.
 
-## Remaining work / 尚未完成
+## Operational rollout still required / 仍需生产运维验证
 
-### Phase 7.33 finalization
+The code milestone is complete. The remaining action is deployment-specific rather than unfinished repository implementation:
 
-Before merge:
+1. deploy accepted `main` to the real FDEX Center;
+2. keep `FDEX_AGENT_ENGINE=legacy` initially;
+3. open `/admin/agent/codex-providers`;
+4. run real full smoke against each Provider intended for Codex production use;
+5. verify the desired Provider shows a fresh `full` result bound to the current fingerprint;
+6. only then make an explicit operator decision whether to change the engine rollout mode;
+7. re-run full smoke after Provider key/model/endpoint, Runtime, governance, resource-limit or app-version changes.
 
-- finish FastAPI security/unit regressions;
-- inspect first PR CI and fix real failures;
-- final code/security review;
-- newest PR head must pass FastAPI + Android unit + Android Debug APK;
-- squash merge and re-check merged `main` CI.
-
-After deployment:
-
-- operator runs real full smoke against actual configured Provider(s);
-- only actual fresh full records make Codex ready;
-- changing default away from `legacy` remains an explicit operator rollout decision, not an automatic code-merge side effect.
+Do not treat GitHub CI as a substitute for this deployed-provider test.
 
 ### Executable Plugin filesystem sandbox — deferred security requirement
 
@@ -156,7 +151,7 @@ This remains a separate future requirement. Phase 7.33 does not weaken the Phase
 
 ## Android-native parity
 
-Phase 7.30–7.33 are server/Web/Codex Host changes and do not by themselves require a new Android stable release. Keep v1.1.36 unless Android source or a release-worthy Android behavior changes.
+Phase 7.30–7.33 are server/Web/Codex Host changes and do not by themselves require a new Android stable release. Keep **v1.1.36** unless Android source or a release-worthy Android behavior changes.
 
 ## Development rules / 后续规则
 
@@ -172,7 +167,7 @@ Phase 7.30–7.33 are server/Web/Codex Host changes and do not by themselves req
 10. Never switch Provider inside a started Codex task/worktree.
 11. Unsupported or unverifiable tool/permission/Plugin states fail closed.
 12. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
-13. Require FastAPI + Android unit + Android Debug APK on the final PR head before merge.
+13. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
 14. Do not automatically change the production Agent default merely because Phase 7.33 code is merged.
 
 ## Reference docs / 参考文档
