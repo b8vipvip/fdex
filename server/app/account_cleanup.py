@@ -28,6 +28,20 @@ def _safe_owner_path(root: Path, user_id: str) -> Path:
     return target
 
 
+def _safe_direct_owner_path(root: Path, user_id: str) -> Path:
+    """Resolve an owner directory stored directly below a configured root.
+
+    Codex HOME predates the Agent sandbox ``owners/`` layout and is rooted as
+    ``<fdex_agent_codex_home_root>/<owner_id>``. Resolve symlinks before deletion and refuse any
+    target that escapes the configured root.
+    """
+    base = root.resolve()
+    target = (base / user_id).resolve()
+    if base not in target.parents or target == base:
+        raise ValueError("invalid FDEX direct owner path")
+    return target
+
+
 def _validate_user_id(user_id: str) -> str:
     clean = (user_id or "").strip()
     if not clean.startswith("usr_") or len(clean) < 12:
@@ -117,6 +131,15 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
             shutil.rmtree(target)
             removed_dirs += 1
 
+    # CODEX_HOME may contain official Runtime rollout/state files for this owner. Account erasure
+    # must remove that filesystem state as well as FDEX's durable Host/Item/Interaction databases.
+    codex_home_root = Path(settings.fdex_agent_codex_home_root).expanduser().resolve()
+    codex_home_target = _safe_direct_owner_path(codex_home_root, clean)
+    codex_home_removed = 0
+    if codex_home_target.exists():
+        shutil.rmtree(codex_home_target)
+        codex_home_removed = 1
+
     return {
         "projects": project_count,
         "github_connections": connection_count,
@@ -133,6 +156,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "codex_items": codex_item_cleanup,
         "codex_host": codex_cleanup,
         "owner_directories": removed_dirs,
+        "codex_home_directories": codex_home_removed,
     }
 
 
