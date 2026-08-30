@@ -1,0 +1,75 @@
+{% extends "user_base.html" %}
+{% block title %}Codex 输入 · FDEX{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>Codex Turn 输入</h1>
+    <p>任务 {{ task.id }} · {{ task.repository }}。文本 Prompt、图片、音频、Skill 与仓库 Mention 会按官方 Codex <code>UserInput[]</code> 发送，不会拼成一段伪 Prompt。</p>
+  </div>
+  <div class="row"><a class="button button-secondary" href="/account/agent/tasks/{{ task.id }}">返回任务</a></div>
+</section>
+
+{% if not editable %}
+<div class="alert alert-warning">任务已经开始或结束。为保证 Turn 输入不可变，当前只能查看，不能再增删输入。Resume / Fork 会创建新的任务。</div>
+{% endif %}
+
+<div class="grid">
+  <section class="card span-7 stack">
+    <div class="card-head"><div><h2>当前输入</h2><p>最多 24 项附加输入；文本 Prompt 不计入此上限。</p></div><span class="badge">{{ inputs|length }}</span></div>
+    <div class="repo"><strong>text</strong><div class="report-content" style="margin-top:6px">{{ task.prompt }}</div></div>
+    {% for item in inputs %}
+    <div class="repo">
+      <div class="row between">
+        <div><strong>{{ item.kind }}</strong><div class="fine">{{ item.name or item.ref }}{% if item.size_bytes %} · {{ item.size_bytes }} bytes{% endif %}</div></div>
+        {% if editable %}
+        <form action="/account/agent/tasks/{{ task.id }}/inputs/{{ item.id }}/delete" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="danger-button" type="submit">删除</button>
+        </form>
+        {% endif %}
+      </div>
+      {% if item.kind == 'mention' %}<div class="mono fine">{{ item.ref }}</div>{% endif %}
+    </div>
+    {% else %}<p class="muted">当前只有文本 Prompt。</p>{% endfor %}
+  </section>
+
+  <section class="card span-5 stack">
+    <h2>官方输入边界</h2>
+    <p class="fine">图片仅接受 PNG/JPEG/WebP，最多 20 MiB；音频接受 MP3/WAV/M4A，最多 50 MiB。文件保存到当前账号 + 当前任务独立目录，浏览器文件名不会被当成服务器路径。</p>
+    <p class="fine">Mention 只能填写当前 Git 仓库内相对路径，实际执行前才在 task worktree 中解析并再次检查不能越界。</p>
+    <p class="fine">Skill 只能选择当前账号 <code>CODEX_HOME/skills/&lt;name&gt;/SKILL.md</code> 中已安装的 Skill；不能提交任意服务器绝对路径。</p>
+  </section>
+
+  {% if editable %}
+  <section class="card span-6 stack">
+    <h2>图片 / 音频</h2>
+    <form action="/account/agent/tasks/{{ task.id }}/inputs/media" method="post" enctype="multipart/form-data" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>类型<select name="kind"><option value="localImage">图片 localImage</option><option value="localAudio">音频 localAudio</option></select></label>
+      <label>文件<input type="file" name="file" accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/mp4,.m4a" required></label>
+      <button class="primary" type="submit">上传为 Codex 输入</button>
+    </form>
+  </section>
+
+  <section class="card span-6 stack">
+    <h2>仓库 Mention</h2>
+    <form action="/account/agent/tasks/{{ task.id }}/inputs/mention" method="post" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>仓库相对路径<input name="path" maxlength="2000" placeholder="server/app/main.py" required></label>
+      <button class="secondary" type="submit">添加 Mention</button>
+    </form>
+  </section>
+
+  <section class="card span-12 stack">
+    <h2>Skill</h2>
+    {% if skills %}
+    <form action="/account/agent/tasks/{{ task.id }}/inputs/skill" method="post" class="row">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label style="min-width:300px">当前账号已安装 Skill<select name="name" required>{% for name in skills %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select></label>
+      <button class="secondary" type="submit" style="margin-top:20px">添加 Skill</button>
+    </form>
+    {% else %}<p class="muted">当前账号 CODEX_HOME 中还没有可选择的 Skill。Skill 管理将在后续 Host 管理阶段提供正式安装/启停界面。</p>{% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

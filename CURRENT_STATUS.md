@@ -1,244 +1,192 @@
-# FDEX Current Status
+# FDEX Current Status / FDEX 当前状态
 
-Last updated: 2026-08-30
+Last updated / 最后更新：2026-08-30
 
-## Current baseline
+## Current baseline / 当前基线
 
-- Default branch: `main`
-- Accepted `main` feature baseline: **Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection**
-- Accepted Phase 7.27 feature commit: `4bee0e128354ad5306433b793ae00f4725fc5500`
-- Phase 7.27 pull request: **#88**
-- Phase 7.27 final PR head: `33b024b19155e15c54c885d9792929c23edaa5a6`
-- Phase 7.27 PR Build and Test run: `33290719832` — FastAPI Tests + Android unit tests + Android Debug APK all passed.
-- Phase 7.27 post-merge `main` Build and Test run: `33290817719` — FastAPI Tests + Android unit tests + Android Debug APK all passed.
-- Phase 7.27 Android Auto Release run: `33290917088` — skipped as expected for a server/Web-only phase.
-- Active feature-development phase after this seal: none; Phase 7.27 is complete and accepted.
-- Current Android stable release: **v1.1.36**
-- v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.27 are server/Web/infrastructure changes and do not require an Android release by themselves.
-- `FDEX_AGENT_ENGINE=legacy` remains the rollout default until a production Responses/tool smoke task succeeds.
+- Default branch / 默认分支：`main`
+- Accepted main before Phase 7.29 / 7.29 前已接受主线：**Phase 7.28 — FDEX-held Remote MCP OAuth Broker**
+- Phase 7.28 accepted main commit：`7e7cac7f298366d9ef39880ee929a92338b1d018`
+- Phase 7.28 PR：**#90**
+- Phase 7.28 final PR head：`981ea213168d26227d4512683cc8a369077c80ea`
+- Phase 7.28 PR Build and Test：`33294402334` — success
+- Phase 7.28 post-merge main checks：FastAPI Tests + Android unit tests + Android Debug APK — success
+- Android Auto Release：skipped as expected for server/Web-only changes
+- Current Phase 7.29 PR：**#91 — official Codex multimodal task inputs**
+- Phase 7.29 validated head before this documentation refresh：`a15100490c221ae3dc35ccc29a4848a6c07441f3`
+- Phase 7.29 Build and Test run：`33295186025` — FastAPI Tests + Android unit tests + Android Debug APK all passed
+- Current Android stable release / 当前 Android 正式版：**v1.1.36**
+- `FDEX_AGENT_ENGINE=legacy` remains the production rollout default until the production Provider compatibility smoke gate is completed.
 
-A concrete commit becomes an accepted `main` feature baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the final PR head and again after merge.
+A phase is accepted only after the final PR head and the post-merge main commit both pass FastAPI Tests, Android unit tests and Android Debug APK.
 
-## Current product model
+## Product and ownership model / 产品与归属模型
 
-FDEX user-facing identities use the universal **智体** model, not the former company / industry / department / position / AI-employee hierarchy. Historical `employee` fields and routes may remain internally for compatibility.
+FDEX uses Center `user_id` as the canonical owner scope. User-facing identities use the universal **智体** model. GitHub App Installation remains repository authority; Codex never receives GitHub installation tokens and never owns push/PR authorization.
 
-## Center account and isolation
+## Official OpenAI Codex Host progress / 官方 Codex Host 进度
 
-FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests, Remote MCP registry/credential/lease state and sandboxes.
+### Phase 7.19–7.20 — Official Runtime + Native App Server Host ✅
 
-Completed account lifecycle includes registration/login, rotating refresh sessions, password change/reset, device/session management, login rate limiting, security audit, data export, remote-memory erasure and permanent account deletion.
+- official Codex Runtime integrated without vendoring the Rust workspace;
+- native `codex app-server` JSON-RPC is the long-term ABI;
+- owner-scoped `CODEX_HOME`;
+- FDEX Responses Provider mapping;
+- sanitized process/shell environment;
+- task worktree and GitHub authority remain FDEX controlled;
+- CI starts a real bundled Codex binary and performs a native app-server handshake/API smoke test.
 
-## GitHub authority and dedicated egress
+### Phase 7.21 — Durable Thread / Turn Host ✅
 
-The preferred GitHub architecture is **GitHub App Installation**.
+- persistent Thread/Turn/task bindings;
+- resume / fork / steer / compact;
+- cross-worker control queue;
+- Thread execution lease and stale worker reconciliation;
+- account erasure lifecycle.
 
-Completed capabilities include:
+### Phase 7.22 — Complete Item/Event stream + realtime UI ✅
 
-- user-owned GitHub App Installation binding and ownership verification;
-- repository synchronization from the actual Installation scope;
-- short-lived downscoped installation tokens;
-- owner-scoped Agent projects/tasks/sandboxes and per-task worktrees;
-- durable tasks/events, cancellation/retry and cross-worker execution locking;
-- push/PR only when allowed by effective project/GitHub App permission;
-- no direct Coding Agent write to `main`;
-- dedicated operator-controlled GitHub HTTP(S) egress;
-- managed multi-node VLESS/Xray GitHub-only proxy pool;
-- loopback/authenticated local proxy and non-GitHub blackhole routing;
-- no host-global HTTP_PROXY/HTTPS_PROXY/ALL_PROXY, DNS, firewall or global Git side effects;
-- bounded retry and actionable GitHub transport diagnostics.
+- durable raw app-server notification stream;
+- current Item projections and reconnect-safe deltas;
+- SSE realtime browser UI;
+- orphan Item reconciliation;
+- schema-light handling for future Item variants.
 
-Earlier PAT / Device OAuth paths remain compatibility layers.
+### Phase 7.23 — Approvals + requestUserInput ✅
 
-## Official OpenAI Codex architecture
+- command, file-change and permission approvals;
+- `item/tool/requestUserInput`;
+- typed JSON-RPC id preservation;
+- encrypted cross-worker answer bridge;
+- secret answers destroyed after Host claim;
+- FDEX network/worktree policy remains authoritative over a human approval click.
 
-### Phase 7.19 — Runtime foundation
+### Phase 7.24 — MCP elicitation ✅
 
-FDEX integrated the official Codex Runtime while retaining FDEX account/GitHub/worktree/security authority.
+- official `mcpServer/elicitation/request` bridge;
+- standard form and constrained HTTPS URL modes;
+- proprietary/unsupported modes fail closed.
 
-### Phase 7.20 — Native App Server Host
+### Phase 7.25 — Owner-scoped Remote MCP Registry ✅
 
-The long-term compatibility boundary is the public **`codex app-server` JSON-RPC protocol** rather than a high-level SDK wrapper.
+- HTTPS-only owner/server registry;
+- explicit tool allowlists;
+- public-DNS admission and emergency disable;
+- account export/delete lifecycle;
+- no arbitrary user-configurable local stdio process launch.
 
-Implemented direct stdio app-server hosting, native Thread/Turn execution, schema-light notification transport, owner-scoped `CODEX_HOME`, sanitized process environment, shared FDEX Responses Provider mapping, project network policy and FDEX-controlled GitHub publish authority.
+### Phase 7.26 — Destination-enforcing Remote MCP Gateway ✅
 
-### Phase 7.21 — Durable Thread / Turn Host
+- Codex receives only task-scoped localhost MCP capability URLs;
+- request-time DNS revalidation and pinned public-IP connection;
+- original hostname remains TLS SNI/certificate authority;
+- no redirects, host proxy inheritance or auth challenge passthrough;
+- gateway independently enforces the tool allowlist;
+- leases bind owner/task/server/registry revision and are revoked on terminal task exit.
 
-Implemented persistent owner/task/Thread/Turn state, resume/fork/steer/compact operations, cross-worker control, kernel `flock` Host ownership, stale-state reconciliation and account-erasure semantics.
+### Phase 7.27 — FDEX-held static Bearer credential vault ✅
 
-### Phase 7.22 — Durable Item / Event Stream
+- encrypted owner/server Bearer custody outside the public MCP registry;
+- Codex config/shell never receives the remote Bearer;
+- FDEX gateway injects Authorization only after all policy checks;
+- credential revision is part of the capability lease contract;
+- rotation/delete/TOCTOU fail closed;
+- vault key lifecycle and permanent account cleanup covered by tests.
 
-Implemented bounded persistence of the complete app-server notification stream, durable Item projections, reconnect-safe deltas/SSE, orphan reconciliation, schema-light future Item handling and safe DOM rendering.
+### Phase 7.28 — FDEX-held OAuth broker ✅
 
-### Phase 7.23 — Durable Codex Interactions
+- OAuth 2.0 Authorization Code + PKCE broker owned by FDEX;
+- encrypted access/refresh/client-secret custody;
+- owner/server/state binding and callback validation;
+- destination-enforced token/refresh/revoke transport;
+- durable cross-worker refresh serialization;
+- OAuth grant revision participates in lease authorization;
+- tokens remain absent from Codex config, shell, normal UI plaintext and account export.
 
-Accepted main commit: `bbec3145dfba5d22bf68afc3341cc49c8b1b468d`.
+### Phase 7.29 — Official multimodal / Skill / Mention Turn inputs 🚧 PR #91
 
-Supported owner-scoped interactive requests:
-
-- `item/commandExecution/requestApproval`;
-- `item/fileChange/requestApproval`;
-- `item/permissions/requestApproval`;
-- `item/tool/requestUserInput`.
-
-The bridge preserves typed JSON-RPC ids and approval ids, binds every request to owner/task/Host/Thread/Turn/Item, supports cross-worker response submission, encrypts waiting answers with Fernet, destroys ciphertext after Host claim, stores redacted history only, fails closed above 1 MiB, and keeps FDEX worktree/network policy authoritative over every approval click.
-
-### Phase 7.24 — Owner-scoped MCP Elicitation
-
-Accepted main commit: `22d8a15ecdf99e526614f93acb0788b6d4100542`.
-
-Implemented official `mcpServer/elicitation/request` handling on the encrypted interaction bridge, including typed public `mode=form`, constrained credential-free `mode=url`, exact response shapes and fail-closed handling of unsupported/proprietary modes.
-
-### Phase 7.25 — Owner-scoped Remote MCP Registry
-
-Accepted main commit: `c6263f136563bde26d5df9f630883509fa1253c0`.
-
-Implemented owner-scoped credential-free Remote MCP registry, HTTPS/443/public-DNS admission, explicit bounded tool allowlists, Web CRUD/emergency disable, export/delete lifecycle and deliberate Runtime non-activation until FDEX owned the destination-enforcing egress layer.
-
-### Phase 7.26 — Remote MCP Destination-Enforcing Gateway
-
-Accepted main commit: `0f977d3986af25597b4e8f80639da78504be1015`.
-
-PR #87 and the post-merge `main` Build and Test run both passed FastAPI Tests, Android unit tests and Android Debug APK. Android Auto Release was skipped as expected for a server/Web-only phase.
-
-Implemented:
-
-- task-scoped localhost Remote MCP URLs instead of the original remote URL in Codex config;
-- cryptographically random `X-FDEX-MCP-Capability`, with SHA-256-only durable lease storage;
-- owner + task + server + registry-revision lease binding;
-- task completion/failure/cancel revocation and fresh leases for resume/fork/new task;
-- direct-loopback/reverse-proxy-marker defense in depth;
-- request-time public DNS revalidation and connection pinning;
-- original-host TLS SNI/certificate verification;
-- `aiohttp trust_env=False`, no redirect following and generic auth-challenge suppression;
-- request-header allowlist and no Authorization/Cookie/capability forwarding;
-- gateway-side `tools/call` allowlist enforcement before network I/O;
-- bounded inspectable POST bodies and streaming upstream responses;
-- owner-scoped `CODEX_HOME` permanent-account cleanup.
-
-### Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection
-
-Accepted main feature commit: `4bee0e128354ad5306433b793ae00f4725fc5500`.
-
-PR #88 final head `33b024b19155e15c54c885d9792929c23edaa5a6` passed Build and Test run `33290719832`. The post-merge `main` Build and Test run `33290817719` also passed FastAPI Tests, Android unit tests and Android Debug APK. Android Auto Release run `33290917088` was skipped as expected.
-
-Phase 7.27 extends the accepted 7.26 gateway to authenticated **static Bearer** Remote MCP without handing the remote secret to Codex.
+Implementation completed on the feature branch and the pre-documentation head passed full PR CI.
 
 Implemented:
 
-- separate `remote_mcp_credentials` table; the public `remote_mcp_servers` registry remains credential-free;
-- strict owner + server credential scope;
-- Fernet encryption for durable Bearer storage;
-- dedicated vault key under `server/data/remote-mcp-secrets/credential-vault.key`;
-- POSIX hardening to `0700` parent / `0600` key where supported;
-- race-safe multi-worker first-key creation;
-- startup fail-closed when encrypted credentials exist but the key is missing;
-- startup fail-closed when a syntactically valid key cannot decrypt stored ciphertext;
-- keyed HMAC-SHA256 short fingerprint instead of raw token SHA, preventing a database-only offline guess verifier;
-- UI exposes only auth status, keyed fingerprint and timestamps; token is password-input-only and never echoed;
-- account export keeps Remote MCP Bearer/OAuth secrets explicitly excluded;
-- Codex task MCP config continues to contain only localhost capability and tool policy, never the remote Bearer;
-- Codex shell/process environment does not receive Remote MCP credentials;
-- FDEX gateway is the only component that decrypts and injects `Authorization: Bearer ...` remotely;
-- Codex/user-supplied `Authorization`, Cookie and arbitrary headers cannot override the vault value;
-- every lease is bound to both registry `updated_at` and credential `updated_at`;
-- adding, rotating or deleting a Bearer proactively revokes active leases for that server when the lease table exists;
-- credential TOCTOU fails closed if a credential disappears, rotates, or appears after an anonymous lease was validated;
-- credential writes, credential deletion and whole-server deletion are serialized with short `BEGIN IMMEDIATE` transactions;
-- Remote MCP deletion atomically revokes leases, deletes encrypted credential and deletes the owner-scoped registry row in one SQLite transaction;
-- permanent account deletion orders Remote MCP cleanup as lease → credential → registry;
-- multi-worker lease-schema migration serializes the `credential_updated_at` ALTER with `BEGIN IMMEDIATE`;
-- dedicated attack/regression coverage for vault encryption, key lifecycle, owner isolation, lease revocation, auth-header override attempts, TOCTOU, atomic deletion and multi-worker migration;
-- Phase 7.26 registry-revision regression coverage remains active and now explicitly coexists with the credential-revision check.
+- official `UserInput[]` instead of FDEX prompt emulation;
+- `text`, `localImage`, `localAudio`, `skill`, `mention`;
+- owner/task media store with generated filenames;
+- image MIME/signature checks and 20 MiB limit;
+- audio MIME/signature checks and 50 MiB limit;
+- repository-relative Mention resolved only after the isolated worktree exists;
+- owner `CODEX_HOME/skills/<name>/SKILL.md` resolution only;
+- absolute path, `..` and symlink escape rejection;
+- queued-only mutation and immutable input after execution begins;
+- Retry inheritance without duplicating Thread Resume/Fork history;
+- permanent account deletion of input metadata and media assets;
+- user-facing “Agent 输入” center and task input page;
+- dedicated attack/regression tests;
+- bilingual architecture doc: `docs/CODEX_MULTIMODAL_INPUTS.md`.
 
-#### Phase 7.27 security boundary
+## Remaining Codex Host work / 尚未完成
 
-Phase 7.27 supports only **anonymous or static Bearer HTTPS Streamable HTTP Remote MCP**. It does not provide OAuth authorization-code callbacks/token refresh, arbitrary remote headers, ChatGPT Connector credential proxying or user-configurable local stdio MCP.
+These are **not yet complete**, therefore the complete Codex Host program is **not ready for a new formal release declaration**:
 
-A request already admitted before a concurrent revocation may finish as an in-flight request; credential/lease revocation prevents subsequent authorization admission and does not claim to recall bytes already sent remotely.
+### Phase 7.30 — Skills / Hooks / Plugins control plane
 
-The vault key is part of server backup/restore state. Existing ciphertext never causes automatic key replacement.
+- native `skills/list`, `skills/config/write`, `hooks/list` integration;
+- owner-scoped Skill installation/update/remove policy;
+- official plugin/list/read/install/uninstall/marketplace bridge where portable;
+- explicit prohibition or outer sandbox for plugin-provided local stdio execution;
+- safe policy bridge for dynamic `item/tool/call` requests;
+- Web management UI and account lifecycle.
 
-See `docs/CODEX_REMOTE_MCP.md`.
+### Phase 7.31 — Sub-Agent / Collaboration resource governance
 
-## Real Runtime CI
+- expose official child/descendant Thread relationships and collaboration Items;
+- per-owner/per-root-task sub-agent count and nesting limits;
+- aggregate CPU/RAM/PID/concurrency budgets across the whole agent tree;
+- prevent child agents from expanding GitHub/network/worktree/MCP authority;
+- parent cancel/account deletion must terminate descendant work.
 
-The FastAPI suite includes integration coverage that starts the actual bundled Codex binary, completes the real app-server handshake and calls a native non-model API. This detects wire/runtime drift without requiring a model API key.
+### Phase 7.32 — Whole Codex process-tree isolation + Runtime lifecycle
 
-Production CI still cannot prove an external Provider implements every Codex Responses/tool-streaming semantic. A real production Coding Agent smoke task remains required before changing the default engine.
+- entire `codex app-server` + spawned command process tree inside a dedicated cgroup v2/systemd scope;
+- CPU, MemoryMax, TasksMax/PID and concurrency enforcement at the process-tree boundary;
+- reliable tree termination (`cgroup.kill`/systemd scope stop) on cancel/crash;
+- staged official Runtime install;
+- version/protocol/schema smoke verification;
+- atomic activation and previous-version rollback;
+- admin status/diagnostics without leaking secrets.
 
-## Open-source Codex compatibility policy
+### Phase 7.33 — Provider production compatibility + rollout seal
 
-FDEX does **not** vendor every Rust crate from `openai/codex`.
+- real Responses streaming/tool-call compatibility smoke per Provider;
+- classify wire-compatible vs Codex-tool-compatible vs full-feature-compatible Providers;
+- safe task-level provider failure semantics without continuing on a partially modified worktree;
+- production smoke gate before changing `FDEX_AGENT_ENGINE` default from legacy/auto policy;
+- final consolidated security regression and operator deployment documentation.
 
-The goal is to use the portable local capability set through the official Runtime while FDEX remains the multi-user control plane. See:
+### Android-native parity
+
+Server/Web Codex Host capability is the priority. Android-native rendering/actions for new Codex Item/approval/input/management surfaces remain separate unless required by a phase; no Android release should be emitted merely for server/Web-only changes.
+
+## Development rules / 后续规则
+
+1. Use Center `user_id` for every user-owned resource.
+2. Use GitHub App Installation as repository authority; never give its token to Codex.
+3. Never allow Codex to write directly to `main`.
+4. App Server Protocol is the Codex compatibility ABI; do not fork the full Rust workspace without a compelling reason.
+5. Human approval never overrides FDEX filesystem/network/GitHub policy.
+6. Remote MCP destinations and long-lived credentials stay behind FDEX enforcement.
+7. Do not expose arbitrary local stdio MCP/plugin process launch in a multi-tenant Center without an outer process-tree sandbox.
+8. Browser-provided file paths are never trusted as server paths.
+9. Unsupported or unverifiable permission/tool requests fail closed.
+10. Require FastAPI + Android unit + Android Debug APK CI before every merge and again on main.
+
+## Reference docs / 参考文档
 
 - `docs/CODEX_ENGINE.md`
 - `docs/CODEX_COMPATIBILITY.md`
 - `docs/CODEX_INTERACTIONS.md`
 - `docs/CODEX_MCP_ELICITATION.md`
 - `docs/CODEX_REMOTE_MCP.md`
+- `docs/CODEX_MULTIMODAL_INPUTS.md`
 
-The compatibility policy distinguishes:
-
-1. local/portable runtime capabilities that FDEX should directly adopt;
-2. capabilities requiring FDEX owner-scoped permission/UI bridges;
-3. open client code that still depends on proprietary OpenAI/ChatGPT cloud services;
-4. CLI/TUI/build/test/platform-specific projects that are not FDEX server Agent features.
-
-## Recent completed phases
-
-- **Phase 7.1–7.3** — Center account lifecycle, security, erasure/export and destructive-operation locking.
-- **Phase 7.4** — persistent Agent tasks and sandbox lifecycle.
-- **Phase 7.5–7.10** — user GitHub authorization evolution to GitHub App Installation authority.
-- **Phase 7.11–7.12** — provider protocol routing and real owner-scoped GitHub tools in Coding-Agent-enabled Web chat.
-- **Phase 7.13–7.14** — universal `智体` product model across Android/Web/server.
-- **Phase 7.15–7.18** — dedicated GitHub egress, managed VLESS/Xray pool and explicit activation diagnostics.
-- **Phase 7.19–7.20** — official Codex Runtime and native app-server Host.
-- **Phase 7.21** — durable Thread/Turn Host and continuation/control lifecycle.
-- **Phase 7.22** — durable full Item/event stream and reconnect-safe Web SSE.
-- **Phase 7.23** — durable owner-scoped approvals and requestUserInput bridge.
-- **Phase 7.24** — owner-scoped official MCP elicitation bridge.
-- **Phase 7.25** — owner-scoped credential-free Remote MCP registry/control plane.
-- **Phase 7.26** — destination-enforcing task-scoped localhost Remote MCP gateway.
-- **Phase 7.27** — FDEX-held encrypted Remote MCP static Bearer vault and credential-revision-aware gateway injection.
-
-## What remains after Phase 7.27
-
-The next compatibility layers include:
-
-- owner/server-scoped OAuth authorization-code callback/token broker with CSRF state + PKCE, encrypted access/refresh tokens, expiry/refresh locking and revocation;
-- credential-aware OAuth refresh that preserves the Phase 7.27 credential-revision lease model;
-- safe policy for official `item/tool/call` dynamic tool requests;
-- image/audio/local attachment/skill/mention Turn input;
-- Skills/Hooks/local plugin management and policy UI;
-- collaboration/sub-agent resource governance;
-- stronger whole Codex process-tree CPU/Memory/PID/concurrency and filesystem isolation;
-- verified official Runtime updater/rollback;
-- provider compatibility smoke tests and safe failover semantics;
-- Android-native rendering/interaction parity where appropriate.
-
-## Development rules going forward
-
-1. Use `智体` for user-facing identities.
-2. Use Center `user_id` as the owner scope for every user resource.
-3. Treat GitHub App Installation as repository-permission authority.
-4. Keep GitHub tokens short-lived and downscoped; never give them to Codex.
-5. Never allow Coding Agent/Codex to write directly to `main`.
-6. Keep GitHub egress application-scoped and avoid host-global networking side effects.
-7. Keep long-lived secrets out of Codex Runtime/shell beyond the one selected Provider key required by Runtime.
-8. Keep project network/worktree policy authoritative; a human approval must not bypass it.
-9. Treat the official App Server Protocol as the Codex compatibility ABI; do not fork core crates without a compelling reason.
-10. Fail closed on unsupported, unverifiable or over-broad server-initiated permission/MCP requests.
-11. Never expose user-configurable stdio MCP process launch in the multi-tenant Center without an outer process-tree sandbox/allowlist boundary.
-12. Remote MCP network traffic must remain behind FDEX request-time destination enforcement; Codex must not receive the user-supplied remote URL directly.
-13. Every Remote MCP capability must be owner/task/server/registry-revision/credential-revision scoped and revocable.
-14. Remote MCP long-lived credentials must remain FDEX-held, encrypted, owner/server-scoped and absent from Codex config/shell/export/UI plaintext.
-15. Existing encrypted Remote MCP credentials must fail closed if their vault key is missing or mismatched; never auto-replace the key.
-16. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
-17. Require full FastAPI + Android CI before merge.
-
-## Historical progress file
-
-`DEVELOPMENT_PROGRESS.md` contains older detailed history and may describe an earlier baseline. Use this file plus the latest merged PRs for the current baseline.
+`DEVELOPMENT_PROGRESS.md` is historical. Use this file plus the latest merged PRs as the current baseline.

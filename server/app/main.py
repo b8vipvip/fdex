@@ -25,6 +25,8 @@ from app.auth_routes import router as auth_router
 from app.center_auth_middleware import CenterUserAuthMiddleware
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
+from app.codex_input_center_routes import router as codex_input_center_router
+from app.codex_task_input_routes import router as codex_task_input_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
 from app.github_app_admin_routes import router as github_app_admin_router
@@ -154,6 +156,8 @@ app.include_router(agent_identity_router)
 app.include_router(user_app_router)
 app.include_router(user_chat_api_router)
 app.include_router(user_agent_task_router)
+app.include_router(codex_input_center_router)
+app.include_router(codex_task_input_router)
 app.include_router(user_codex_event_router)
 app.include_router(agent_policy_portal_router)
 app.include_router(user_portal_router)
