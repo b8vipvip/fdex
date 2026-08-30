@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Codex Sub-Agent 治理 · FDEX{% endblock %}
+{% block heading %}Codex Sub-Agent 治理{% endblock %}
+{% block subheading %}官方 Multi-Agent V2 + FDEX Center 并发与共享预算控制{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/agent">返回 Coding Agent</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+    <div class="panel-header">
+        <div><h2>官方 Multi-Agent V2</h2><p>FDEX 不实现自己的 Sub-Agent Loop，而是把硬上限通过官方 Codex CLI config override 注入每个 app-server。</p></div>
+        <span class="badge {% if policy.enabled %}success{% endif %}">{% if policy.enabled %}已启用{% else %}已关闭{% endif %}</span>
+    </div>
+    <div class="inline-note success-note">
+        协议：<code>{{ policy.protocol }}</code> · namespace=<code>{{ policy.tool_namespace }}</code> ·
+        根 Agent + 子 Agent 最多同时 {{ policy.max_concurrent_threads_per_session }} 个线程（即最多 {{ policy.max_parallel_subagents }} 个并行子 Agent）。
+    </div>
+    <div class="inline-note" style="margin-top:12px">
+        官方 MultiAgentV2 使用 <code>/root/...</code> canonical task path 表示层级，并由 Codex <code>AgentControl</code> 创建/通信/等待/中断。
+        bundled 0.147 没有可对 V2 生效的硬 depth 参数，因此 FDEX 不伪造“深度上限”；实际树规模由总并发槽位 + 共享 rollout budget 双重限制。
+    </div>
+
+    <form method="post" action="/admin/agent/subagents" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启。确定继续吗？" style="margin-top:16px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="checkbox-field aligned">
+            <input type="checkbox" name="fdex_agent_subagents_enabled" value="true" {% if subagent.fdex_agent_subagents_enabled %}checked{% endif %}>
+            <span>启用官方 Codex Multi-Agent V2</span>
+        </label>
+        <div class="form-grid">
+            <label class="field"><span>单 Session 最大同时线程</span><input type="number" name="max_concurrent" min="1" max="16" value="{{ subagent.fdex_agent_subagent_max_concurrent }}" required><small>包含 root；例如 4 = root + 最多 3 个同时打开的子 Agent。</small></label>
+            <label class="field"><span>共享 Rollout Budget（weighted tokens）</span><input type="number" name="rollout_budget_tokens" min="10000" max="2000000" step="1000" value="{{ subagent.fdex_agent_subagent_rollout_budget_tokens }}" required><small>root 与所有子 Agent 共用；不是每个 Agent 各发一份额度。</small></label>
+            <label class="field"><span>wait 最小值（ms）</span><input type="number" name="wait_min_ms" min="0" max="600000" value="{{ subagent.fdex_agent_subagent_wait_min_ms }}" required></label>
+            <label class="field"><span>wait 默认值（ms）</span><input type="number" name="wait_default_ms" min="0" max="3600000" value="{{ subagent.fdex_agent_subagent_wait_default_ms }}" required></label>
+            <label class="field"><span>wait 最大值（ms）</span><input type="number" name="wait_max_ms" min="0" max="3600000" value="{{ subagent.fdex_agent_subagent_wait_max_ms }}" required><small>必须满足 min ≤ default ≤ max。</small></label>
+            <label class="field"><span>Sampling token 权重</span><input type="number" name="sampling_token_weight" min="0" max="10" step="0.05" value="{{ subagent.fdex_agent_subagent_sampling_token_weight }}" required></label>
+            <label class="field"><span>Prefill token 权重</span><input type="number" name="prefill_token_weight" min="0" max="10" step="0.05" value="{{ subagent.fdex_agent_subagent_prefill_token_weight }}" required></label>
+        </div>
+        <div class="inline-note warning-note">
+            <strong>模型覆盖被强制关闭。</strong> FDEX 固定 <code>expose_spawn_agent_model_overrides=false</code>，子 Agent 继承当前由统一供应商池选择的模型/Provider，不能借 <code>spawn_agent</code> 绕过 FDEX 的 Provider 策略。
+        </div>
+        <div class="inline-note">
+            当前预算提醒阈值：{% for value in policy.rollout_budget_reminders %}<code>{{ value }}</code>{% if not loop.last %} / {% endif %}{% endfor %} weighted tokens。
+            预算耗尽后由官方 Codex 返回 SessionBudgetExceeded；FDEX 不在外层猜测 token 数量。
+        </div>
+        <button class="button primary" type="submit">保存 Sub-Agent 治理</button>
+    </form>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>FDEX 保留的外层边界</h2><p>Multi-Agent V2 解决 Agent 编排，不替代 Center 多租户安全。</p></div></div>
+    <div class="content-grid equal">
+        <div><strong>账号 / worktree</strong><p class="muted">子 Agent 继承同一官方 Session 的 cwd、sandbox、approval 与 provider，不获得另一个账号、仓库或 GitHub 凭据。</p></div>
+        <div><strong>事件审计</strong><p class="muted">官方 app-server 的子 Agent activity/item 继续走 Phase 7.22 通知总线，原样持久化到 owner/task scoped codex_events/codex_items。</p></div>
+        <div><strong>外层资源</strong><p class="muted">本页控制 Codex 内部并发与 token 预算；整个进程树的 cgroup v2 CPU/RAM/PID/tree-kill 是 Phase 7.32 的下一层硬隔离。</p></div>
+        <div><strong>Plugin / Dynamic Tool</strong><p class="muted">Phase 7.30 的安装与 Dynamic Tool 安全门保持不变，不会因为开启子 Agent 自动放宽。</p></div>
+    </div>
+</section>
+{% endblock %}
