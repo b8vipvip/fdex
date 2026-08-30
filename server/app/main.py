@@ -26,6 +26,9 @@ from app.center_auth_middleware import CenterUserAuthMiddleware
 from app.client_ai import router as client_ai_router
 from app.client_update import router as client_update_router
 from app.codex_input_center_routes import router as codex_input_center_router
+from app.codex_provider_admin_routes import router as codex_provider_admin_router
+from app.codex_provider_rollout import install_codex_provider_rollout_runtime
+from app.codex_provider_smoke_mcp import router as codex_provider_smoke_mcp_router
 from app.codex_task_input_routes import router as codex_task_input_router
 from app.config import SERVER_DIR, get_settings
 from app.fdex_memory import close_memory_coordinator
@@ -52,6 +55,12 @@ from app.user_codex_event_routes import router as user_codex_event_router
 # it and always called /chat/completions. Install the protocol-aware runtime before Web app routes
 # import and start invoking client_ai().
 install_provider_protocol_runtime()
+
+# Phase 7.33 separates generic Provider health from real Codex compatibility. Every production Codex
+# launch/status seam is rebound to the fresh-full compatibility selector here. The explicit admin
+# smoke runner still uses select_codex_provider_from([provider]) so an unverified Provider can be
+# tested without creating a circular "must already be unlocked to run the unlock test" dependency.
+install_codex_provider_rollout_runtime()
 
 from app.user_app_routes import router as user_app_router
 from app.agent_identity_runtime import install_agent_identity_runtime
@@ -143,10 +152,11 @@ generated_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/downloads", StaticFiles(directory=release_dir), name="downloads")
 app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
-# The gateway route is intentionally not an account/API surface. The handler itself additionally
-# requires an actual loopback TCP peer plus an unguessable task capability before touching a
-# registry row. It is mounted before broad user routers so no compatibility route can shadow it.
+# Internal capability routes are intentionally not account/API surfaces. Their handlers additionally
+# require an actual loopback TCP peer and an unguessable task/smoke capability before touching state.
+# Mount them before broad user routers so no compatibility route can shadow them.
 app.include_router(remote_mcp_gateway_router)
+app.include_router(codex_provider_smoke_mcp_router)
 app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
 app.include_router(user_home_router)
@@ -167,6 +177,7 @@ app.include_router(github_app_admin_router)
 app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
+app.include_router(codex_provider_admin_router)
 app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
 app.include_router(realtime_diagnostic_admin_router)

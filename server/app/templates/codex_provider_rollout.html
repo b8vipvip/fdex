@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Codex Provider Rollout · FDEX{% endblock %}
+{% block heading %}Codex Provider Rollout{% endblock %}
+{% block subheading %}用真实官方 app-server smoke 验证 Responses、工具、MCP 与 Multi-Agent，再决定是否允许 Codex 生产流量{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/agent/runtime">Codex Runtime</a><a class="button secondary" href="/admin/providers">供应商</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+    <div class="panel-header">
+        <div>
+            <h2>生产解锁条件</h2>
+            <p>普通文本测试或“配置里勾选 Responses”都不是 Codex 上线凭证。FDEX 只选择通过当前 Runtime、当前 Provider 配置和当前治理策略真实 full smoke 的供应商。</p>
+        </div>
+        <span class="badge {% if rollout.runtime and isolation.enforced %}success{% else %}warning{% endif %}">Phase 7.33</span>
+    </div>
+    <div class="content-grid equal">
+        <div class="inline-note {% if rollout.runtime %}success-note{% else %}warning-note{% endif %}">
+            <strong>官方 Runtime</strong><br>
+            {% if rollout.runtime %}
+            {{ rollout.runtime.version }} · {{ rollout.runtime.source }}<br><span class="muted"><code>{{ rollout.runtime.path }}</code></span>
+            {% else %}
+            不可用：{{ rollout.runtime_error or 'unknown' }}
+            {% endif %}
+        </div>
+        <div class="inline-note {% if isolation.enforced %}success-note{% else %}warning-note{% endif %}">
+            <strong>Phase 7.32 进程树隔离</strong><br>
+            {% if isolation.enforced %}
+            cgroup v2 enforced · Memory {{ isolation.memory_mb }} MB · CPU {{ isolation.cpu_percent }}% · PIDs {{ isolation.pids_max }}
+            {% else %}
+            未生效：{{ isolation.reason or 'unknown' }}
+            {% endif %}
+        </div>
+    </div>
+    <div class="inline-note warning-note" style="margin-top:16px">
+        <strong>重要：</strong>full smoke 会真实调用供应商模型，可能产生上游费用。兼容记录最多有效 {{ rollout.max_age_hours }} 小时；API Key、Base URL、模型、Runtime、Multi-Agent governance 或 cgroup 资源上限变化都会使旧记录自动失效。生产默认仍保持 <code>FDEX_AGENT_ENGINE=legacy</code>，除非运维明确完成 rollout。
+    </div>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header">
+        <div><h2>兼容等级</h2><p>等级只按真实官方 Item/Event 和外部副作用证据升级，不采信模型文字自报。</p></div>
+        <span class="badge">要求：{{ rollout.required_level }}</span>
+    </div>
+    <div class="content-grid equal">
+        <div><strong>wire</strong><p class="muted">真实 <code>initialize → thread/start → turn/start → turn/completed</code>，并得到预期 marker。</p></div>
+        <div><strong>tools</strong><p class="muted">在隔离 scratch workspace 里出现官方 <code>commandExecution/fileChange</code>，且实际文件内容验证通过。</p></div>
+        <div><strong>MCP</strong><p class="muted">调用 FDEX loopback 一次性 capability，官方事件必须出现 <code>mcpToolCall</code>，服务端也必须记录正确 marker。</p></div>
+        <div><strong>full</strong><p class="muted">在上述基础上出现官方 <code>reasoning</code> 与 <code>collabAgentToolCall(spawnAgent)</code>，证明 Multi-Agent 路径真实可用。</p></div>
+    </div>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>供应商 Codex 兼容性</h2><p>按现有供应商优先级展示。生产 Codex 只会在 Host 启动前跳过 stale/unverified Provider，绝不会在已经修改 worktree 的任务中途切换 Provider。</p></div></div>
+    {% if rollout.rows %}
+    <div class="table-wrap">
+        <table class="data-table provider-table">
+            <thead><tr><th>优先级</th><th>供应商 / 模型</th><th>当前结论</th><th>真实证据</th><th>最后记录</th><th>操作</th></tr></thead>
+            <tbody>
+            {% for row in rollout.rows %}
+            {% set p = row.provider %}
+            {% set c = row.compatibility %}
+            {% set record = c.record or {} %}
+            {% set evidence = record.evidence or {} %}
+            <tr>
+                <td><strong>#{{ p.priority }}</strong><br><span class="badge {{ 'success' if p.enabled else 'warning' }}">{{ '启用' if p.enabled else '停用' }}</span></td>
+                <td>
+                    <strong>{{ p.name }}</strong><br>
+                    <span class="model-pill primary-model">{{ p.main_text_model or '未配置文本模型' }}</span>
+                    <div class="tiny-line">{{ p.base_url }}</div>
+                    <div class="tiny-line">Responses={{ '已声明' if 'responses' in p.protocol_order else '未声明' }} · Key={{ p.api_key_masked or '未配置' }}</div>
+                </td>
+                <td>
+                    <span class="badge {% if c.valid %}success{% elif c.level in ['wire','tools'] %}warning{% else %}error{% endif %}">{{ c.level or 'none' }}</span>
+                    <div class="tiny-line">{{ '可参与 Codex rollout' if c.valid else c.reason }}</div>
+                    {% if c.age_hours is defined %}<div class="tiny-line">age={{ '%.1f'|format(c.age_hours) }}h / {{ rollout.max_age_hours }}h</div>{% endif %}
+                </td>
+                <td>
+                    <div class="tiny-line">wire={{ '✓' if evidence.wire else '—' }} · reasoning={{ '✓' if evidence.reasoning else '—' }}</div>
+                    <div class="tiny-line">tools={{ '✓' if evidence.tools else '—' }} · MCP={{ '✓' if evidence.mcp else '—' }}</div>
+                    <div class="tiny-line">subagent={{ '✓' if evidence.subagent else '—' }}</div>
+                    {% if record.error %}<div class="tiny-line">error={{ record.error }}</div>{% endif %}
+                </td>
+                <td>
+                    {% if record.checked_at %}
+                    {{ record.checked_at[:19].replace('T',' ') }}<br>
+                    <span class="muted">{{ record.runtime_version }} · {{ record.latency_ms }} ms</span>
+                    {% else %}<span class="muted">未执行真实 Codex smoke</span>{% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/admin/agent/codex-providers/{{ p.id }}/smoke" data-confirm="这会真实启动官方 Codex app-server，并对该供应商执行多轮 Responses、工具、MCP 和 Sub-Agent smoke，可能产生模型费用。确定继续吗？">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button class="button primary small" type="submit" {% if not p.enabled or not row.spec or not rollout.runtime or not isolation.enforced %}disabled{% endif %}>执行 full smoke</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>暂无供应商</strong><p>先在供应商管理配置 Responses API、API Key 和文本模型。</p></div>
+    {% endif %}
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>Failover 语义</h2><p>Phase 7.33 明确禁止“已经动过 worktree 后换 Provider 继续跑”。</p></div></div>
+    <div class="content-grid equal">
+        <div><strong>允许</strong><p class="muted">任务 Host 启动前，按优先级跳过没有 fresh full 证明的 Provider，选择下一个已验证 Provider。</p></div>
+        <div><strong>禁止</strong><p class="muted">一旦官方 Codex Host/Turn 已开始，Provider 请求失败就让该任务失败；不会在同一 worktree 中自动切到另一个 Provider。</p></div>
+        <div><strong>恢复</strong><p class="muted">用户 Retry 会创建新的 FDEX task。失败任务没有受信 commit 时不会继承其脏 worktree，因此 Provider 重新选择发生在新的执行边界。</p></div>
+        <div><strong>legacy</strong><p class="muted"><code>auto</code> 只允许在 Codex 尚未 ready、Host 尚未启动时回退 legacy；不会捕获一个已开始的 Codex 失败再继续 legacy。</p></div>
+    </div>
+</section>
+{% endblock %}
