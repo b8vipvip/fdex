@@ -235,6 +235,7 @@ def test_phase730_route_ui_and_native_method_wiring() -> None:
     assert '"plugin/install",' not in inventory_section
     assert '"plugin/uninstall",' not in inventory_section
     assert "Phase 7.32" in source
-    assert 'action="/account/agent/capabilities/plugins/install"' in template
-    assert 'action="/account/agent/capabilities/plugins/uninstall"' in template
-    assert "验证 Marketplace / Share 安全门" in template
+    assert 'action="/account/agent/capabilities/plugins/install"' not in template
+    assert 'action="/account/agent/capabilities/plugins/uninstall"' not in template
+    assert "验证 Plugin 写安全门" in template
+    assert "plugin/install、plugin/uninstall" in template
