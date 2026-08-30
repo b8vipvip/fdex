@@ -13,14 +13,18 @@ from app.codex_engine import (
     resolve_codex_runtime,
     select_codex_provider,
 )
+from app.codex_process_isolation import codex_process_isolation_status
 from app.config import fresh_settings
 
 T = TypeVar("T")
 
 PLUGIN_MUTATION_BLOCK_REASON = (
-    "Plugin 安装、卸载、Marketplace 写入及 share 写操作在 Phase 7.30 保持禁用；"
-    "它们可能把本地 command/stdio 能力引入多租户 Center，必须等 Phase 7.32 "
-    "完成 Codex 整个进程树的 cgroup v2 / PID / tree-kill 外层隔离后再开放。"
+    "Plugin 本地安装/卸载只有在 Phase 7.32 Codex 整个进程树 cgroup v2 隔离真实生效时才开放；"
+    "Marketplace add/remove/upgrade、远程 catalog 安装和 plugin/share/* 仍保持禁用。"
+)
+PLUGIN_MUTATION_ALLOWED_REASON = (
+    "Phase 7.32 cgroup v2 进程树隔离已生效。仅允许对当前官方 local plugin/list 清单中的 AVAILABLE Plugin "
+    "执行 plugin/install，以及对当前 plugin/installed 精确 ID 执行 plugin/uninstall；Marketplace/share 写操作仍禁用。"
 )
 
 
@@ -34,6 +38,20 @@ def _dict(value: Any) -> dict[str, Any]:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _plugin_mutation_policy() -> tuple[bool, str]:
+    status = codex_process_isolation_status()
+    if bool(status.get("enforced")):
+        return True, PLUGIN_MUTATION_ALLOWED_REASON
+    reason = str(status.get("reason") or "cgroup v2 process isolation is unavailable")
+    return False, f"{PLUGIN_MUTATION_BLOCK_REASON} 当前隔离状态：{reason}"
+
+
+def _require_plugin_mutation_isolation() -> None:
+    allowed, reason = _plugin_mutation_policy()
+    if not allowed:
+        raise CodexCapabilityError(reason)
 
 
 def _project_cwd(owner_id: str, project_id: int | None) -> tuple[Path, dict[str, Any] | None]:
@@ -142,9 +160,12 @@ def _flatten_marketplaces(result: Any) -> tuple[list[dict[str, Any]], list[str]]
                     "id": str(plugin.get("id") or "")[:240],
                     "name": name[:200],
                     "description": str(plugin.get("description") or "")[:1500],
-                    "version": str(plugin.get("version") or "")[:120],
+                    "version": str(plugin.get("version") or plugin.get("localVersion") or "")[:120],
+                    "local_version": str(plugin.get("localVersion") or "")[:120],
                     "installed": bool(plugin.get("installed", False)),
                     "enabled": bool(plugin.get("enabled", True)),
+                    "availability": str(plugin.get("availability") or "")[:80],
+                    "install_policy": str(plugin.get("installPolicy") or "")[:80],
                     "raw": plugin,
                 }
             )
@@ -211,8 +232,7 @@ async def capability_inventory(
             timeout=30.0,
         )
         hooks_result = await client.request("hooks/list", {"cwds": [cwd_text]}, timeout=30.0)
-        # Phase 7.30 deliberately limits plugin discovery to local marketplaces and forbids
-        # remote catalog refetch so opening the control page cannot create new network egress.
+        # Discovery remains local-only and does not refetch a remote catalog on page open.
         plugin_result = await client.request(
             "plugin/list",
             {
@@ -231,6 +251,7 @@ async def capability_inventory(
         hooks, hook_diagnostics = _flatten_hooks(hooks_result)
         marketplaces, plugin_diagnostics = _flatten_marketplaces(plugin_result)
         installed_marketplaces, installed_diagnostics = _flatten_marketplaces(installed_result)
+        mutation_allowed, mutation_reason = _plugin_mutation_policy()
         return {
             "cwd": cwd_text,
             "skills": skills,
@@ -240,8 +261,8 @@ async def capability_inventory(
             "marketplaces": marketplaces,
             "installed_marketplaces": installed_marketplaces,
             "plugin_diagnostics": plugin_diagnostics + installed_diagnostics,
-            "plugin_mutation_allowed": False,
-            "plugin_mutation_reason": PLUGIN_MUTATION_BLOCK_REASON,
+            "plugin_mutation_allowed": mutation_allowed,
+            "plugin_mutation_reason": mutation_reason,
         }
 
     inventory = await _with_client(owner_id, project_id, operation)
@@ -283,6 +304,30 @@ async def set_skill_enabled(
     return await _with_client(owner_id, project_id, operation)
 
 
+async def _local_plugin_inventory(client: CodexAppServerClient, cwd: Path) -> list[dict[str, Any]]:
+    result = await client.request(
+        "plugin/list",
+        {
+            "cwds": [str(cwd)],
+            "marketplaceKinds": ["local"],
+            "forceRefetch": False,
+        },
+        timeout=30.0,
+    )
+    marketplaces, _diagnostics = _flatten_marketplaces(result)
+    return marketplaces
+
+
+async def _installed_plugin_inventory(client: CodexAppServerClient, cwd: Path) -> list[dict[str, Any]]:
+    result = await client.request(
+        "plugin/installed",
+        {"cwds": [str(cwd)], "installSuggestionPluginNames": []},
+        timeout=30.0,
+    )
+    marketplaces, _diagnostics = _flatten_marketplaces(result)
+    return marketplaces
+
+
 async def read_local_plugin(
     owner_id: str,
     *,
@@ -296,16 +341,7 @@ async def read_local_plugin(
         raise CodexCapabilityError("Plugin marketplace path 和名称不能为空")
 
     async def operation(client: CodexAppServerClient, cwd: Path) -> dict[str, Any]:
-        result = await client.request(
-            "plugin/list",
-            {
-                "cwds": [str(cwd)],
-                "marketplaceKinds": ["local"],
-                "forceRefetch": False,
-            },
-            timeout=30.0,
-        )
-        marketplaces, _diagnostics = _flatten_marketplaces(result)
+        marketplaces = await _local_plugin_inventory(client, cwd)
         exact = [
             market
             for market in marketplaces
@@ -326,8 +362,6 @@ async def read_local_plugin(
             timeout=30.0,
         )
         plugin = _dict(_dict(detail).get("plugin"))
-        # Keep UI/log payload bounded. Full command-like plugin configuration remains visible only
-        # through the official result object and is never executed by this control plane.
         return {
             "name": str(plugin.get("name") or requested_name)[:200],
             "description": str(plugin.get("description") or "")[:5000],
@@ -338,6 +372,116 @@ async def read_local_plugin(
     return await _with_client(owner_id, project_id, operation)
 
 
+async def install_local_plugin(
+    owner_id: str,
+    *,
+    marketplace_path: str,
+    plugin_name: str,
+    project_id: int | None = None,
+) -> dict[str, Any]:
+    _require_plugin_mutation_isolation()
+    requested_market = str(marketplace_path or "").strip()
+    requested_name = str(plugin_name or "").strip()
+    if not requested_market or not requested_name:
+        raise CodexCapabilityError("Plugin marketplace path 和名称不能为空")
+
+    async def operation(client: CodexAppServerClient, cwd: Path) -> dict[str, Any]:
+        _require_plugin_mutation_isolation()
+        marketplaces = await _local_plugin_inventory(client, cwd)
+        matches: list[dict[str, Any]] = []
+        for market in marketplaces:
+            if str(market.get("path") or "") != requested_market:
+                continue
+            matches.extend(
+                plugin
+                for plugin in market.get("plugins", [])
+                if str(plugin.get("name") or "") == requested_name
+            )
+        if len(matches) != 1:
+            raise CodexCapabilityError("Plugin 不在当前本地官方 plugin/list 精确清单中，已拒绝安装")
+        plugin = matches[0]
+        if bool(plugin.get("installed")):
+            return plugin
+        if str(plugin.get("availability") or "") != "AVAILABLE":
+            raise CodexCapabilityError("Plugin 当前 availability 不是 AVAILABLE，已拒绝安装")
+        if str(plugin.get("install_policy") or "") == "NOT_AVAILABLE":
+            raise CodexCapabilityError("Plugin 当前 installPolicy=NOT_AVAILABLE，已拒绝安装")
+
+        # Re-read the exact local plugin through the official protocol before the mutation. This
+        # ensures the marketplace path/name still resolves inside the same owner-scoped Host.
+        await client.request(
+            "plugin/read",
+            {
+                "marketplacePath": requested_market,
+                "remoteMarketplaceName": None,
+                "pluginName": requested_name,
+            },
+            timeout=30.0,
+        )
+        await client.request(
+            "plugin/install",
+            {
+                "marketplacePath": requested_market,
+                "remoteMarketplaceName": None,
+                "pluginName": requested_name,
+            },
+            timeout=60.0,
+        )
+        installed_markets = await _installed_plugin_inventory(client, cwd)
+        confirmed = [
+            item
+            for market in installed_markets
+            for item in market.get("plugins", [])
+            if str(item.get("name") or "") == requested_name and bool(item.get("installed"))
+        ]
+        if len(confirmed) != 1:
+            raise CodexCapabilityError("官方 plugin/install 已返回，但 plugin/installed 未确认唯一安装结果")
+        return confirmed[0]
+
+    return await _with_client(owner_id, project_id, operation)
+
+
+async def uninstall_plugin(
+    owner_id: str,
+    *,
+    plugin_id: str,
+    project_id: int | None = None,
+) -> dict[str, Any]:
+    _require_plugin_mutation_isolation()
+    requested_id = str(plugin_id or "").strip()
+    if not requested_id or len(requested_id) > 240:
+        raise CodexCapabilityError("Plugin ID 无效")
+
+    async def operation(client: CodexAppServerClient, cwd: Path) -> dict[str, Any]:
+        _require_plugin_mutation_isolation()
+        installed_markets = await _installed_plugin_inventory(client, cwd)
+        matches = [
+            item
+            for market in installed_markets
+            for item in market.get("plugins", [])
+            if str(item.get("id") or "") == requested_id and bool(item.get("installed"))
+        ]
+        if len(matches) != 1:
+            raise CodexCapabilityError("Plugin ID 不在当前账号官方 plugin/installed 唯一清单中，已拒绝卸载")
+        plugin = matches[0]
+        await client.request("plugin/uninstall", {"pluginId": requested_id}, timeout=60.0)
+        after_markets = await _installed_plugin_inventory(client, cwd)
+        still_installed = [
+            item
+            for market in after_markets
+            for item in market.get("plugins", [])
+            if str(item.get("id") or "") == requested_id and bool(item.get("installed"))
+        ]
+        if still_installed:
+            raise CodexCapabilityError("官方 plugin/uninstall 已返回，但 plugin/installed 仍显示该 Plugin")
+        return plugin
+
+    return await _with_client(owner_id, project_id, operation)
+
+
 def assert_plugin_mutation_blocked(action: str) -> None:
     clean = str(action or "plugin mutation").strip()[:120]
-    raise CodexCapabilityError(f"{clean} 已被 FDEX 安全策略阻止。{PLUGIN_MUTATION_BLOCK_REASON}")
+    raise CodexCapabilityError(
+        f"{clean} 未在 Phase 7.32 安全白名单中。只开放 verified local plugin/install 与 exact plugin/uninstall；"
+        "marketplace/add、marketplace/remove、marketplace/upgrade、远程 catalog 安装和 plugin/share/* 继续 fail-closed。"
+    )
