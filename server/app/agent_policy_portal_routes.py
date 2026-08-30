@@ -252,14 +252,9 @@ def remote_mcp_delete(server_id: str, request: Request, csrf_token: str = Form(.
     owner_id = str(user["id"])
     try:
         _verify_csrf(request, csrf_token)
-        if remote_mcp_registry().get(owner_id, server_id) is None:
+        if not remote_mcp_credential_store().delete_server(owner_id, server_id):
             raise KeyError("Remote MCP 不存在")
-        # Destroy the secret first. If a later registry delete unexpectedly fails, the surviving
-        # server is credential-free rather than leaving an orphan secret behind.
-        remote_mcp_credential_store().delete(owner_id, server_id)
-        if not remote_mcp_registry().delete(owner_id, server_id):
-            raise RuntimeError("Remote MCP 删除未完成")
-        _flash(request, "Remote MCP 及其 FDEX 凭据已移除；对应现存 lease 将立即失效", "success")
+        _flash(request, "Remote MCP 及其 FDEX 凭据已原子移除；对应现存 lease 将立即失效", "success")
     except (KeyError, ValueError, RuntimeError) as exc:
         _flash(request, f"Remote MCP 删除失败：{exc}", "error")
     return RedirectResponse("/account/agent/runtime#remote-mcp", status_code=303)
