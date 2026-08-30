@@ -5,16 +5,16 @@ Last updated: 2026-08-30
 ## Current baseline
 
 - Default branch: `main`
-- Accepted `main` baseline before this branch: **Phase 7.25 — Owner-scoped Remote MCP Registry**
-- Accepted Phase 7.25 main commit: `c6263f136563bde26d5df9f630883509fa1253c0`
-- Baseline proposed by this branch: **Phase 7.26 — Remote MCP Destination-Enforcing Gateway**
-- Current development branch: `agent/phase7-26-remote-mcp-egress`
+- Accepted `main` baseline before this branch: **Phase 7.26 — Remote MCP Destination-Enforcing Gateway**
+- Accepted Phase 7.26 main commit: `0f977d3986af25597b4e8f80639da78504be1015`
+- Baseline proposed by this branch: **Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection**
+- Current development branch: `agent/phase7-27-remote-mcp-credentials`
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
-- Phase 7.14 through Phase 7.26 are server/Web/infrastructure changes and do not require an Android release by themselves.
+- Phase 7.14 through Phase 7.27 are server/Web/infrastructure changes and do not require an Android release by themselves.
 - `FDEX_AGENT_ENGINE=legacy` remains the rollout default until a production Responses/tool smoke task succeeds.
 
-A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the PR and again after merge.
+A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the final PR head and again after merge.
 
 ## Current product model
 
@@ -22,7 +22,7 @@ FDEX user-facing identities use the universal **智体** model, not the former c
 
 ## Center account and isolation
 
-FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests, Remote MCP registry/lease state and sandboxes.
+FDEX Center `user_id` is the canonical owner scope for GitHub, Coding Agent, Web workspace, remote memory, tasks, Codex Thread/Turn/Item state, interactive Codex requests, Remote MCP registry/credential/lease state and sandboxes.
 
 Completed account lifecycle includes registration/login, rotating refresh sessions, password change/reset, device/session management, login rate limiting, security audit, data export, remote-memory erasure and permanent account deletion.
 
@@ -90,67 +90,69 @@ Implemented official `mcpServer/elicitation/request` handling on the encrypted i
 
 Accepted main commit: `c6263f136563bde26d5df9f630883509fa1253c0`.
 
-PR #86 and the post-merge `main` Build and Test run both passed FastAPI Tests, Android unit tests and Android Debug APK.
+Implemented owner-scoped credential-free Remote MCP registry, HTTPS/443/public-DNS admission, explicit bounded tool allowlists, Web CRUD/emergency disable, export/delete lifecycle and deliberate Runtime non-activation until FDEX owned the destination-enforcing egress layer.
+
+### Phase 7.26 — Remote MCP Destination-Enforcing Gateway
+
+Accepted main commit: `0f977d3986af25597b4e8f80639da78504be1015`.
+
+PR #87 and the post-merge `main` Build and Test run both passed FastAPI Tests, Android unit tests and Android Debug APK. Android Auto Release was skipped as expected for a server/Web-only phase.
 
 Implemented:
 
-- owner-scoped SQLite Remote MCP registry;
-- maximum 20 entries per account;
-- credential-free schema with no bearer/OAuth token, arbitrary HTTP Header, `command`, `args`, `env` or `cwd`;
-- HTTPS-only/443-only URL admission;
-- no URL userinfo/query/fragment;
-- globally routable IP requirement;
-- save/re-enable DNS admission where every resolved address must be public;
-- mixed public/private DNS answers fail closed;
-- explicit bounded per-server tool allowlist;
-- startup/tool timeouts;
-- Web CRUD and CSRF/current-owner scope;
-- DNS-independent emergency disable;
-- account export and permanent-delete lifecycle;
-- deliberate Runtime non-activation until a destination-enforcing egress layer exists.
+- task-scoped localhost Remote MCP URLs instead of the original remote URL in Codex config;
+- cryptographically random `X-FDEX-MCP-Capability`, with SHA-256-only durable lease storage;
+- owner + task + server + registry-revision lease binding;
+- task completion/failure/cancel revocation and fresh leases for resume/fork/new task;
+- direct-loopback/reverse-proxy-marker defense in depth;
+- request-time public DNS revalidation and connection pinning;
+- original-host TLS SNI/certificate verification;
+- `aiohttp trust_env=False`, no redirect following and generic auth-challenge suppression;
+- request-header allowlist and no Authorization/Cookie/capability forwarding;
+- gateway-side `tools/call` allowlist enforcement before network I/O;
+- bounded inspectable POST bodies and streaming upstream responses;
+- owner-scoped `CODEX_HOME` permanent-account cleanup.
 
-## Phase 7.26 — Remote MCP Destination-Enforcing Gateway (current branch)
+## Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection (current branch)
 
-Phase 7.26 activates **anonymous HTTPS Streamable HTTP Remote MCP** while keeping FDEX as the network and authorization boundary.
+Phase 7.27 extends the accepted 7.26 gateway to authenticated **static Bearer** Remote MCP without handing the remote secret to Codex.
 
 Implemented/proposed on this branch:
 
-- Codex receives only task-scoped `http://127.0.0.1:<fdex_port>/internal/codex-mcp/<lease_id>` MCP URLs;
-- the original user-supplied Remote MCP URL is never inserted into Codex Thread config;
-- each task receives a cryptographically random local `X-FDEX-MCP-Capability`;
-- raw capability values are never persisted; SQLite stores SHA-256 only;
-- capability is kept out of URL/access-log paths and is never forwarded remotely;
-- capability/remote URL are not injected into Codex shell environment;
-- leases are scoped to owner + task + server and have six-hour crash-fallback expiry;
-- task scope revokes leases on normal completion, failure or cancellation;
-- resume/fork/new task receives fresh leases;
-- every lease is bound to the exact registry `updated_at` revision at issuance;
-- any registry edit, disable or re-enable invalidates old leases immediately so a live task cannot be silently retargeted to a new URL or expanded tool policy;
-- gateway requires a direct loopback peer, rejects standard reverse-proxy forwarding markers and requires the local capability;
-- request-time DNS is resolved again for every outbound request;
-- every resolved address must be globally routable;
-- a custom `aiohttp` resolver pins the connection to exactly the just-admitted IP addresses;
-- the original hostname remains in the HTTPS URL so TLS SNI/certificate verification remains authoritative;
-- `aiohttp` uses `trust_env=False`, so host/global proxy environment does not redirect Remote MCP traffic;
-- redirects are disabled and 3xx becomes a gateway failure rather than escaping destination policy;
-- 401/403/407 authentication challenges are not exposed to Codex, preventing accidental Codex MCP OAuth flow in this anonymous phase;
-- request headers use an allowlist and never forward Authorization, Cookie, capability or arbitrary user headers;
-- configured `enabled_tools` is passed to Codex and independently enforced again by the gateway on JSON `tools/call` before network I/O;
-- opaque/non-JSON MCP POST bodies fail closed because tool authorization could not be inspected;
-- POST bodies are bounded to 8 MiB;
-- GET/SSE remains stream-capable while upstream response bodies are relayed incrementally;
-- account deletion removes Remote MCP lease rows before deleting registry rows;
-- Web UI now reflects actual 7.26 gateway activation and immediate old-lease invalidation semantics.
+- separate `remote_mcp_credentials` table; the public `remote_mcp_servers` registry remains credential-free;
+- strict owner + server credential scope;
+- Fernet encryption for durable Bearer storage;
+- dedicated vault key under `server/data/remote-mcp-secrets/credential-vault.key`;
+- POSIX hardening to `0700` parent / `0600` key where supported;
+- race-safe multi-worker first-key creation;
+- startup fail-closed when encrypted credentials exist but the key is missing;
+- startup fail-closed when a syntactically valid key cannot decrypt stored ciphertext;
+- keyed HMAC-SHA256 short fingerprint instead of raw token SHA, preventing a database-only offline guess verifier;
+- UI exposes only auth status, keyed fingerprint and timestamps; token is password-input-only and never echoed;
+- account export keeps Remote MCP Bearer/OAuth secrets explicitly excluded;
+- Codex task MCP config continues to contain only localhost capability and tool policy, never the remote Bearer;
+- Codex shell/process environment does not receive Remote MCP credentials;
+- FDEX gateway is the only component that decrypts and injects `Authorization: Bearer ...` remotely;
+- Codex/user-supplied `Authorization`, Cookie and arbitrary headers cannot override the vault value;
+- every lease is bound to both registry `updated_at` and credential `updated_at`;
+- adding, rotating or deleting a Bearer proactively revokes active leases for that server when the lease table exists;
+- credential TOCTOU fails closed if a credential disappears, rotates, or appears after an anonymous lease was validated;
+- Remote MCP deletion atomically revokes leases, deletes encrypted credential and deletes the owner-scoped registry row in one SQLite transaction;
+- permanent account deletion orders Remote MCP cleanup as lease → credential → registry;
+- multi-worker lease-schema migration serializes the `credential_updated_at` ALTER with `BEGIN IMMEDIATE`;
+- dedicated attack/regression coverage for vault encryption, key lifecycle, owner isolation, lease revocation, auth-header override attempts, TOCTOU, atomic deletion and multi-worker migration.
 
-### Phase 7.26 security boundary
+### Phase 7.27 security boundary
 
-Phase 7.26 remains **anonymous Remote MCP only**. It does not store or inject bearer tokens, OAuth credentials, arbitrary remote HTTP headers or ChatGPT Connector credentials. It also continues to reject user-configurable local stdio MCP process launch.
+Phase 7.27 supports only **anonymous or static Bearer HTTPS Streamable HTTP Remote MCP**. It does not provide OAuth authorization-code callbacks/token refresh, arbitrary remote headers, ChatGPT Connector credential proxying or user-configurable local stdio MCP.
 
-The localhost capability is the primary authentication boundary. Direct-loopback and reverse-proxy-marker checks are defense in depth; deployment should still avoid exposing `/internal/codex-mcp/` through a public reverse proxy.
+A request already admitted before a concurrent revocation may finish as an in-flight request; credential/lease revocation prevents subsequent authorization admission and does not claim to recall bytes already sent remotely.
+
+The vault key is part of server backup/restore state. Existing ciphertext never causes automatic key replacement.
 
 See `docs/CODEX_REMOTE_MCP.md`.
 
-Phase 7.26 becomes accepted `main` only after its PR and post-merge main CI are green.
+Phase 7.27 becomes accepted `main` only after its final PR head and post-merge main CI are green.
 
 ## Real Runtime CI
 
@@ -191,13 +193,14 @@ The compatibility policy distinguishes:
 - **Phase 7.23** — durable owner-scoped approvals and requestUserInput bridge.
 - **Phase 7.24** — owner-scoped official MCP elicitation bridge.
 - **Phase 7.25** — owner-scoped credential-free Remote MCP registry/control plane.
+- **Phase 7.26** — destination-enforcing task-scoped localhost Remote MCP gateway.
 
-## What remains after Phase 7.26
+## What remains after Phase 7.27
 
 The next compatibility layers include:
 
-- owner/server-scoped Remote MCP credential vault and OAuth callback/token broker without exposing long-lived credentials to arbitrary Codex shell processes;
-- authenticated Remote MCP gateway credential injection with strict secret lifetime/rotation/revocation semantics;
+- owner/server-scoped OAuth authorization-code callback/token broker with CSRF state + PKCE, encrypted access/refresh tokens, expiry/refresh locking and revocation;
+- credential-aware OAuth refresh that preserves the Phase 7.27 credential-revision lease model;
 - safe policy for official `item/tool/call` dynamic tool requests;
 - image/audio/local attachment/skill/mention Turn input;
 - Skills/Hooks/local plugin management and policy UI;
@@ -221,9 +224,11 @@ The next compatibility layers include:
 10. Fail closed on unsupported, unverifiable or over-broad server-initiated permission/MCP requests.
 11. Never expose user-configurable stdio MCP process launch in the multi-tenant Center without an outer process-tree sandbox/allowlist boundary.
 12. Remote MCP network traffic must remain behind FDEX request-time destination enforcement; Codex must not receive the user-supplied remote URL directly.
-13. Every Remote MCP capability must be owner/task/server/revision scoped and revocable.
-14. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
-15. Require full FastAPI + Android CI before merge.
+13. Every Remote MCP capability must be owner/task/server/registry-revision/credential-revision scoped and revocable.
+14. Remote MCP long-lived credentials must remain FDEX-held, encrypted, owner/server-scoped and absent from Codex config/shell/export/UI plaintext.
+15. Existing encrypted Remote MCP credentials must fail closed if their vault key is missing or mismatched; never auto-replace the key.
+16. Do not describe proprietary OpenAI cloud services as open-source merely because their client code is present in the repository.
+17. Require full FastAPI + Android CI before merge.
 
 ## Historical progress file
 
