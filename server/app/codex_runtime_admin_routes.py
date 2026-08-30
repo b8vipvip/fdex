@@ -10,10 +10,9 @@ from app.codex_engine import codex_runtime_status
 from app.codex_runtime_manager import (
     CodexRuntimeManagerError,
     fetch_release,
-    rollback_runtime,
     runtime_manager_status,
-    upgrade_runtime,
 )
+from app.codex_runtime_switch import rollback_runtime_safely, upgrade_runtime_safely
 from app.config import SERVER_DIR, fresh_settings
 from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, verify_csrf
 from app.system_info import schedule_service_restart
@@ -105,7 +104,9 @@ def upgrade_managed_runtime(
     requested = tag.strip() or None
     try:
         before = runtime_manager_status()
-        after = upgrade_runtime(requested)
+        # Download/hash/protocol validation happens before the fence; only tree cleanup + active
+        # pin activation is serialized against new transient Host execs.
+        after = upgrade_runtime_safely(requested)
         write_audit(
             request,
             "codex_runtime_upgrade",
@@ -132,7 +133,7 @@ def rollback_managed_runtime(request: Request, csrf_token: str = Form(...)) -> R
     verify_csrf(request, csrf_token)
     try:
         before = runtime_manager_status()
-        after = rollback_runtime()
+        after = rollback_runtime_safely()
         write_audit(
             request,
             "codex_runtime_rollback",
