@@ -15,6 +15,7 @@ from app.config import Settings, fresh_settings
 
 _REQUIRED_CONTROLLERS = {"cpu", "memory", "pids"}
 _SAFE_UNIT = re.compile(r"^[A-Za-z0-9_.@:-]{1,180}$")
+_CODEX_UNIT = re.compile(r"^fdex-codex-[0-9a-f]{32}\.service$")
 
 
 class CodexProcessIsolationError(RuntimeError):
@@ -261,3 +262,62 @@ def build_codex_process_isolation(
         pids_max=int(cfg.fdex_agent_sandbox_pids_max),
         stop_grace_seconds=float(getattr(cfg, "fdex_agent_process_stop_grace_seconds", 3.0)),
     )
+
+
+def list_codex_process_units() -> list[str]:
+    if not shutil.which("systemctl"):
+        return []
+    code, output = _run(
+        (
+            "systemctl",
+            "list-units",
+            "--all",
+            "--plain",
+            "--no-legend",
+            "--type=service",
+            "fdex-codex-*.service",
+        ),
+        timeout=5.0,
+    )
+    if code != 0:
+        raise CodexProcessIsolationError(f"failed to enumerate Codex transient services: {output or 'systemctl error'}")
+    units: list[str] = []
+    for line in output.splitlines():
+        first = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+        if _CODEX_UNIT.fullmatch(first):
+            units.append(first)
+    return sorted(set(units))
+
+
+def terminate_all_codex_trees(*, stop_grace_seconds: float | None = None) -> list[str]:
+    """Terminate every FDEX-owned Codex transient service before a Runtime switch.
+
+    A Runtime upgrade/rollback must not leave a task executing an old executable after the active
+    pin changes. Units are pattern-discovered but accepted only if they match the exact hashed
+    FDEX naming scheme; arbitrary systemd services can never be targeted by this cleanup.
+    """
+    grace = max(0.5, min(15.0, float(stop_grace_seconds or 3.0)))
+    units = list_codex_process_units()
+    stopped: list[str] = []
+    for unit in units:
+        spec = CodexProcessIsolationSpec(
+            unit_name=unit,
+            parent_unit="",
+            memory_mb=0,
+            cpu_percent=0,
+            pids_max=0,
+            stop_grace_seconds=grace,
+        )
+        spec.terminate_tree()
+        stopped.append(unit)
+    remaining = list_codex_process_units()
+    active_remaining: list[str] = []
+    for unit in remaining:
+        code, output = _run(("systemctl", "is-active", unit), timeout=2.0)
+        if code == 0 and output.strip() == "active":
+            active_remaining.append(unit)
+    if active_remaining:
+        raise CodexProcessIsolationError(
+            "Codex process trees remain active after global cleanup: " + ", ".join(active_remaining)
+        )
+    return stopped
