@@ -8,15 +8,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.responses import Response as StarletteResponse
 
 from app.codex_provider_compatibility import codex_provider_compatibility_store
+from app.remote_mcp_gateway import _direct_loopback_client
 
 router = APIRouter(prefix="/internal/codex-provider-smoke-mcp", include_in_schema=False)
 _MAX_BODY = 128 * 1024
 _TOOL_NAME = "fdex_smoke_echo"
-
-
-def _loopback(request: Request) -> bool:
-    host = request.client.host if request.client else ""
-    return host in {"127.0.0.1", "::1"}
 
 
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -113,7 +109,11 @@ def _handle_one(token: str, message: Any) -> dict[str, Any] | None:
 
 @router.api_route("/{token}", methods=["POST", "GET", "DELETE"], response_model=None)
 async def codex_provider_smoke_mcp(token: str, request: Request) -> StarletteResponse:
-    if not _loopback(request):
+    # `request.client` alone is insufficient behind a same-host reverse proxy: an external request
+    # forwarded by Nginx would also appear to originate from 127.0.0.1. Reuse the hardened Remote
+    # MCP rule, which requires an actual loopback peer AND the absence of Forwarded/Via/
+    # X-Forwarded-*/X-Real-IP proxy markers.
+    if not _direct_loopback_client(request):
         return PlainTextResponse("not found", status_code=404)
     if len(token) < 32 or len(token) > 256:
         return PlainTextResponse("not found", status_code=404)
