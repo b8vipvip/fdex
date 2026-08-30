@@ -347,7 +347,8 @@ def test_runtime_wiring_keeps_redirect_auth_and_host_proxy_escape_fail_closed() 
     assert "X-FDEX-MCP-Capability" not in engine
     assert "remote_mcp" not in engine.lower()
     assert "server_updated_at" in gateway
-    assert "current_revision != issued_revision" in gateway
+    assert "current_server_revision != issued_server_revision" in gateway
+    assert "current_credential_revision != issued_credential_revision" in gateway
     assert "trust_env=False" in gateway
     assert "allow_redirects=False" in gateway
     assert "if 300 <= upstream.status < 400" in gateway
