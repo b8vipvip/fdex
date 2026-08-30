@@ -404,8 +404,11 @@ async def install_local_plugin(
             return plugin
         if str(plugin.get("availability") or "") != "AVAILABLE":
             raise CodexCapabilityError("Plugin 当前 availability 不是 AVAILABLE，已拒绝安装")
-        if str(plugin.get("install_policy") or "") == "NOT_AVAILABLE":
-            raise CodexCapabilityError("Plugin 当前 installPolicy=NOT_AVAILABLE，已拒绝安装")
+        install_policy = str(plugin.get("install_policy") or "")
+        if install_policy not in {"AVAILABLE", "INSTALLED_BY_DEFAULT"}:
+            raise CodexCapabilityError(
+                f"Plugin 当前 installPolicy={install_policy or 'unknown'} 不允许安装，已 fail-closed"
+            )
 
         # Re-read the exact local plugin through the official protocol before the mutation. This
         # ensures the marketplace path/name still resolves inside the same owner-scoped Host.
@@ -431,11 +434,14 @@ async def install_local_plugin(
         confirmed = [
             item
             for market in installed_markets
+            if str(market.get("path") or "") == requested_market
             for item in market.get("plugins", [])
             if str(item.get("name") or "") == requested_name and bool(item.get("installed"))
         ]
         if len(confirmed) != 1:
-            raise CodexCapabilityError("官方 plugin/install 已返回，但 plugin/installed 未确认唯一安装结果")
+            raise CodexCapabilityError(
+                "官方 plugin/install 已返回，但相同 marketplace 的 plugin/installed 未确认唯一安装结果"
+            )
         return confirmed[0]
 
     return await _with_client(owner_id, project_id, operation)
