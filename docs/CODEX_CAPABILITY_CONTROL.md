@@ -2,11 +2,13 @@
 
 ## 中文
 
-Phase 7.30 为官方 OpenAI Codex Skills、Hooks、Plugins API 建立账号隔离控制面；Phase 7.32 在整个 Codex 进程树外层隔离真实生效后，只开放经过严格再验证的本地 Plugin 安装/卸载。FDEX 不重新实现第二套 Plugin Runtime，也不把 Marketplace/Share 写权限泛化给租户。
+Phase 7.30 为官方 OpenAI Codex Skills、Hooks、Plugins API 建立账号隔离控制面。Phase 7.32 完成整个 Codex 进程树的 cgroup v2 资源和生命周期隔离后，进一步审计 bundled `openai-codex-cli-bin==0.147.0`，确认这仍不足以安全开放可执行 Plugin 写路径：本地 stdio MCP/Plugin command 可作为 app-server 的本地子进程启动，cgroup 只能限制 CPU、内存、PID 与生命周期，并不提供文件系统保密边界。
+
+因此 Phase 7.32 的最终策略是：**Plugin inventory/read 保持可用，Plugin install/uninstall 及所有 Marketplace/Share 写操作继续 fail-closed。**
 
 ### 官方协议面
 
-FDEX 继续复用原生 `codex app-server` JSON-RPC Host。当前控制面使用：
+FDEX 继续复用原生 `codex app-server` JSON-RPC Host。当前开放控制面使用：
 
 - `skills/list`
 - `skills/config/write`
@@ -14,10 +16,8 @@ FDEX 继续复用原生 `codex app-server` JSON-RPC Host。当前控制面使用
 - `plugin/list`
 - `plugin/installed`
 - `plugin/read`
-- `plugin/install`（Phase 7.32 条件开放）
-- `plugin/uninstall`（Phase 7.32 条件开放）
 
-当前 bundled fallback `openai-codex-cli-bin==0.147.0` 已包含这些 v2 Plugin/Skill/Hook 协议结构，因此实现不是只依赖未来 Codex main。
+官方协议虽然存在 `plugin/install`、`plugin/uninstall`、Marketplace 与 Share mutation，但 FDEX Center 当前不调用这些写方法。
 
 ### 账号与项目边界
 
@@ -27,7 +27,7 @@ FDEX 继续复用原生 `codex app-server` JSON-RPC Host。当前控制面使用
 
 ### Skill 写入绑定官方 inventory
 
-Skill 启用/禁用不会直接信任浏览器提交的绝对路径。FDEX 会先强制执行 `skills/list(forceReload=true)`，要求当前账号/项目官方清单中恰好存在同一路径，再调用 `skills/config/write`。
+Skill 启用/禁用不会直接信任浏览器提交的绝对路径。FDEX 先执行 `skills/list(forceReload=true)`，要求当前账号/项目官方清单中恰好存在同一路径，再调用 `skills/config/write`。
 
 ### Hooks 保持只读
 
@@ -46,48 +46,29 @@ FDEX 展示 `hooks/list`，但不提供绕过官方安全模型创建任意 comm
 
 因此打开页面不会成为远程 Plugin catalog 的隐式网络出口。`plugin/read` 也必须先重新确认 marketplace path + plugin name 出现在当前本地官方 inventory 中。
 
-### Phase 7.32 本地 Plugin 安装安全门
+### 为什么 Phase 7.32 仍然不开放 Plugin 写操作
 
-只有 `codex_process_isolation_status().enforced == true` 时，安装路径才可进入。隔离不可用时会在创建 mutation Host 之前 fail-closed。
+Phase 7.32 已确保真实 FDEX Provider Host 运行在 transient systemd service/cgroup v2 边界中，覆盖 app-server、sub-agent、shell/command、stdio MCP 和 Plugin 后代的资源限制与整树终止。
 
-安装流程：
+但是 bundled Codex 0.147 的本地 stdio MCP 路径使用本地子进程启动模型。该边界并不会自动阻止 Plugin command 读取 FDEX service user 本来就能读取的宿主文件。因此“cgroup enforced=true”不能作为 Plugin 可执行写路径的充分安全证明。
 
-1. 重新执行官方 local-only `plugin/list`；
-2. 要求 `marketplacePath + pluginName` 唯一精确匹配；
-3. 要求 `availability == AVAILABLE`；
-4. `installPolicy` 只接受官方已知可安装值 `AVAILABLE` 或 `INSTALLED_BY_DEFAULT`，未知/未来值默认拒绝；
-5. 通过官方 `plugin/read` 再确认同一目标；
-6. 调用 `plugin/install`，且 `remoteMarketplaceName=null`；
-7. 再执行 `plugin/installed`；
-8. 只有同一 marketplace path 下同名 Plugin 唯一出现且 `installed=true` 才视为成功。
+最终策略：
 
-这样同名 Plugin 不能从另一个 marketplace 冒充安装确认，浏览器也不能提交 inventory 外的任意 Plugin 名称。
+- `plugin/install`：fail-closed；
+- `plugin/uninstall`：fail-closed；
+- `marketplace/add/remove/upgrade`：fail-closed；
+- 远程 catalog Plugin 安装：fail-closed；
+- `plugin/share/*`：fail-closed。
 
-### Phase 7.32 Plugin 卸载安全门
+兼容 POST 路由仍保留，避免旧浏览器页面直接 404，但这些路由只记录安全审计并返回拒绝，**不会创建 mutation Host，也不会调用官方 Plugin mutation RPC**。
 
-卸载只接受当前账号官方 `plugin/installed` 中唯一精确匹配的 `pluginId`。调用 `plugin/uninstall` 后必须再次查询 `plugin/installed` 并确认该 ID 已消失；否则返回失败，而不是把 RPC 返回当作完成证据。
-
-### 仍然禁止的写操作
-
-Phase 7.32 **没有**开放以下能力：
-
-- `marketplace/add`
-- `marketplace/remove`
-- `marketplace/upgrade`
-- 远程 catalog Plugin 安装
-- `plugin/share/*`
-
-这些入口继续 fail-closed。进程树隔离解决“可执行后代如何受控”，并不自动赋予租户扩张软件来源、共享范围或远程 Marketplace 的权限。
+真正开放 Plugin 可执行写路径必须新增独立文件系统/执行沙箱边界，并对 bundled/managed Runtime 的实际启动链做回归验证后再评估。
 
 ### 用户入口
 
 `/account/agent/capabilities`
 
-页面包含账号/项目扫描范围、Skill 安全开关、Hook 状态、本地 Plugin inventory、官方 `plugin/read`、受 cgroup 安全门约束的安装/卸载，以及 Marketplace/Share 禁用状态。
-
-### 与 Phase 7.32 进程隔离的关系
-
-所有真实 FDEX Provider Codex Host 由 Phase 7.32 transient systemd service/cgroup v2 外层约束。Plugin mutation gate 查询的正是这一外层隔离状态，不使用单独的“配置已启用”布尔值冒充运行时事实。
+页面包含账号/项目扫描范围、Skill 安全开关、Hook 状态、本地 Plugin inventory、官方 `plugin/read` 与明确的 Plugin 写安全门状态，不展示安装/卸载按钮。
 
 详见 `docs/CODEX_PROCESS_ISOLATION_RUNTIME.md`。
 
@@ -95,11 +76,13 @@ Phase 7.32 **没有**开放以下能力：
 
 ## English
 
-Phase 7.30 introduced an owner-scoped control plane for the official OpenAI Codex Skills, Hooks, and Plugins APIs. Phase 7.32 conditionally permits narrowly verified local Plugin install/uninstall only when whole-Codex-process-tree isolation is actually enforced. FDEX does not implement a second Plugin Runtime and does not grant tenants broad Marketplace or sharing mutation authority.
+Phase 7.30 introduced an owner-scoped control plane for the official OpenAI Codex Skills, Hooks, and Plugins APIs. Phase 7.32 completes whole-process-tree cgroup v2 resource/lifecycle isolation, but a final review of bundled `openai-codex-cli-bin==0.147.0` showed that this is still insufficient to enable executable Plugin mutation safely: local stdio MCP/Plugin commands may be launched as local children of app-server. Cgroups bound CPU, memory, PIDs, and lifecycle; they do not provide a filesystem-confidentiality boundary.
+
+The final Phase 7.32 policy is therefore: **Plugin inventory/read stays available, while Plugin install/uninstall and all Marketplace/Share mutation remain fail-closed.**
 
 ### Official protocol surface
 
-FDEX continues to use the native `codex app-server` JSON-RPC Host. The control plane uses:
+FDEX continues to use the native `codex app-server` JSON-RPC Host. The enabled control-plane methods are:
 
 - `skills/list`
 - `skills/config/write`
@@ -107,79 +90,49 @@ FDEX continues to use the native `codex app-server` JSON-RPC Host. The control p
 - `plugin/list`
 - `plugin/installed`
 - `plugin/read`
-- `plugin/install` (conditionally enabled in Phase 7.32)
-- `plugin/uninstall` (conditionally enabled in Phase 7.32)
 
-The bundled fallback `openai-codex-cli-bin==0.147.0` already contains the corresponding v2 Skill/Hook/Plugin protocol structures, so this is not an implementation that only works against a future Codex main branch.
+Although the official protocol exposes Plugin mutation methods, FDEX Center currently does not invoke them.
 
 ### Owner and project boundary
 
 Each capability request uses a short-lived official app-server with the current owner's isolated `CODEX_HOME` and sanitized environment. GitHub credentials, Center secrets, and unrelated service variables are not passed to Codex.
 
-Selecting a project never calls `prepare_repository()`. An already-materialized owner-scoped checkout may be used as cwd; otherwise discovery falls back to the owner's `CODEX_HOME` without cloning or fetching GitHub merely because the page was opened.
+Selecting a project never calls `prepare_repository()`. An already-materialized owner-scoped checkout may be used as cwd; otherwise discovery falls back to the owner's `CODEX_HOME` without clone/fetch side effects.
 
 ### Skill writes are inventory-bound
 
-A browser-supplied absolute Skill path is never written directly. FDEX first executes `skills/list(forceReload=true)`, requires exactly one matching official Skill in the current owner/project scope, then invokes `skills/config/write`.
+FDEX first executes `skills/list(forceReload=true)`, requires exactly one matching official Skill path in the current owner/project scope, and only then invokes `skills/config/write`.
 
 ### Hooks remain read-only
 
-FDEX surfaces `hooks/list` status but provides no private bypass for creating arbitrary command Hooks.
+FDEX surfaces `hooks/list` status but provides no private bypass for arbitrary command Hook creation.
 
 ### Plugin discovery remains local-only
 
-The capability page calls:
+The capability page uses local marketplaces with `forceRefetch=false`. Opening the page therefore cannot become implicit remote Plugin-catalog egress. `plugin/read` is permitted only after marketplace path + Plugin name are revalidated against current local official inventory.
 
-```json
-{
-  "marketplaceKinds": ["local"],
-  "forceRefetch": false
-}
-```
+### Why Plugin mutation remains blocked after Phase 7.32
 
-Opening the page therefore cannot become an implicit remote Plugin-catalog egress path. `plugin/read` is also allowed only after marketplace path + Plugin name are revalidated against the current local official inventory.
+Phase 7.32 constrains real FDEX-provider Hosts and their descendants with transient systemd services and cgroup v2. This covers resource limits and deterministic whole-tree termination for app-server, sub-agents, shell/command descendants, stdio MCP helpers, and Plugin descendants.
 
-### Phase 7.32 local Plugin install gate
+However, bundled Codex 0.147 local stdio MCP execution still uses a local child-process path. That path is not equivalent to a filesystem sandbox and does not prevent executable Plugin code from reading host files already readable by the FDEX service user.
 
-Installation is reachable only when `codex_process_isolation_status().enforced == true`; otherwise it fails closed before creating a mutation Host.
+Therefore all executable Plugin mutation remains fail-closed:
 
-The install sequence is:
-
-1. refresh official local-only `plugin/list`;
-2. require an exact unique `marketplacePath + pluginName` match;
-3. require `availability == AVAILABLE`;
-4. accept only known installable policies `AVAILABLE` or `INSTALLED_BY_DEFAULT`; unknown/future values fail closed;
-5. re-read the exact target through official `plugin/read`;
-6. invoke `plugin/install` with `remoteMarketplaceName=null`;
-7. query `plugin/installed` again;
-8. accept success only when the same marketplace path contains exactly one same-name Plugin with `installed=true`.
-
-A same-name Plugin from another marketplace cannot satisfy confirmation, and callers cannot submit arbitrary Plugin names outside inventory.
-
-### Phase 7.32 uninstall gate
-
-Uninstall accepts only a unique exact `pluginId` from the current owner's official `plugin/installed` inventory. After `plugin/uninstall`, FDEX queries `plugin/installed` again and requires the ID to disappear. A successful RPC response alone is not treated as completion evidence.
-
-### Mutations that remain prohibited
-
-Phase 7.32 does **not** enable:
-
-- `marketplace/add`
-- `marketplace/remove`
-- `marketplace/upgrade`
+- `plugin/install`
+- `plugin/uninstall`
+- `marketplace/add/remove/upgrade`
 - remote-catalog Plugin installs
 - `plugin/share/*`
 
-These remain fail-closed. Process-tree isolation controls executable descendants; it does not imply tenant authority to expand software provenance, sharing scope, or remote Marketplace sources.
+Compatibility POST endpoints remain so stale browser pages do not turn into 404s, but they only record the blocked action and return an error. They do not create a mutation Host and do not invoke official Plugin mutation RPCs.
+
+A separate filesystem/execution sandbox boundary plus runtime-level regression verification is required before executable Plugin mutation can be reconsidered.
 
 ### User entry
 
 `/account/agent/capabilities`
 
-The page exposes owner/project discovery scope, safe Skill toggles, Hook status, local Plugin inventory, official `plugin/read`, cgroup-gated install/uninstall, and the explicit Marketplace/Share mutation lock state.
-
-### Relationship to Phase 7.32 process isolation
-
-Every real FDEX-provider Codex Host is constrained by the Phase 7.32 transient-systemd-service/cgroup-v2 boundary. The Plugin mutation gate queries that runtime isolation status directly; it does not trust a separate configuration boolean as proof of enforcement.
+The page exposes owner/project discovery scope, safe Skill toggles, Hook status, local Plugin inventory, official `plugin/read`, and an explicit Plugin-write safety gate. Install/uninstall controls are not rendered.
 
 See `docs/CODEX_PROCESS_ISOLATION_RUNTIME.md`.
