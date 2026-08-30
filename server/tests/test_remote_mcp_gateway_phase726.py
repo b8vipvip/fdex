@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 import app.codex_remote_mcp_install as install_module
 import app.remote_mcp_gateway as gateway_module
+from app.codex_engine import _safe_process_env
 from app.remote_mcp_gateway import (
     PinnedResolver,
     RemoteMcpLeaseStore,
@@ -79,12 +80,13 @@ def _request(
     return Request(scope, receive)
 
 
-def test_capability_lease_stores_only_hash_and_is_subordinate_to_live_registry(tmp_path: Path) -> None:
+def test_capability_lease_is_revision_bound_hash_only_and_subordinate_to_live_registry(tmp_path: Path) -> None:
     registry, server = _registry(tmp_path)
     leases = RemoteMcpLeaseStore(registry)
     lease, token = leases.issue(OWNER, TASK, str(server["id"]))
     assert len(token) >= 32
     assert token not in str(lease)
+    assert lease["server_updated_at"] == server["updated_at"]
     assert leases.resolve(str(lease["id"]), "wrong-token-that-is-long-enough-xxxxxxxx") is None
     resolved = leases.resolve(str(lease["id"]), token)
     assert resolved is not None
@@ -92,15 +94,36 @@ def test_capability_lease_stores_only_hash_and_is_subordinate_to_live_registry(t
     assert resolved[1]["name"] == "docs"
 
     with registry.db() as conn:
-        row = conn.execute("SELECT token_hash FROM remote_mcp_leases WHERE id=?", (lease["id"],)).fetchone()
+        row = conn.execute(
+            "SELECT token_hash,server_updated_at FROM remote_mcp_leases WHERE id=?",
+            (lease["id"],),
+        ).fetchone()
     assert row is not None
     assert str(row["token_hash"]) != token
     assert token not in str(row["token_hash"])
+    assert str(row["server_updated_at"]) == server["updated_at"]
 
-    # The registry is authoritative on every request. Disabling does not need DNS and immediately
-    # invalidates an already-issued localhost capability.
-    registry.set_enabled(OWNER, str(server["id"]), False)
+    # Editing the same registry id must not silently retarget a capability already held by a live
+    # Codex task. Any policy/URL/tool change requires a fresh task-scoped lease.
+    changed = registry.save(
+        OWNER,
+        server_id=str(server["id"]),
+        name="docs",
+        url="https://example.com/mcp",
+        enabled_tools=["search_docs", "read_page"],
+        enabled=True,
+        startup_timeout_sec=12,
+        tool_timeout_sec=46,
+        resolve_dns=False,
+    )
+    assert changed["updated_at"] != server["updated_at"]
     assert leases.resolve(str(lease["id"]), token) is None
+
+    fresh_lease, fresh_token = leases.issue(OWNER, TASK, str(server["id"]))
+    assert leases.resolve(str(fresh_lease["id"]), fresh_token) is not None
+    # Disabling does not depend on DNS and immediately invalidates a current task capability.
+    registry.set_enabled(OWNER, str(server["id"]), False)
+    assert leases.resolve(str(fresh_lease["id"]), fresh_token) is None
 
 
 def test_task_revoke_and_owner_delete_are_scoped(tmp_path: Path) -> None:
@@ -139,9 +162,13 @@ def test_codex_config_contains_only_local_gateway_url_and_header_capability(
     assert item["default_tools_approval_mode"] == "writes"
 
     with registry.db() as conn:
-        row = conn.execute("SELECT token_hash FROM remote_mcp_leases WHERE owner_id=? AND task_id=?", (OWNER, TASK)).fetchone()
+        row = conn.execute(
+            "SELECT token_hash,server_updated_at FROM remote_mcp_leases WHERE owner_id=? AND task_id=?",
+            (OWNER, TASK),
+        ).fetchone()
     assert row is not None
     assert token not in str(row["token_hash"])
+    assert str(row["server_updated_at"])
 
 
 def test_pinned_resolver_returns_only_prevalidated_addresses() -> None:
@@ -174,7 +201,7 @@ def test_gateway_enforces_tool_allowlist_for_single_and_batch_requests() -> None
         enforce_tool_allowlist(b"opaque", "application/octet-stream", ["read_page"])
 
 
-def test_gateway_is_loopback_only_requires_header_capability_and_never_forwards_it(
+def test_gateway_requires_direct_loopback_header_capability_and_never_forwards_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeLeaseStore:
@@ -198,6 +225,7 @@ def test_gateway_is_loopback_only_requires_header_capability_and_never_forwards_
         assert "X-FDEX-MCP-Capability" not in forwarded
         assert "Authorization" not in forwarded
         assert "Cookie" not in forwarded
+        assert "X-Forwarded-For" not in forwarded
         return JSONResponse({"ok": True})
 
     monkeypatch.setattr(gateway_module, "_relay", fake_relay)
@@ -210,6 +238,20 @@ def test_gateway_is_loopback_only_requires_header_capability_and_never_forwards_
         body=body,
     )
     assert asyncio.run(remote_mcp_gateway("lease_test", external)).status_code == 404
+    assert fake.calls == []
+
+    # A public reverse proxy commonly connects to Uvicorn from loopback. Forwarding markers make
+    # that request fail before capability lookup, so this internal route is not a normal proxyable API.
+    proxied = _request(
+        client="127.0.0.1",
+        headers={
+            "content-type": "application/json",
+            "X-FDEX-MCP-Capability": "correct-capability-token-xxxxxxxxxxxxxxxx",
+            "X-Forwarded-For": "203.0.113.25",
+        },
+        body=body,
+    )
+    assert asyncio.run(remote_mcp_gateway("lease_test", proxied)).status_code == 404
     assert fake.calls == []
 
     missing = _request(client="127.0.0.1", headers={"content-type": "application/json"}, body=body)
@@ -287,7 +329,15 @@ def test_task_context_injects_then_revokes_mcp_config(monkeypatch: pytest.Monkey
     assert revoked == [(OWNER, TASK)]
 
 
-def test_runtime_wiring_keeps_remote_endpoint_and_capability_out_of_shell() -> None:
+def test_remote_mcp_capability_and_destination_never_enter_codex_shell_environment() -> None:
+    environment = _safe_process_env(Path("/tmp/fdex-codex-home"), "provider-secret")
+    serialized = "\n".join(f"{key}={value}" for key, value in environment.items())
+    assert "X-FDEX-MCP-Capability" not in serialized
+    assert "example.com/mcp" not in serialized
+    assert "remote_mcp" not in serialized.lower()
+
+
+def test_runtime_wiring_keeps_redirect_auth_and_host_proxy_escape_fail_closed() -> None:
     root = Path(__file__).parents[1] / "app"
     entry = (root / "codex_host_entry.py").read_text(encoding="utf-8")
     engine = (root / "codex_engine.py").read_text(encoding="utf-8")
@@ -296,8 +346,12 @@ def test_runtime_wiring_keeps_remote_endpoint_and_capability_out_of_shell() -> N
     assert "codex_remote_mcp_scope(task.owner_id, task.id)" in entry
     assert "X-FDEX-MCP-Capability" not in engine
     assert "remote_mcp" not in engine.lower()
-    assert 'allow_redirects=False' in gateway
-    assert 'if 300 <= upstream.status < 400' in gateway
-    assert 'if upstream.status in {401, 403, 407}' in gateway
+    assert "server_updated_at" in gateway
+    assert "current_revision != issued_revision" in gateway
+    assert "trust_env=False" in gateway
+    assert "allow_redirects=False" in gateway
+    assert "if 300 <= upstream.status < 400" in gateway
+    assert "if upstream.status in {401, 403, 407}" in gateway
+    assert "_direct_loopback_client" in gateway
     assert 'router.api_route("/{lease_id}"' in gateway
-    assert 'app.include_router(remote_mcp_gateway_router)' in main
+    assert "app.include_router(remote_mcp_gateway_router)" in main
