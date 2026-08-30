@@ -1,0 +1,21 @@
+{% extends "user_base.html" %}
+{% block title %}Agent 输入 · FDEX{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><h1>Agent 输入</h1><p>给尚未执行的 Coding Agent 任务添加官方 Codex 图片、音频、Skill 与 Mention 输入。</p></div>
+  <div class="row"><a class="button button-secondary" href="/account/agent">Coding Agent</a></div>
+</section>
+<div class="grid">
+  <section class="card span-12 stack">
+    <div class="card-head"><div><h2>待执行任务</h2><p>只有 queued 任务可以修改输入；一旦开始 Turn，输入立即冻结。</p></div><span class="badge">{{ tasks|length }}</span></div>
+    {% for task in tasks %}
+    <a class="conversation-card" href="/account/agent/tasks/{{ task.id }}/inputs">
+      <div><strong>{{ task.project_name }}</strong><div class="fine">{{ task.repository }} · {{ task.updated_at }}</div></div>
+      <div><span class="badge">{{ task.input_count }} 个附加输入</span><div class="conversation-preview" style="margin-top:5px">{{ task.prompt }}</div></div>
+    </a>
+    {% else %}
+    <div class="empty-state"><p>当前没有 queued Coding Agent 任务。创建任务时取消“创建后立即执行”，即可先配置多模态输入。</p><a class="button button-primary" href="/account/agent">创建任务</a></div>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}
