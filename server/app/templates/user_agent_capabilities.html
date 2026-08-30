@@ -89,6 +89,16 @@
 
   <section class="card span-12 stack">
     <div class="card-head">
+      <div><h2>Dynamic Tools</h2><p>官方较新 Runtime 支持 <code>thread/start.dynamicTools</code>，但 FDEX 当前生产 fallback 兼容线尚不能安全启用。</p></div>
+      <span class="badge">{{ '可用' if dynamic_tool.allowed else '已锁定' }}</span>
+    </div>
+    <div class="alert alert-error">{{ dynamic_tool.reason }}</div>
+    <div class="fine">兼容基线：<code>{{ dynamic_tool.runtime_fallback }}</code> · 激活字段：<code>{{ dynamic_tool.activation_field }}</code></div>
+    <div class="fine">当前 FDEX 的 thread/start 继续省略 <code>dynamicTools</code>，未知 server-request 工具调用仍由 Host 默认拒绝。</div>
+  </section>
+
+  <section class="card span-12 stack">
+    <div class="card-head">
       <div><h2>Plugins</h2><p>7.30 仅查询本地 marketplace，<code>forceRefetch=false</code>；打开页面不会触发远程 Plugin catalog 拉取。</p></div>
       <span class="badge">安装写操作已锁定</span>
     </div>

@@ -16,6 +16,7 @@ from app.codex_capability_control import (
     read_local_plugin,
     set_skill_enabled,
 )
+from app.codex_dynamic_tool_policy import dynamic_tool_policy
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -85,6 +86,7 @@ async def codex_capability_center(
             inventory=inventory,
             plugin_detail=plugin_detail,
             capability_error=error,
+            dynamic_tool=dynamic_tool_policy(),
         ),
     )
 

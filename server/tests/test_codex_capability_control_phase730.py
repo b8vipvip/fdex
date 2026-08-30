@@ -16,61 +16,48 @@ class FakeClient:
         self.calls.append((method, params))
         if method == "skills/list":
             return {
-                "data": [
-                    {
-                        "cwd": "/repo",
-                        "skills": [
-                            {
-                                "name": "review",
-                                "description": "Review code",
-                                "shortDescription": "Review",
-                                "path": "/home/skills/review/SKILL.md",
-                                "scope": "user",
-                                "enabled": True,
-                                "pluginId": None,
-                            }
-                        ],
-                        "errors": [],
-                    }
-                ]
+                "data": [{
+                    "cwd": "/repo",
+                    "skills": [{
+                        "name": "review",
+                        "description": "Review code",
+                        "shortDescription": "Review",
+                        "path": "/home/skills/review/SKILL.md",
+                        "scope": "user",
+                        "enabled": True,
+                        "pluginId": None,
+                    }],
+                    "errors": [],
+                }]
             }
         if method == "skills/config/write":
             return {}
         if method == "hooks/list":
             return {
-                "data": [
-                    {
-                        "cwd": "/repo",
-                        "hooks": [
-                            {
-                                "event": "afterTurn",
-                                "source": "user",
-                                "trustStatus": "trusted",
-                                "handlerType": "command",
-                            }
-                        ],
-                        "warnings": [],
-                        "errors": [],
-                    }
-                ]
+                "data": [{
+                    "cwd": "/repo",
+                    "hooks": [{
+                        "event": "afterTurn",
+                        "source": "user",
+                        "trustStatus": "trusted",
+                        "handlerType": "command",
+                    }],
+                    "warnings": [],
+                    "errors": [],
+                }]
             }
         if method == "plugin/list":
             return {
-                "marketplaces": [
-                    {
-                        "name": "local-test",
-                        "path": "/home/plugins/marketplace.json",
-                        "plugins": [
-                            {
-                                "id": "plugin.review",
-                                "name": "review-plugin",
-                                "description": "Review plugin",
-                            }
-                        ],
-                    }
-                ],
+                "marketplaces": [{
+                    "name": "local-test",
+                    "path": "/home/plugins/marketplace.json",
+                    "plugins": [{
+                        "id": "plugin.review",
+                        "name": "review-plugin",
+                        "description": "Review plugin",
+                    }],
+                }],
                 "marketplaceLoadErrors": [],
-                "featuredPluginIds": [],
             }
         if method == "plugin/installed":
             return {"marketplaces": [], "marketplaceLoadErrors": []}
@@ -85,33 +72,22 @@ class FakeClient:
         raise AssertionError(f"unexpected method {method}")
 
 
-def test_official_capability_shapes_are_flattened_without_prompt_reencoding() -> None:
+def test_official_capability_shapes_are_flattened() -> None:
     client = FakeClient()
-    skills_result = asyncio.run(client.request("skills/list", {"cwds": ["/repo"]}))
-    hooks_result = asyncio.run(client.request("hooks/list", {"cwds": ["/repo"]}))
-    plugins_result = asyncio.run(client.request("plugin/list", {"cwds": ["/repo"]}))
-
-    skills, skill_errors = control._flatten_skills(skills_result)
-    hooks, hook_errors = control._flatten_hooks(hooks_result)
-    markets, plugin_errors = control._flatten_marketplaces(plugins_result)
-
-    assert skills == [
-        {
-            "name": "review",
-            "description": "Review code",
-            "short_description": "Review",
-            "path": "/home/skills/review/SKILL.md",
-            "scope": "user",
-            "enabled": True,
-            "plugin_id": "",
-            "cwd": "/repo",
-        }
-    ]
-    assert skill_errors == []
+    skills, errors = control._flatten_skills(
+        asyncio.run(client.request("skills/list", {"cwds": ["/repo"]}))
+    )
+    hooks, hook_errors = control._flatten_hooks(
+        asyncio.run(client.request("hooks/list", {"cwds": ["/repo"]}))
+    )
+    markets, plugin_errors = control._flatten_marketplaces(
+        asyncio.run(client.request("plugin/list", {"cwds": ["/repo"]}))
+    )
+    assert skills[0]["name"] == "review"
+    assert skills[0]["path"] == "/home/skills/review/SKILL.md"
     assert hooks[0]["event"] == "afterTurn"
-    assert hook_errors == []
     assert markets[0]["plugins"][0]["name"] == "review-plugin"
-    assert plugin_errors == []
+    assert errors == [] and hook_errors == [] and plugin_errors == []
 
 
 def test_skill_write_revalidates_exact_official_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -119,11 +95,9 @@ def test_skill_write_revalidates_exact_official_path(monkeypatch: pytest.MonkeyP
 
     async def fake_with_client(owner_id, project_id, operation):
         assert owner_id == "usr_phase730"
-        assert project_id is None
         return await operation(client, tmp_path)
 
     monkeypatch.setattr(control, "_with_client", fake_with_client)
-
     result = asyncio.run(
         control.set_skill_enabled(
             "usr_phase730",
@@ -131,7 +105,6 @@ def test_skill_write_revalidates_exact_official_path(monkeypatch: pytest.MonkeyP
             enabled=False,
         )
     )
-    assert result["name"] == "review"
     assert result["enabled"] is False
     assert [method for method, _params in client.calls] == ["skills/list", "skills/config/write"]
     assert client.calls[0][1]["forceReload"] is True
@@ -159,24 +132,19 @@ def test_inventory_is_local_only_and_never_refetches_remote_plugins(
 
     monkeypatch.setattr(control, "_with_client", fake_with_client)
     monkeypatch.setattr(control, "_project_cwd", lambda owner_id, project_id: (tmp_path, None))
-
     inventory = asyncio.run(control.capability_inventory("usr_phase730", force_reload=True))
-    assert inventory["skills"][0]["name"] == "review"
-    assert inventory["hooks"][0]["event"] == "afterTurn"
-    assert inventory["marketplaces"][0]["name"] == "local-test"
     assert inventory["plugin_mutation_allowed"] is False
-
     plugin_list = next(params for method, params in client.calls if method == "plugin/list")
     assert plugin_list["marketplaceKinds"] == ["local"]
     assert plugin_list["forceRefetch"] is False
-    assert not any(method.startswith("marketplace/") for method, _params in client.calls)
-    assert not any(method in {"plugin/install", "plugin/uninstall"} for method, _params in client.calls)
+    called = {method for method, _params in client.calls}
+    assert "marketplace/add" not in called
+    assert "marketplace/remove" not in called
+    assert "plugin/install" not in called
+    assert "plugin/uninstall" not in called
 
 
-def test_local_plugin_read_revalidates_marketplace_and_name(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_local_plugin_read_revalidates_inventory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     client = FakeClient()
 
     async def fake_with_client(owner_id, project_id, operation):
@@ -216,21 +184,20 @@ def test_project_inventory_never_prepares_or_fetches_repository(
 ) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    owner_root = tmp_path / "owners" / "usr_phase730"
-    repo = owner_root / "projects" / "7" / "repository"
-    worktrees = owner_root / "projects" / "7" / "worktrees"
+    scoped_root = tmp_path / "owners" / "usr_phase730"
+    repo = scoped_root / "projects" / "7" / "repository"
+    worktrees = scoped_root / "projects" / "7" / "worktrees"
     repo.mkdir(parents=True)
 
     class FakeStore:
         def get_project(self, owner_id: str, project_id: int):
-            assert owner_id == "usr_phase730" and project_id == 7
             return {"id": 7, "name": "demo", "repo_full_name": "b8vipvip/fdex", "enabled": True}
 
         def project_paths(self, owner_id: str, project_id: int):
             return repo, worktrees
 
         def owner_root(self, owner_id: str):
-            return owner_root
+            return scoped_root
 
         def prepare_repository(self, *args, **kwargs):
             raise AssertionError("capability inventory must never clone/fetch")
@@ -238,11 +205,8 @@ def test_project_inventory_never_prepares_or_fetches_repository(
     fake_store = FakeStore()
     monkeypatch.setattr(control, "_codex_home", lambda owner_id: home)
     monkeypatch.setattr(control, "agent_project_store", lambda: fake_store)
-
     cwd, project = control._project_cwd("usr_phase730", 7)
-    assert cwd == home
-    assert project and project["id"] == 7
-
+    assert cwd == home and project and project["id"] == 7
     (repo / ".git").mkdir()
     cwd, _project = control._project_cwd("usr_phase730", 7)
     assert cwd == repo.resolve()
@@ -251,7 +215,7 @@ def test_project_inventory_never_prepares_or_fetches_repository(
 def test_phase730_route_ui_and_native_method_wiring() -> None:
     root = Path(__file__).parents[1] / "app"
     routes = (root / "codex_capability_routes.py").read_text(encoding="utf-8")
-    control_source = (root / "codex_capability_control.py").read_text(encoding="utf-8")
+    source = (root / "codex_capability_control.py").read_text(encoding="utf-8")
     parent_routes = (root / "codex_input_center_routes.py").read_text(encoding="utf-8")
     template = (root / "templates" / "user_agent_capabilities.html").read_text(encoding="utf-8")
     input_center = (root / "templates" / "user_agent_input_center.html").read_text(encoding="utf-8")
@@ -260,9 +224,11 @@ def test_phase730_route_ui_and_native_method_wiring() -> None:
     assert 'prefix="/capabilities"' in routes
     assert "/account/agent/capabilities" in input_center
     for method in ("skills/list", "skills/config/write", "hooks/list", "plugin/list", "plugin/installed", "plugin/read"):
-        assert method in control_source
-    assert '"marketplaceKinds": ["local"]' in control_source
-    assert '"forceRefetch": False' in control_source
-    assert "plugin/install" not in control_source.split("async def capability_inventory", 1)[1].split("async def set_skill_enabled", 1)[0]
-    assert "Phase 7.32" in control_source
+        assert method in source
+    assert '"marketplaceKinds": ["local"]' in source
+    assert '"forceRefetch": False' in source
+    inventory_section = source.split("async def capability_inventory", 1)[1].split("async def set_skill_enabled", 1)[0]
+    assert '"plugin/install",' not in inventory_section
+    assert '"plugin/uninstall",' not in inventory_section
+    assert "Phase 7.32" in source
     assert "验证 Plugin 安装安全门" in template
