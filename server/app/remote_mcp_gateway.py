@@ -26,6 +26,14 @@ _MAX_REQUEST_BODY = 8 * 1024 * 1024
 _LEASE_HOURS = 6
 _CAPABILITY_HEADER = "X-FDEX-MCP-Capability"
 _ALLOWED_METHODS = {"GET", "POST", "DELETE"}
+_PROXY_MARKER_HEADERS = {
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+}
 _REQUEST_HEADER_ALLOWLIST = {
     "accept",
     "content-type",
@@ -61,13 +69,21 @@ def _token_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _loopback_client(request: Request) -> bool:
+def _direct_loopback_client(request: Request) -> bool:
+    """Accept only a direct loopback request, not a request forwarded by a reverse proxy.
+
+    The unguessable capability remains the primary authentication boundary. This direct-peer
+    check is defense in depth so a normal Nginx/Caddy public reverse-proxy path cannot turn an
+    external caller into an apparent loopback caller at the FastAPI layer.
+    """
     host = request.client.host if request.client else ""
     try:
         address = ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
         return False
-    return bool(address.is_loopback)
+    if not address.is_loopback:
+        return False
+    return not any(request.headers.get(name) for name in _PROXY_MARKER_HEADERS)
 
 
 def _safe_server_config_name(name: str, server_id: str) -> str:
@@ -77,7 +93,13 @@ def _safe_server_config_name(name: str, server_id: str) -> str:
 
 
 class RemoteMcpLeaseStore:
-    """Cross-worker ephemeral capability leases for the local MCP gateway."""
+    """Cross-worker ephemeral capability leases for the local MCP gateway.
+
+    Raw capability tokens are never persisted. A lease is also bound to the exact registry
+    revision that existed when it was issued. Editing, disabling or re-enabling a server changes
+    ``updated_at`` and therefore invalidates every older task lease immediately rather than
+    silently retargeting an already-running Codex task to a new URL or tool policy.
+    """
 
     def __init__(self, registry: RemoteMcpRegistry | None = None) -> None:
         self.registry = registry or remote_mcp_registry()
@@ -95,6 +117,7 @@ class RemoteMcpLeaseStore:
                     owner_id TEXT NOT NULL,
                     task_id TEXT NOT NULL,
                     server_id TEXT NOT NULL,
+                    server_updated_at TEXT NOT NULL DEFAULT '',
                     token_hash TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL,
@@ -108,6 +131,21 @@ class RemoteMcpLeaseStore:
                     ON remote_mcp_leases(owner_id,server_id,state,expires_at);
                 """
             )
+            # Development/rolling-upgrade safety if a pre-final 7.26 worker created the table.
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(remote_mcp_leases)").fetchall()}
+            if "server_updated_at" not in columns:
+                conn.execute("ALTER TABLE remote_mcp_leases ADD COLUMN server_updated_at TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                """
+                UPDATE remote_mcp_leases
+                SET server_updated_at=COALESCE((
+                    SELECT updated_at FROM remote_mcp_servers
+                    WHERE remote_mcp_servers.owner_id=remote_mcp_leases.owner_id
+                      AND remote_mcp_servers.id=remote_mcp_leases.server_id
+                ), '')
+                WHERE server_updated_at=''
+                """
+            )
         self._initialized = True
 
     def issue(self, owner_id: str, task_id: str, server_id: str) -> tuple[dict[str, Any], str]:
@@ -117,6 +155,9 @@ class RemoteMcpLeaseStore:
             raise ValueError("Remote MCP is not enabled for this owner")
         if not server.get("enabled_tools"):
             raise ValueError("Remote MCP has no explicit tool allowlist")
+        server_updated_at = str(server.get("updated_at") or "")
+        if not server_updated_at:
+            raise ValueError("Remote MCP registry revision is missing")
         raw_token = secrets.token_urlsafe(32)
         lease_id = f"lease_{secrets.token_hex(16)}"
         now = _now()
@@ -125,10 +166,21 @@ class RemoteMcpLeaseStore:
             conn.execute(
                 """
                 INSERT INTO remote_mcp_leases(
-                    id,owner_id,task_id,server_id,token_hash,state,created_at,expires_at,last_used_at,revoked_at
-                ) VALUES(?,?,?,?,?,'active',?,?,?,'')
+                    id,owner_id,task_id,server_id,server_updated_at,token_hash,state,
+                    created_at,expires_at,last_used_at,revoked_at
+                ) VALUES(?,?,?,?,?,?,'active',?,?,?,'')
                 """,
-                (lease_id, owner_id, task_id, server_id, _token_hash(raw_token), _iso(now), _iso(expires), ""),
+                (
+                    lease_id,
+                    owner_id,
+                    task_id,
+                    server_id,
+                    server_updated_at,
+                    _token_hash(raw_token),
+                    _iso(now),
+                    _iso(expires),
+                    "",
+                ),
             )
         return (
             {
@@ -136,6 +188,7 @@ class RemoteMcpLeaseStore:
                 "owner_id": owner_id,
                 "task_id": task_id,
                 "server_id": server_id,
+                "server_updated_at": server_updated_at,
                 "expires_at": _iso(expires),
             },
             raw_token,
@@ -149,10 +202,11 @@ class RemoteMcpLeaseStore:
             row = conn.execute("SELECT * FROM remote_mcp_leases WHERE id=?", (lease_id,)).fetchone()
             if row is None or str(row["state"]) != "active":
                 return None
-            if _parse_time(str(row["expires_at"])) <= _now():
+            now = _now()
+            if _parse_time(str(row["expires_at"])) <= now:
                 conn.execute(
                     "UPDATE remote_mcp_leases SET state='expired',revoked_at=? WHERE id=? AND state='active'",
-                    (_iso(_now()), lease_id),
+                    (_iso(now), lease_id),
                 )
                 return None
             if not hmac.compare_digest(str(row["token_hash"]), _token_hash(token)):
@@ -160,17 +214,30 @@ class RemoteMcpLeaseStore:
             owner_id = str(row["owner_id"])
             server_id = str(row["server_id"])
             server = self.registry.get(owner_id, server_id)
-            if server is None or not bool(server.get("enabled")) or not server.get("enabled_tools"):
+            current_revision = str((server or {}).get("updated_at") or "")
+            issued_revision = str(row["server_updated_at"] or "")
+            if (
+                server is None
+                or not bool(server.get("enabled"))
+                or not server.get("enabled_tools")
+                or not current_revision
+                or current_revision != issued_revision
+            ):
+                conn.execute(
+                    "UPDATE remote_mcp_leases SET state='revoked',revoked_at=? WHERE id=? AND state='active'",
+                    (_iso(now), lease_id),
+                )
                 return None
             conn.execute(
                 "UPDATE remote_mcp_leases SET last_used_at=? WHERE id=? AND state='active'",
-                (_iso(_now()), lease_id),
+                (_iso(now), lease_id),
             )
             lease = {
                 "id": str(row["id"]),
                 "owner_id": owner_id,
                 "task_id": str(row["task_id"]),
                 "server_id": server_id,
+                "server_updated_at": issued_revision,
                 "expires_at": str(row["expires_at"]),
             }
         return lease, server
@@ -336,8 +403,10 @@ async def _bounded_body(request: Request) -> bytes:
     if length:
         try:
             declared = int(length)
-        except ValueError:
-            declared = -1
+        except ValueError as exc:
+            raise ValueError("Remote MCP Content-Length is invalid") from exc
+        if declared < 0:
+            raise ValueError("Remote MCP Content-Length is invalid")
         if declared > _MAX_REQUEST_BODY:
             raise ValueError("Remote MCP request body exceeds 8 MiB")
     body = await request.body()
@@ -374,6 +443,7 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
         timeout=timeout,
         auto_decompress=False,
         cookie_jar=aiohttp.DummyCookieJar(),
+        trust_env=False,
     )
     try:
         upstream = await session.request(
@@ -425,7 +495,7 @@ async def _relay(request: Request, *, server: dict[str, Any], body: bytes) -> Re
 
 @router.api_route("/{lease_id}", methods=["GET", "POST", "DELETE"], response_model=None)
 async def remote_mcp_gateway(lease_id: str, request: Request) -> Response:
-    if not _loopback_client(request):
+    if not _direct_loopback_client(request):
         return PlainTextResponse("not found", status_code=404)
     if request.method not in _ALLOWED_METHODS or request.url.query:
         return PlainTextResponse("method/query not allowed", status_code=405)
