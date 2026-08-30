@@ -50,14 +50,14 @@
     <div class="card-head">
       <div>
         <h2>Remote MCP 安全网关</h2>
-        <p>Phase 7.27 支持匿名或静态 Bearer 的 HTTPS Streamable HTTP MCP；远端凭据始终由 FDEX 持有，不交给 Codex。</p>
+        <p>支持匿名、FDEX-held 静态 Bearer，以及 OAuth 2.0 Authorization Code + PKCE；远端长期凭据始终留在 FDEX。</p>
       </div>
       <span class="badge">{{ remote_mcp_servers|length }}</span>
     </div>
     <div class="alert alert-warning">
-      <strong>安全边界：</strong>Codex 只连接 <code>127.0.0.1</code> 的任务临时 capability，不直接拿到远端 URL 或 Bearer。FDEX 每次请求重新验证公网 DNS、固定实际连接 IP、按原域名验证 TLS，并在这些检查和 owner/server/lease 版本校验全部通过后，才从加密 vault 解密并注入 <code>Authorization: Bearer …</code>。3xx 不跟随，认证挑战不透传，仍不开放任意远端 Header、OAuth 或本地 stdio command/args/env/cwd。
+      <strong>安全边界：</strong>Codex 只连接 <code>127.0.0.1</code> 的任务临时 capability，不直接拿到远端 URL、Bearer、OAuth access/refresh token 或 client secret。FDEX 每次 MCP 请求重新验证公网 DNS、固定连接 IP、按原域名验证 TLS；OAuth token/refresh/revoke 请求也使用同样的 HTTPS 443 + 公网 DNS + pinned connection + 禁止重定向策略。
     </div>
-    <p class="fine">Bearer 使用 FDEX 独立 Fernet vault 加密保存；页面只显示是否配置和不可逆短指纹，从不回显 token。新增、轮换或删除 Bearer 都会立即使旧 task lease 失效，新凭据只能由后续新任务 / resume / fork 使用。</p>
+    <p class="fine">静态 Bearer 轮换会改变 credential revision。OAuth access token 自动刷新只更新同一 grant 的短期 token，不改变 grant revision；重新授权或撤销 OAuth grant 才会立即使旧 task lease 失效。</p>
 
     <form action="/account/agent/runtime/mcp" method="post" class="stack repo">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -79,6 +79,7 @@
     {% if remote_mcp_servers %}
       {% for server in remote_mcp_servers %}
       {% set credential = remote_mcp_credentials.get(server.id) %}
+      {% set oauth = remote_mcp_oauth.get(server.id) %}
       <article class="repo stack">
         <div class="row between">
           <div>
@@ -86,33 +87,77 @@
             <div class="mono fine">{{ server.url }}</div>
           </div>
           <div class="row">
-            {% if credential %}<span class="badge ok">Bearer 已配置 · FDEX 持有</span>{% else %}<span class="badge">匿名</span>{% endif %}
+            {% if credential and credential.auth_type == 'oauth' %}
+              <span class="badge ok">OAuth 已授权 · FDEX 持有</span>
+            {% elif credential and credential.auth_type == 'bearer' %}
+              <span class="badge ok">Bearer 已配置 · FDEX 持有</span>
+            {% else %}
+              <span class="badge">匿名</span>
+            {% endif %}
             {% if server.enabled %}<span class="badge ok">已启用 · FDEX 网关</span>{% else %}<span class="badge">已停用</span>{% endif %}
           </div>
         </div>
         <div class="fine">上次保存时公网解析：{% if server.resolved_addresses %}{{ server.resolved_addresses|join(', ') }}{% else %}未记录{% endif %}</div>
         <p class="fine">真正发起每次远端请求时还会重新 DNS 校验并固定连接地址；这里显示的只是最近一次保存/启用时的准入快照。</p>
 
-        <section class="stack">
-          <div><strong>远端认证</strong></div>
-          {% if credential %}
-          <p class="fine">静态 Bearer 已加密保存。不可逆指纹：<span class="mono">{{ credential.fingerprint }}</span> · 最近更新 {{ credential.updated_at }}。FDEX 不会在页面、账号导出或 Codex 配置中返回 token。</p>
+        <section class="stack repo">
+          <div><strong>静态 Bearer</strong></div>
+          {% if credential and credential.auth_type == 'bearer' %}
+          <p class="fine">已加密保存。不可逆指纹：<span class="mono">{{ credential.fingerprint }}</span> · 最近更新 {{ credential.updated_at }}。页面、账号导出和 Codex 配置均不会返回 token。</p>
           {% else %}
-          <p class="fine">当前为匿名模式。只在远端 MCP 服务明确要求静态 Bearer 时配置；OAuth 不属于本阶段。</p>
+          <p class="fine">当前没有静态 Bearer。保存静态 Bearer 会成为当前 credential authority；如果已有 OAuth grant，它会被显式替换并撤销旧 lease。</p>
           {% endif %}
           <form action="/account/agent/runtime/mcp/{{ server.id }}/bearer" method="post" class="stack">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label>静态 Bearer token</label>
             <input type="password" name="bearer_token" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="输入新的 Bearer；保存后不会再次显示" required>
-            <button class="secondary" type="submit">{% if credential %}轮换 Bearer{% else %}保存 Bearer{% endif %}</button>
+            <button class="secondary" type="submit">{% if credential and credential.auth_type == 'bearer' %}轮换 Bearer{% else %}保存 Bearer{% endif %}</button>
           </form>
-          {% if credential %}
-          <form action="/account/agent/runtime/mcp/{{ server.id }}/bearer/delete" method="post" onsubmit="return confirm('确定删除这个 Bearer 吗？现有任务的旧 lease 会立即失效，后续任务将回到匿名模式。');">
+          {% if credential and credential.auth_type == 'bearer' %}
+          <form action="/account/agent/runtime/mcp/{{ server.id }}/bearer/delete" method="post" onsubmit="return confirm('确定删除这个 Bearer 吗？现有任务旧 lease 会立即失效。');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="danger-button" type="submit">删除 Bearer</button>
           </form>
           {% endif %}
-          <p class="fine">保存、轮换或删除凭据不会把秘密注入 Codex shell；它只改变 FDEX vault 的 credential revision，并使旧 lease 立即失效。</p>
+        </section>
+
+        <section class="stack repo">
+          <div class="row between"><strong>OAuth 2.0 + PKCE</strong>{% if oauth %}<span class="badge">已配置 client</span>{% endif %}</div>
+          <p class="fine">OAuth callback 固定使用服务端 <code>public_base_url</code>，state 只保存 SHA-256，PKCE verifier 加密短暂保存。Token/refresh/revoke 只允许 HTTPS 443 公网目标并在请求时重新 DNS 校验和 pin。</p>
+          <form action="/account/agent/runtime/mcp/{{ server.id }}/oauth/config" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="grid">
+              <div class="span-6"><label>Authorization endpoint</label><input name="authorization_url" type="url" maxlength="2048" value="{{ oauth.authorization_url if oauth else '' }}" placeholder="https://auth.example.com/authorize" required></div>
+              <div class="span-6"><label>Token endpoint</label><input name="token_url" type="url" maxlength="2048" value="{{ oauth.token_url if oauth else '' }}" placeholder="https://auth.example.com/token" required></div>
+              <div class="span-6"><label>Revocation endpoint（可选）</label><input name="revocation_url" type="url" maxlength="2048" value="{{ oauth.revocation_url if oauth else '' }}" placeholder="https://auth.example.com/revoke"></div>
+              <div class="span-6"><label>Client ID</label><input name="client_id" maxlength="512" value="{{ oauth.client_id if oauth else '' }}" required></div>
+              <div class="span-6"><label>Client authentication</label><select name="client_auth_method"><option value="none" {% if not oauth or oauth.client_auth_method == 'none' %}selected{% endif %}>none / public client</option><option value="client_secret_post" {% if oauth and oauth.client_auth_method == 'client_secret_post' %}selected{% endif %}>client_secret_post</option><option value="client_secret_basic" {% if oauth and oauth.client_auth_method == 'client_secret_basic' %}selected{% endif %}>client_secret_basic</option></select></div>
+              <div class="span-6"><label>Client Secret（留空=保留现有）</label><input name="client_secret" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="不会回显"></div>
+            </div>
+            <label>Scopes</label><textarea name="scopes" rows="2" maxlength="5000" placeholder="read write offline_access">{{ oauth.scopes|join(' ') if oauth else '' }}</textarea>
+            <button class="secondary" type="submit">保存 OAuth client 配置</button>
+          </form>
+          {% if oauth %}
+          <div class="row">
+            <form action="/account/agent/runtime/mcp/{{ server.id }}/oauth/start" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="primary" type="submit">{% if credential and credential.auth_type == 'oauth' %}重新 OAuth 授权{% else %}开始 OAuth 授权{% endif %}</button>
+            </form>
+            {% if credential and credential.auth_type == 'oauth' %}
+            <form action="/account/agent/runtime/mcp/{{ server.id }}/oauth/revoke" method="post" onsubmit="return confirm('确定撤销当前 OAuth grant 吗？');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="danger-button" type="submit">撤销 OAuth grant</button>
+            </form>
+            {% endif %}
+            <form action="/account/agent/runtime/mcp/{{ server.id }}/oauth/delete" method="post" onsubmit="return confirm('确定删除 OAuth 配置吗？若当前是 OAuth grant，会先按配置尝试远端撤销。');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="danger-button" type="submit">删除 OAuth 配置</button>
+            </form>
+          </div>
+          {% endif %}
+          {% if credential and credential.auth_type == 'oauth' %}
+          <p class="fine">当前 OAuth grant 指纹：<span class="mono">{{ credential.fingerprint }}</span> · grant revision 不随正常 access-token refresh 改变；重新授权/撤销才改变授权边界。</p>
+          {% endif %}
         </section>
 
         {% if server.enabled %}
@@ -138,8 +183,8 @@
           </div>
           <button class="secondary" type="submit">保存此 Remote MCP</button>
         </form>
-        <p class="fine">保存任何注册项修改都会让当前旧 lease 失效；新 URL、工具策略或凭据版本只能由下一次新任务 / resume / fork 重新获得。</p>
-        <form action="/account/agent/runtime/mcp/{{ server.id }}/delete" method="post" onsubmit="return confirm('确定删除这个 Remote MCP 注册项及其 FDEX 凭据吗？');">
+        <p class="fine">保存任何注册项修改都会让当前旧 lease 失效；新 URL、工具策略或凭据 grant 只能由下一次新任务 / resume / fork 重新获得。</p>
+        <form action="/account/agent/runtime/mcp/{{ server.id }}/delete" method="post" onsubmit="return confirm('确定删除这个 Remote MCP 注册项及其 FDEX 凭据/OAuth 配置吗？');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="danger-button" type="submit">删除 Remote MCP</button>
         </form>
