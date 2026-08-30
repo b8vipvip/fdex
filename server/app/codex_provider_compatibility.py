@@ -51,17 +51,21 @@ def provider_runtime_fingerprint(provider: dict[str, Any], runtime: Any) -> str:
 
     The API key itself is never persisted. It contributes only to the outer SHA-256 fingerprint so
     rotating credentials immediately invalidates an old smoke result without exposing the secret.
+    The fingerprint also binds the same effective text-model candidate ordering used by Codex
+    Provider selection, including the valid "backup-only" configuration when the main model is empty.
     """
     from app.codex_subagent_governance import codex_subagent_cli_overrides
+    from app.provider_manager import text_model_candidates
 
     settings = fresh_settings()
     api_key = str(provider.get("api_key") or "")
     payload = {
-        "v": 1,
+        "v": 2,
         "provider_id": int(provider.get("id") or 0),
         "base_url": str(provider.get("base_url") or "").strip().rstrip("/"),
         "api_key_sha256": hashlib.sha256(api_key.encode("utf-8")).hexdigest() if api_key else "",
         "main_text_model": str(provider.get("main_text_model") or "").strip(),
+        "text_model_candidates": text_model_candidates(provider),
         "protocol_order": [str(item) for item in provider.get("protocol_order") or []],
         "timeout_seconds": int(provider.get("timeout_seconds") or 60),
         "runtime_path": str(getattr(runtime, "path", "") or ""),
