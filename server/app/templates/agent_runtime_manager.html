@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Codex Runtime · FDEX{% endblock %}
+{% block heading %}Codex Runtime{% endblock %}
+{% block subheading %}官方 Runtime 校验、受管升级、进程树隔离与可逆回滚{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/agent">返回 Coding Agent</a>{% endblock %}
+
+{% block content %}
+<section class="panel form-section">
+    <div class="panel-header">
+        <div>
+            <h2>当前 Runtime</h2>
+            <p>FDEX 只激活已经通过官方 release SHA-256、可执行文件版本和 <code>app-server</code> 协议校验的 Codex。</p>
+        </div>
+        <span class="badge {% if codex_status.ready and manager.active_valid %}success{% endif %}">{% if codex_status.ready and manager.active_valid %}已就绪{% else %}需检查{% endif %}</span>
+    </div>
+    <div class="content-grid equal">
+        <div class="inline-note {% if manager.active_valid %}success-note{% else %}warning-note{% endif %}">
+            <strong>激活版本</strong><br>
+            {% if manager.active_pin %}
+            {{ manager.active_version or codex_status.runtime_version or '版本未知' }}<br>
+            <span class="muted"><code>{{ manager.active_path }}</code></span>
+            {% else %}
+            未固定受管 Runtime；当前使用现有解析链：configured → system → bundled。<br>
+            <span class="muted">当前检测：{{ codex_status.runtime_version or '未知' }} · {{ codex_status.runtime_source or '未就绪' }}</span>
+            {% endif %}
+            {% if manager.active_error %}<br><span class="muted">校验错误：{{ manager.active_error }}</span>{% endif %}
+        </div>
+        <div class="inline-note {% if manager.process_isolation.enforced %}success-note{% else %}warning-note{% endif %}">
+            <strong>进程树隔离</strong><br>
+            {% if manager.process_isolation.enforced %}
+            cgroup v2 已强制 · {{ manager.process_isolation.parent_unit }}<br>
+            <span class="muted">MemoryMax {{ manager.process_isolation.memory_mb }} MB · CPUQuota {{ manager.process_isolation.cpu_percent }}% · TasksMax {{ manager.process_isolation.pids_max }}</span>
+            {% else %}
+            未满足 Phase 7.32 强制条件：{{ manager.process_isolation.reason or '未知原因' }}
+            {% endif %}
+        </div>
+    </div>
+    <div class="inline-note" style="margin-top:16px">
+        <strong>受管目录：</strong><code>{{ manager.root }}</code><br>
+        版本目录不可原地覆盖。升级先写 staging、校验完整资产，再原子切换 <code>FDEX_AGENT_CODEX_BIN</code>；切换前会结束所有 FDEX-owned Codex transient service，避免旧版本任务继续运行。
+    </div>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>官方稳定版</h2><p>只读取 <code>openai/codex</code> 官方 GitHub Releases；不接受任意下载 URL。</p></div><span class="badge">OpenAI / Codex</span></div>
+    <div class="content-grid equal">
+        <form method="post" action="/admin/agent/runtime/check" class="form-stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <p class="muted">只查询最新稳定版 metadata 和官方 SHA-256，不下载、不切换。</p>
+            <button class="button secondary" type="submit">检查最新稳定版</button>
+        </form>
+        <form method="post" action="/admin/agent/runtime/upgrade" class="form-stack" data-confirm="将下载并校验官方 Codex Runtime，结束当前所有 Codex 任务进程树，切换 Runtime 并重启 FDEX。确定继续吗？">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="field">
+                <span>目标官方 Tag（可选）</span>
+                <input name="tag" placeholder="留空=最新稳定版；例 rust-v0.151.0" maxlength="80" autocomplete="off">
+                <small>仅允许 <code>rust-v&lt;semver&gt;</code>，服务端仍会从官方 API 重新解析资产 ID、大小、URL 和 SHA-256。</small>
+            </label>
+            <button class="button primary" type="submit" {% if not manager.process_isolation.enforced %}disabled{% endif %}>校验并升级 Runtime</button>
+        </form>
+    </div>
+    {% if not manager.process_isolation.enforced %}
+    <div class="inline-note warning-note" style="margin-top:16px">进程树隔离未生效，因此 Runtime 切换 fail-closed。先修复 Linux systemd/cgroup v2 条件。</div>
+    {% endif %}
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>回滚</h2><p>每次切换都会保留前一个 <code>FDEX_AGENT_CODEX_BIN</code> pin；回滚前会再次验证目标可执行文件。</p></div><span class="badge {% if manager.rollback_available %}success{% endif %}">{% if manager.rollback_available %}可回滚{% else %}无历史{% endif %}</span></div>
+    <p class="muted">前一个 pin：{% if manager.previous_pin %}<code>{{ manager.previous_pin }}</code>{% else %}system/bundled fallback{% endif %}</p>
+    <form method="post" action="/admin/agent/runtime/rollback" data-confirm="将结束当前所有 Codex 任务并切换到前一个 Runtime，然后重启 FDEX。确定回滚吗？">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger-outline" type="submit" {% if not manager.rollback_available or not manager.process_isolation.enforced %}disabled{% endif %}>回滚到前一个 Runtime</button>
+    </form>
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>已安装受管版本</h2><p>这些目录只在完整验证成功后才进入 releases；失败的 staging 会被清除。</p></div></div>
+    {% if manager.installed %}
+    <div class="content-grid equal">
+        {% for item in manager.installed %}
+        <div class="inline-note {% if manager.active_pin == item.path %}success-note{% endif %}">
+            <strong>{{ item.tag or item.version }}</strong>{% if manager.active_pin == item.path %} · 当前{% endif %}<br>
+            <span class="muted">SHA-256 {{ item.binary_sha256[:20] }}…<br>{{ item.installed_at }}<br><code>{{ item.path }}</code></span>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>暂无 FDEX 受管 Runtime</strong><p>当前仍可使用系统或 bundled 官方 Runtime；首次升级成功后会在这里出现不可变版本目录。</p></div>
+    {% endif %}
+</section>
+
+<section class="panel form-section">
+    <div class="panel-header"><div><h2>校验链</h2><p>Runtime 进入激活状态前必须依次通过全部检查。</p></div></div>
+    <div class="content-grid equal">
+        <div><strong>1. 固定来源</strong><p class="muted">只访问 GitHub API 的 <code>repos/openai/codex/releases</code>，资产 URL 必须精确落在对应官方 tag。</p></div>
+        <div><strong>2. 资产完整性</strong><p class="muted">要求 GitHub release asset 提供 <code>sha256:</code> digest；下载长度与 digest 必须完全一致。</p></div>
+        <div><strong>3. 安全解包</strong><p class="muted">不调用 <code>extractall</code>；拒绝绝对路径、<code>..</code>、symlink、hardlink、device，只复制唯一预期可执行文件。</p></div>
+        <div><strong>4. 协议能力</strong><p class="muted">验证 <code>--version</code>，再用当前 FDEX Multi-Agent/Rollout 配置执行 <code>app-server --help</code>，防止版本能运行但协议配置不兼容。</p></div>
+        <div><strong>5. 进程代际切换</strong><p class="muted">切换 pin 前结束所有 <code>fdex-codex-*.service</code> cgroup；旧 Runtime 不允许跨版本继续存活。</p></div>
+    </div>
+</section>
+{% endblock %}
