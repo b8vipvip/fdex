@@ -5,16 +5,20 @@ Last updated: 2026-08-30
 ## Current baseline
 
 - Default branch: `main`
-- Accepted `main` baseline before this branch: **Phase 7.26 — Remote MCP Destination-Enforcing Gateway**
-- Accepted Phase 7.26 main commit: `0f977d3986af25597b4e8f80639da78504be1015`
-- Baseline proposed by this branch: **Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection**
-- Current development branch: `agent/phase7-27-remote-mcp-credentials`
+- Accepted `main` feature baseline: **Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection**
+- Accepted Phase 7.27 feature commit: `4bee0e128354ad5306433b793ae00f4725fc5500`
+- Phase 7.27 pull request: **#88**
+- Phase 7.27 final PR head: `33b024b19155e15c54c885d9792929c23edaa5a6`
+- Phase 7.27 PR Build and Test run: `33290719832` — FastAPI Tests + Android unit tests + Android Debug APK all passed.
+- Phase 7.27 post-merge `main` Build and Test run: `33290817719` — FastAPI Tests + Android unit tests + Android Debug APK all passed.
+- Phase 7.27 Android Auto Release run: `33290917088` — skipped as expected for a server/Web-only phase.
+- Active feature-development phase after this seal: none; Phase 7.27 is complete and accepted.
 - Current Android stable release: **v1.1.36**
 - v1.1.36 contains the Phase 7.13 Android migration to the universal `智体` product model.
 - Phase 7.14 through Phase 7.27 are server/Web/infrastructure changes and do not require an Android release by themselves.
 - `FDEX_AGENT_ENGINE=legacy` remains the rollout default until a production Responses/tool smoke task succeeds.
 
-A concrete commit becomes an accepted `main` baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the final PR head and again after merge.
+A concrete commit becomes an accepted `main` feature baseline only after FastAPI Tests, Android unit tests and Android Debug APK are all green on the final PR head and again after merge.
 
 ## Current product model
 
@@ -113,11 +117,15 @@ Implemented:
 - bounded inspectable POST bodies and streaming upstream responses;
 - owner-scoped `CODEX_HOME` permanent-account cleanup.
 
-## Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection (current branch)
+### Phase 7.27 — FDEX-held Remote MCP Credential Vault + Static Bearer Injection
+
+Accepted main feature commit: `4bee0e128354ad5306433b793ae00f4725fc5500`.
+
+PR #88 final head `33b024b19155e15c54c885d9792929c23edaa5a6` passed Build and Test run `33290719832`. The post-merge `main` Build and Test run `33290817719` also passed FastAPI Tests, Android unit tests and Android Debug APK. Android Auto Release run `33290917088` was skipped as expected.
 
 Phase 7.27 extends the accepted 7.26 gateway to authenticated **static Bearer** Remote MCP without handing the remote secret to Codex.
 
-Implemented/proposed on this branch:
+Implemented:
 
 - separate `remote_mcp_credentials` table; the public `remote_mcp_servers` registry remains credential-free;
 - strict owner + server credential scope;
@@ -137,12 +145,14 @@ Implemented/proposed on this branch:
 - every lease is bound to both registry `updated_at` and credential `updated_at`;
 - adding, rotating or deleting a Bearer proactively revokes active leases for that server when the lease table exists;
 - credential TOCTOU fails closed if a credential disappears, rotates, or appears after an anonymous lease was validated;
+- credential writes, credential deletion and whole-server deletion are serialized with short `BEGIN IMMEDIATE` transactions;
 - Remote MCP deletion atomically revokes leases, deletes encrypted credential and deletes the owner-scoped registry row in one SQLite transaction;
 - permanent account deletion orders Remote MCP cleanup as lease → credential → registry;
 - multi-worker lease-schema migration serializes the `credential_updated_at` ALTER with `BEGIN IMMEDIATE`;
-- dedicated attack/regression coverage for vault encryption, key lifecycle, owner isolation, lease revocation, auth-header override attempts, TOCTOU, atomic deletion and multi-worker migration.
+- dedicated attack/regression coverage for vault encryption, key lifecycle, owner isolation, lease revocation, auth-header override attempts, TOCTOU, atomic deletion and multi-worker migration;
+- Phase 7.26 registry-revision regression coverage remains active and now explicitly coexists with the credential-revision check.
 
-### Phase 7.27 security boundary
+#### Phase 7.27 security boundary
 
 Phase 7.27 supports only **anonymous or static Bearer HTTPS Streamable HTTP Remote MCP**. It does not provide OAuth authorization-code callbacks/token refresh, arbitrary remote headers, ChatGPT Connector credential proxying or user-configurable local stdio MCP.
 
@@ -151,8 +161,6 @@ A request already admitted before a concurrent revocation may finish as an in-fl
 The vault key is part of server backup/restore state. Existing ciphertext never causes automatic key replacement.
 
 See `docs/CODEX_REMOTE_MCP.md`.
-
-Phase 7.27 becomes accepted `main` only after its final PR head and post-merge main CI are green.
 
 ## Real Runtime CI
 
@@ -194,6 +202,7 @@ The compatibility policy distinguishes:
 - **Phase 7.24** — owner-scoped official MCP elicitation bridge.
 - **Phase 7.25** — owner-scoped credential-free Remote MCP registry/control plane.
 - **Phase 7.26** — destination-enforcing task-scoped localhost Remote MCP gateway.
+- **Phase 7.27** — FDEX-held encrypted Remote MCP static Bearer vault and credential-revision-aware gateway injection.
 
 ## What remains after Phase 7.27
 
