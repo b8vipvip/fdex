@@ -10,6 +10,7 @@ from app.agent_tasks import agent_task_store
 from app.codex_host_store import codex_host_store
 from app.codex_interaction_store import codex_interaction_store
 from app.codex_item_store import codex_item_store
+from app.codex_task_inputs import codex_task_input_store
 from app.config import fresh_settings
 from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
@@ -119,6 +120,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     codex_interaction_cleanup = codex_interaction_store().delete_owner(clean)
     codex_item_cleanup = codex_item_store().delete_owner(clean)
     codex_cleanup = codex_host_store().delete_owner(clean)
+    # Phase 7.29 media lives outside task worktrees. Erase its metadata and generated owner-scoped
+    # files before deleting the durable task records so no attachment can become an identity orphan.
+    codex_input_cleanup = codex_task_input_store().delete_owner(clean)
     task_count = agent_task_store().delete_owner(clean)
     settings = fresh_settings()
     removed_dirs = 0
@@ -154,6 +158,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "codex_interactions": codex_interaction_cleanup,
         "codex_items": codex_item_cleanup,
         "codex_host": codex_cleanup,
+        "codex_task_inputs": codex_input_cleanup,
         "owner_directories": removed_dirs,
         "codex_home_directories": codex_home_removed,
     }
