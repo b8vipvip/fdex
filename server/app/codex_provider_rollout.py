@@ -167,12 +167,17 @@ def install_codex_provider_rollout_runtime() -> None:
     engine.select_codex_provider = select_verified_codex_provider
     engine.codex_runtime_status = codex_rollout_runtime_status
 
-    # These modules imported the functions into module globals before the rollout installer runs.
-    # Rebind those references once, before FastAPI starts serving requests.
+    # These modules imported Codex functions into module globals before the rollout installer runs.
+    # Rebind every such reference once, before FastAPI starts serving requests. In particular,
+    # `agent_admin_routes` must use the rollout-aware status for both rendering and the POST that
+    # permits switching FDEX_AGENT_ENGINE to `codex`; otherwise the admin control plane could
+    # approve Codex from the old configuration-only readiness check.
+    import app.agent_admin_routes as agent_admin
     import app.codex_capability_control as capability
     import app.codex_host_runtime as host
     import app.codex_runtime_admin_routes as runtime_admin
 
+    agent_admin.codex_runtime_status = codex_rollout_runtime_status
     capability.select_codex_provider = select_verified_codex_provider
     host.select_codex_provider = select_verified_codex_provider
     runtime_admin.codex_runtime_status = codex_rollout_runtime_status
