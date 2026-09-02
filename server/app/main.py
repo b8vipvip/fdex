@@ -24,6 +24,8 @@ from app.agent_routes import router as agent_router
 from app.auth_routes import router as auth_router
 from app.center_auth_middleware import CenterUserAuthMiddleware
 from app.client_ai import router as client_ai_router
+from app.client_log_admin_routes import router as client_log_admin_router
+from app.client_runtime_log_routes import router as client_runtime_log_router
 from app.client_update import router as client_update_router
 from app.codex_input_center_routes import router as codex_input_center_router
 from app.codex_provider_admin_routes import router as codex_provider_admin_router
@@ -173,6 +175,7 @@ app.include_router(agent_policy_portal_router)
 app.include_router(user_portal_router)
 app.include_router(github_app_portal_router)
 app.include_router(admin_router)
+app.include_router(client_log_admin_router)
 app.include_router(github_app_admin_router)
 app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
@@ -182,6 +185,7 @@ app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
 app.include_router(realtime_diagnostic_admin_router)
 app.include_router(auth_router)
+app.include_router(client_runtime_log_router)
 app.include_router(client_ai_router)
 app.include_router(realtime_voice_router)
 app.include_router(client_update_router)

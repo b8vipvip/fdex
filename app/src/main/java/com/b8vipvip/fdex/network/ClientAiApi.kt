@@ -3,6 +3,7 @@ package com.b8vipvip.fdex.network
 import android.content.Context
 import com.b8vipvip.fdex.BuildConfig
 import com.b8vipvip.fdex.data.CentralSessionStore
+import com.b8vipvip.fdex.diagnostics.ClientRuntimeLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -85,6 +86,7 @@ object ClientAiApi {
             }.use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    logFailure("http_error", requestId, "fallback", mapOf("http_code" to response.code))
                     return@withContext AiGatewayResult.Failure(
                         withRequestId(extractError(body, "服务端返回 HTTP ${response.code}"), requestId),
                     )
@@ -98,6 +100,12 @@ object ClientAiApi {
                 )
             }
         } catch (error: Exception) {
+            logFailure(
+                "exception",
+                requestId,
+                "fallback",
+                mapOf("error_type" to error::class.java.simpleName, "error" to error.message.orEmpty()),
+            )
             AiGatewayResult.Failure(withRequestId(error.message ?: "无法连接 FDEX 服务端", requestId))
         }
     }
@@ -133,11 +141,13 @@ object ClientAiApi {
             }.use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
+                    logFailure("http_error", requestId, "stream", mapOf("http_code" to response.code))
                     emit(AiStreamEvent.Failure(withRequestId(extractError(body, "服务端返回 HTTP ${response.code}"), requestId)))
                     return@flow
                 }
                 val responseBody = response.body
                 if (responseBody == null) {
+                    logFailure("empty_body", requestId, "stream")
                     emit(AiStreamEvent.Failure(withRequestId("服务端没有返回流式响应正文", requestId)))
                     return@flow
                 }
@@ -149,7 +159,10 @@ object ClientAiApi {
                         null -> Unit
                         SseLineResult.DoneMarker -> {
                             if (resultSeen) emit(AiStreamEvent.Done(model = "", latencyMs = 0))
-                            else emit(AiStreamEvent.Failure(withRequestId("流式连接已结束，但没有收到正文或媒体结果", requestId)))
+                            else {
+                                logFailure("done_without_result", requestId, "stream")
+                                emit(AiStreamEvent.Failure(withRequestId("流式连接已结束，但没有收到正文或媒体结果", requestId)))
+                            }
                             return@flow
                         }
                         is SseLineResult.Event -> {
@@ -158,15 +171,27 @@ object ClientAiApi {
                                 if (!resultSeen) emit(AiStreamEvent.Status(""))
                                 resultSeen = true
                             }
+                            if (event is AiStreamEvent.Failure) {
+                                logFailure("server_error_event", requestId, "stream", mapOf("message" to event.message))
+                            }
                             emit(event)
                             if (event is AiStreamEvent.Done || event is AiStreamEvent.Failure) return@flow
                         }
                     }
                 }
                 if (resultSeen) emit(AiStreamEvent.Done(model = "", latencyMs = 0))
-                else emit(AiStreamEvent.Failure(withRequestId("流式连接提前结束，未收到正文或媒体结果", requestId)))
+                else {
+                    logFailure("stream_ended_early", requestId, "stream")
+                    emit(AiStreamEvent.Failure(withRequestId("流式连接提前结束，未收到正文或媒体结果", requestId)))
+                }
             }
         } catch (error: Exception) {
+            logFailure(
+                "exception",
+                requestId,
+                "stream",
+                mapOf("error_type" to error::class.java.simpleName, "error" to error.message.orEmpty()),
+            )
             emit(AiStreamEvent.Failure(withRequestId(error.message ?: "AI 流式连接失败", requestId)))
         }
     }.flowOn(Dispatchers.IO)
@@ -285,6 +310,15 @@ object ClientAiApi {
             })
         }
         return payload
+    }
+
+    private fun logFailure(event: String, requestId: String, mode: String, details: Map<String, Any?> = emptyMap()) {
+        ClientRuntimeLog.warn(
+            component = "client_ai",
+            event = event,
+            message = "FDEX AI request failed",
+            details = mapOf("request_id" to requestId.take(16), "mode" to mode) + details,
+        )
     }
 
     private fun extractError(body: String, fallback: String): String =
