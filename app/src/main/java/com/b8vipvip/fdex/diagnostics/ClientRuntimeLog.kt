@@ -34,19 +34,19 @@ object ClientRuntimeLog {
             synchronized(lock) {
                 if (!installed) {
                     val previous = Thread.getDefaultUncaughtExceptionHandler()
-                    Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+                    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
                         runCatching {
                             error(
                                 component = "process",
                                 event = "uncaught_exception",
-                                message = "${error::class.java.simpleName}: ${error.message.orEmpty()}",
+                                message = "${throwable::class.java.simpleName}: ${throwable.message.orEmpty()}",
                                 details = mapOf(
                                     "thread" to thread.name,
-                                    "stack" to error.stackTraceToString().take(6000),
+                                    "stack" to throwable.stackTraceToString().take(6000),
                                 ),
                             )
                         }
-                        previous?.uncaughtException(thread, error)
+                        previous?.uncaughtException(thread, throwable)
                     }
                     installed = true
                 }
@@ -124,7 +124,9 @@ object ClientRuntimeLog {
             Regex("(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]{16,}"),
             Regex("(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|cookie)\\s*[:=]\\s*)[^\\s,;]+"),
         )
-        patterns.forEach { pattern -> text = pattern.replace(text, "$1[REDACTED]") }
+        patterns.forEach { pattern ->
+            text = pattern.replace(text) { match -> match.groupValues[1] + "[REDACTED]" }
+        }
         return text.take(limit.coerceAtLeast(0))
     }
 
