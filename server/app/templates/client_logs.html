@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}客户端日志 · FDEX{% endblock %}
+{% block heading %}客户端日志{% endblock %}
+{% block subheading %}查看 Android 客户端主动上报的运行诊断；用于定位崩溃、网络、AI 与 Coding Agent 异常{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/client-logs">刷新日志</a>{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="panel-header">
+        <div>
+            <h2>客户端运行日志</h2>
+            <p>日志由已登录 FDEX 客户端通过受认证接口上报。服务端自动按账号归属，敏感凭据会被脱敏；默认不记录聊天正文或附件内容。</p>
+        </div>
+    </div>
+
+    <form method="get" action="/admin/client-logs" class="form-grid" style="margin-bottom:18px">
+        <label>账号
+            <select name="owner">
+                <option value="">全部账号</option>
+                {% for owner_id in owners %}<option value="{{ owner_id }}" {% if filters.owner_id == owner_id %}selected{% endif %}>{{ owner_id }}</option>{% endfor %}
+            </select>
+        </label>
+        <label>级别
+            <select name="level">
+                <option value="">全部级别</option>
+                {% for item in ['debug','info','warn','error'] %}<option value="{{ item }}" {% if filters.level == item %}selected{% endif %}>{{ item|upper }}</option>{% endfor %}
+            </select>
+        </label>
+        <label>组件
+            <select name="component">
+                <option value="">全部组件</option>
+                {% for item in components %}<option value="{{ item }}" {% if filters.component == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+            </select>
+        </label>
+        <label>关键字
+            <input name="q" value="{{ filters.query }}" maxlength="120" placeholder="事件、消息、设备名">
+        </label>
+        <label>条数
+            <select name="limit">
+                {% for amount in [100,300,1000,2000,5000] %}<option value="{{ amount }}" {% if filters.limit == amount %}selected{% endif %}>最近 {{ amount }} 条</option>{% endfor %}
+            </select>
+        </label>
+        <div style="display:flex;align-items:end;gap:8px">
+            <button class="button" type="submit">筛选</button>
+            <a class="button secondary" href="/admin/client-logs">清除筛选</a>
+        </div>
+    </form>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+        <form method="get" action="/admin/client-logs/export">
+            <input type="hidden" name="format" value="txt">
+            <input type="hidden" name="owner" value="{{ filters.owner_id }}">
+            <input type="hidden" name="level" value="{{ filters.level }}">
+            <input type="hidden" name="component" value="{{ filters.component }}">
+            <input type="hidden" name="q" value="{{ filters.query }}">
+            <input type="hidden" name="limit" value="{{ filters.limit }}">
+            <button class="button secondary" type="submit">导出 LOG</button>
+        </form>
+        <form method="get" action="/admin/client-logs/export">
+            <input type="hidden" name="format" value="json">
+            <input type="hidden" name="owner" value="{{ filters.owner_id }}">
+            <input type="hidden" name="level" value="{{ filters.level }}">
+            <input type="hidden" name="component" value="{{ filters.component }}">
+            <input type="hidden" name="q" value="{{ filters.query }}">
+            <input type="hidden" name="limit" value="{{ filters.limit }}">
+            <button class="button secondary" type="submit">导出 JSON</button>
+        </form>
+        <span class="fine">导出文件可直接发给开发人员分析；服务端最多保留 30 天 / 50,000 条。</span>
+    </div>
+
+    {% if logs %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr><th>服务端时间（UTC）</th><th>级别</th><th>账号 / 设备</th><th>版本</th><th>组件 / 事件</th><th>消息与详情</th></tr>
+            </thead>
+            <tbody>
+            {% for item in logs %}
+                <tr>
+                    <td><code>{{ item.received_at }}</code><br><span class="fine">客户端：{{ item.client_time or '-' }}</span></td>
+                    <td><span class="badge {{ 'error' if item.level == 'error' else ('warning' if item.level == 'warn' else 'success') }}">{{ item.level|upper }}</span></td>
+                    <td><code>{{ item.owner_id }}</code><br>{{ item.device_name or item.platform }}<br><span class="fine">session {{ item.session_id[:12] if item.session_id else '-' }}</span></td>
+                    <td>{{ item.app_version or '-' }}<br><span class="fine">{{ item.git_sha or '-' }} · {{ item.os_version or item.platform }}</span></td>
+                    <td><code>{{ item.component }}</code><br>{{ item.event }}</td>
+                    <td class="details-cell">
+                        <div>{{ item.message or '-' }}</div>
+                        {% if item.details %}<pre class="log-viewer" style="max-height:180px;margin-top:8px">{{ item.details | tojson(indent=2) }}</pre>{% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="empty-text">当前筛选条件下暂无客户端日志。新版客户端登录并运行后会自动上报诊断记录。</p>
+    {% endif %}
+</section>
+{% endblock %}
