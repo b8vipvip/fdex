@@ -49,6 +49,17 @@ def _clean_details(value: Any, *, depth: int = 0) -> Any:
     return redact_text(value, 1200)
 
 
+def _serialize_details(value: Any) -> str:
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= 8000:
+        return serialized
+    return json.dumps(
+        {"_truncated": True, "preview": redact_text(serialized, 7400)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 class ClientRuntimeLogStore:
     """Small durable diagnostics store for authenticated FDEX clients.
 
@@ -129,7 +140,7 @@ class ClientRuntimeLogStore:
             event = redact_text(item.get("event"), 160) or "event"
             message = redact_text(item.get("message"), 2000)
             details = _clean_details(item.get("details") if isinstance(item.get("details"), (dict, list)) else {})
-            details_json = json.dumps(details, ensure_ascii=False, separators=(",", ":"))[:8000]
+            details_json = _serialize_details(details)
             client_time = redact_text(item.get("time") or item.get("client_time"), 80)
             rows.append(
                 (
