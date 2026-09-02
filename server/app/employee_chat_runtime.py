@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from fastapi import Request, UploadFile
@@ -64,6 +65,9 @@ _REPOSITORY_EXECUTION_HINTS = (
     "分支",
     "branch",
 )
+_OWNER_REPO_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}(?![A-Za-z0-9_.-])"
+)
 
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -75,16 +79,23 @@ def _repository_execution_requested(prompt: str) -> bool:
     clean = (prompt or "").strip()
     if not clean:
         return False
-    return _contains_any(clean, _REPOSITORY_REFERENCE_HINTS) and _contains_any(
-        clean,
-        _REPOSITORY_EXECUTION_HINTS,
-    )
+    has_reference = _contains_any(clean, _REPOSITORY_REFERENCE_HINTS) or bool(_OWNER_REPO_PATTERN.search(clean))
+    return has_reference and _contains_any(clean, _REPOSITORY_EXECUTION_HINTS)
 
 
 def _project_matches(text: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     lowered = (text or "").casefold()
     if not lowered:
         return []
+
+    full_matches: list[dict[str, Any]] = []
+    for project in projects:
+        repo = str(project.get("repo_full_name") or "").strip()
+        if repo and repo.casefold() in lowered:
+            full_matches.append(project)
+    if full_matches:
+        return full_matches
+
     matches: list[dict[str, Any]] = []
     seen: set[int] = set()
     for project in projects:
@@ -92,11 +103,14 @@ def _project_matches(text: str, projects: list[dict[str, Any]]) -> list[dict[str
         if not repo:
             continue
         project_id = int(project.get("id") or 0)
-        repo_lower = repo.casefold()
-        short_name = repo.rsplit("/", 1)[-1].casefold()
-        full_match = repo_lower in lowered
-        short_match = bool(short_name and len(short_name) >= 3 and short_name in lowered)
-        if (full_match or short_match) and project_id not in seen:
+        short_name = repo.rsplit("/", 1)[-1]
+        if len(short_name) < 3:
+            continue
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(short_name)}(?![A-Za-z0-9_.-])",
+            flags=re.IGNORECASE,
+        )
+        if pattern.search(text or "") and project_id not in seen:
             seen.add(project_id)
             matches.append(project)
     return matches
