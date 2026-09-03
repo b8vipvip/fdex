@@ -15,6 +15,8 @@ from typing import Any, Iterator
 _TASK_ID = re.compile(r"^[0-9a-f]{32}$")
 _OWNER = re.compile(r"^[A-Za-z0-9_.@-]{1,80}$")
 _TERMINAL = {"succeeded", "failed", "canceled"}
+_TASK_KINDS = frozenset({"user", "auto_retry", "manual_retry", "resume", "fork"})
+_INTERNAL_TASK_KINDS = frozenset({"auto_retry"})
 
 
 def _now() -> str:
@@ -35,6 +37,13 @@ def _task_id(value: str) -> str:
     return clean
 
 
+def _task_kind(value: str) -> str:
+    clean = (value or "user").strip().lower()
+    if clean not in _TASK_KINDS:
+        raise ValueError("invalid Agent task kind")
+    return clean
+
+
 class TaskRunBusy(RuntimeError):
     pass
 
@@ -46,8 +55,11 @@ class AgentTaskStore:
     task state. A small flock file serializes execution of one task across workers. No model
     prompt or tool result is written outside the owner-scoped task row.
 
-    Phase 7.39 keeps internal automatic retry attempts durable but removes them from ordinary task
-    history by default. Direct lookup, active-count and workspace cleanup still include them.
+    Phase 7.40 makes task identity and retry lineage first-class fields on ``agent_tasks`` itself.
+    An automatic retry child is therefore born as ``task_kind=auto_retry`` in the same first
+    durable write that creates its AgentTask row; normal history no longer depends on a later
+    retry-ledger write to know that the task is internal. The Phase 7.39 retry ledger remains the
+    richer Provider/health/backoff/decision audit record.
     """
 
     def __init__(self, path: Path | None = None, lock_root: Path | None = None) -> None:
@@ -93,6 +105,9 @@ class AgentTaskStore:
                         events_json TEXT NOT NULL DEFAULT '[]',
                         cancel_requested INTEGER NOT NULL DEFAULT 0,
                         parent_task_id TEXT NOT NULL DEFAULT '',
+                        task_kind TEXT NOT NULL DEFAULT 'user',
+                        logical_root_id TEXT NOT NULL DEFAULT '',
+                        attempt_index INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
@@ -129,6 +144,65 @@ class AgentTaskStore:
                         ON codex_retry_attempts(owner_id,root_task_id,attempt_index);
                     CREATE INDEX IF NOT EXISTS idx_codex_retry_owner_internal
                         ON codex_retry_attempts(owner_id,attempt_index,updated_at DESC);
+                    """
+                )
+
+                # Existing Phase 7.39 databases do not have the task-kind columns. Add them before
+                # creating indexes that reference them, then backfill internal retry children from
+                # the already-durable structured retry ledger. This migration is idempotent and
+                # intentionally does not infer identity from event/error text.
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
+                }
+                if "task_kind" not in columns:
+                    conn.execute("ALTER TABLE agent_tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'user'")
+                if "logical_root_id" not in columns:
+                    conn.execute("ALTER TABLE agent_tasks ADD COLUMN logical_root_id TEXT NOT NULL DEFAULT ''")
+                if "attempt_index" not in columns:
+                    conn.execute("ALTER TABLE agent_tasks ADD COLUMN attempt_index INTEGER NOT NULL DEFAULT 0")
+
+                conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET task_kind='auto_retry',
+                        logical_root_id=COALESCE((
+                            SELECT retry.root_task_id
+                            FROM codex_retry_attempts retry
+                            WHERE retry.owner_id=agent_tasks.owner_id
+                              AND retry.attempt_task_id=agent_tasks.id
+                              AND retry.attempt_index>0
+                            LIMIT 1
+                        ), logical_root_id),
+                        attempt_index=COALESCE((
+                            SELECT retry.attempt_index
+                            FROM codex_retry_attempts retry
+                            WHERE retry.owner_id=agent_tasks.owner_id
+                              AND retry.attempt_task_id=agent_tasks.id
+                              AND retry.attempt_index>0
+                            LIMIT 1
+                        ), attempt_index)
+                    WHERE EXISTS (
+                        SELECT 1 FROM codex_retry_attempts retry
+                        WHERE retry.owner_id=agent_tasks.owner_id
+                          AND retry.attempt_task_id=agent_tasks.id
+                          AND retry.attempt_index>0
+                    )
+                    """
+                )
+                conn.execute(
+                    "UPDATE agent_tasks SET logical_root_id=id WHERE logical_root_id='' OR logical_root_id IS NULL"
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_kind_updated
+                    ON agent_tasks(owner_id,task_kind,updated_at DESC,id DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_logical_root
+                    ON agent_tasks(owner_id,logical_root_id,attempt_index,created_at,id)
                     """
                 )
             try:
@@ -199,6 +273,29 @@ class AgentTaskStore:
         owner_id = _owner(str(task.owner_id))
         changed = sorted(str(item)[:1000] for item in getattr(task, "changed_files", set()))
         events = [self._event_payload(item) for item in list(getattr(task, "events", []))[-300:]]
+        parent_raw = str(getattr(task, "parent_task_id", "") or "").strip().lower()
+        parent_task_id = _task_id(parent_raw) if parent_raw else ""
+        task_kind = _task_kind(str(getattr(task, "task_kind", "user") or "user"))
+        try:
+            attempt_index = int(getattr(task, "attempt_index", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Agent attempt index") from exc
+
+        if task_kind == "auto_retry":
+            if not parent_task_id:
+                raise ValueError("automatic retry task requires parent task id")
+            if attempt_index < 1:
+                raise ValueError("automatic retry task requires positive attempt index")
+            logical_root_id = _task_id(str(getattr(task, "logical_root_id", "") or ""))
+            if logical_root_id == task_id:
+                raise ValueError("automatic retry task cannot be its own logical root")
+        else:
+            if attempt_index != 0:
+                raise ValueError("user-visible Agent task attempt index must be zero")
+            if task_kind in {"manual_retry", "resume", "fork"} and not parent_task_id:
+                raise ValueError(f"{task_kind} task requires parent task id")
+            logical_root_id = task_id
+
         values: dict[str, Any] = {
             "id": task_id,
             "owner_id": owner_id,
@@ -218,7 +315,10 @@ class AgentTaskStore:
             "changed_files_json": json.dumps(changed, ensure_ascii=False, separators=(",", ":")),
             "events_json": json.dumps(events, ensure_ascii=False, separators=(",", ":")),
             "cancel_requested": int(bool(getattr(task, "cancel_requested", False))),
-            "parent_task_id": str(getattr(task, "parent_task_id", ""))[:32],
+            "parent_task_id": parent_task_id,
+            "task_kind": task_kind,
+            "logical_root_id": logical_root_id,
+            "attempt_index": attempt_index,
             "created_at": self._iso(getattr(task, "created_at", None)),
             "updated_at": self._iso(getattr(task, "updated_at", None)),
         }
@@ -249,6 +349,12 @@ class AgentTaskStore:
                 for field in ("branch", "commit_sha", "pr_url", "parent_task_id"):
                     if not values[field] and existing.get(field):
                         values[field] = existing[field]
+                # Task identity/lineage is immutable after the first durable row. A stale worker
+                # may merge monotonic execution state, but it can never relabel an internal retry
+                # child as a user-visible task or move a task into a different logical chain.
+                values["task_kind"] = str(existing.get("task_kind") or "user")
+                values["logical_root_id"] = str(existing.get("logical_root_id") or task_id)
+                values["attempt_index"] = int(existing.get("attempt_index") or 0)
                 values["pushed"] = int(bool(existing.get("pushed")) or bool(values["pushed"]))
                 if existing_status in _TERMINAL:
                     # A stale worker must never revive or replace a terminal task. Cleanup may
@@ -265,11 +371,13 @@ class AgentTaskStore:
                 INSERT INTO agent_tasks(
                     id,owner_id,prompt,project_id,project_name,repository,base_branch,status,
                     result,error,branch,worktree,commit_sha,pushed,pr_url,changed_files_json,
-                    events_json,cancel_requested,parent_task_id,created_at,updated_at
+                    events_json,cancel_requested,parent_task_id,task_kind,logical_root_id,
+                    attempt_index,created_at,updated_at
                 ) VALUES(
                     :id,:owner_id,:prompt,:project_id,:project_name,:repository,:base_branch,:status,
                     :result,:error,:branch,:worktree,:commit_sha,:pushed,:pr_url,:changed_files_json,
-                    :events_json,:cancel_requested,:parent_task_id,:created_at,:updated_at
+                    :events_json,:cancel_requested,:parent_task_id,:task_kind,:logical_root_id,
+                    :attempt_index,:created_at,:updated_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     owner_id=excluded.owner_id,prompt=excluded.prompt,project_id=excluded.project_id,
@@ -279,7 +387,8 @@ class AgentTaskStore:
                     commit_sha=excluded.commit_sha,pushed=excluded.pushed,pr_url=excluded.pr_url,
                     changed_files_json=excluded.changed_files_json,events_json=excluded.events_json,
                     cancel_requested=excluded.cancel_requested,
-                    parent_task_id=excluded.parent_task_id,
+                    parent_task_id=excluded.parent_task_id,task_kind=excluded.task_kind,
+                    logical_root_id=excluded.logical_root_id,attempt_index=excluded.attempt_index,
                     created_at=excluded.created_at,updated_at=excluded.updated_at
                 """,
                 values,
@@ -295,6 +404,9 @@ class AgentTaskStore:
                 data[key.removesuffix("_json")] = []
         data["pushed"] = bool(data["pushed"])
         data["cancel_requested"] = bool(data["cancel_requested"])
+        data["task_kind"] = str(data.get("task_kind") or "user")
+        data["logical_root_id"] = str(data.get("logical_root_id") or data.get("id") or "")
+        data["attempt_index"] = int(data.get("attempt_index") or 0)
         return data
 
     def get_any(self, task_id: str) -> dict[str, Any] | None:
@@ -323,25 +435,18 @@ class AgentTaskStore:
         limit: int = 50,
         include_internal: bool = False,
     ) -> list[dict[str, Any]]:
-        """List user-visible logical tasks unless internal retry attempts are explicitly requested."""
+        """List user-visible tasks unless internal task kinds are explicitly requested."""
 
         self.init()
         owner_id = _owner(owner_id)
         limit = max(1, min(int(limit), 100))
         status = (status or "").strip().lower()
-        visibility = "" if include_internal else """
-            AND NOT EXISTS (
-                SELECT 1 FROM codex_retry_attempts retry
-                WHERE retry.owner_id=agent_tasks.owner_id
-                  AND retry.attempt_task_id=agent_tasks.id
-                  AND retry.attempt_index>0
-            )
-        """
+        visibility = "" if include_internal else " AND task_kind<>'auto_retry' "
         with self.db() as conn:
             if status:
                 rows = conn.execute(
                     f"""
-                    SELECT agent_tasks.* FROM agent_tasks
+                    SELECT * FROM agent_tasks
                     WHERE owner_id=? AND status=? {visibility}
                     ORDER BY updated_at DESC,id DESC LIMIT ?
                     """,
@@ -350,12 +455,35 @@ class AgentTaskStore:
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT agent_tasks.* FROM agent_tasks
+                    SELECT * FROM agent_tasks
                     WHERE owner_id=? {visibility}
                     ORDER BY updated_at DESC,id DESC LIMIT ?
                     """,
                     (owner_id, limit),
                 ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def list_execution_lineage(self, owner_id: str, logical_root_id: str) -> list[dict[str, Any]]:
+        """Return the physical execution tasks belonging to one logical task.
+
+        This query is deliberately based on ``agent_tasks`` rather than the retry audit ledger, so
+        a retry child remains classifiable and discoverable even if a worker died immediately
+        after the atomic AgentTask creation write and before richer retry audit metadata was saved.
+        """
+
+        self.init()
+        owner_id = _owner(owner_id)
+        logical_root_id = _task_id(logical_root_id)
+        with self.db() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM agent_tasks
+                WHERE owner_id=? AND logical_root_id=?
+                  AND (id=? OR task_kind='auto_retry')
+                ORDER BY attempt_index ASC,created_at ASC,id ASC
+                """,
+                (owner_id, logical_root_id, logical_root_id),
+            ).fetchall()
         return [self._row(row) for row in rows]
 
     def list_releasable(self, owner_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
