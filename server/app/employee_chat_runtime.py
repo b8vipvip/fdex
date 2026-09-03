@@ -106,6 +106,9 @@ _CODING_AGENT_ACTION_HINTS = (
     "rebase",
     "diff",
     "status",
+    "真实存在",
+    "是否完整",
+    "完整吗",
 )
 _CODING_AGENT_DIRECT_HINTS = (
     "运行测试",
@@ -138,6 +141,8 @@ _CODING_AGENT_DIRECT_HINTS = (
     "查看文件",
     "搜索源码",
     "查找源码",
+    "真实存在代码",
+    "代码是否完整",
 )
 _GITHUB_METADATA_HINTS = (
     "是否公开",
