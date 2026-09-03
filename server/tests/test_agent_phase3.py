@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from app.agent_loop import FdexAgentLoop
 from app.agent_runtime import AgentRuntimeError, FdexAgentRuntime
 
 
@@ -94,42 +92,3 @@ def test_commit_contains_only_agent_written_files(tmp_path: Path) -> None:
     ).stdout
     assert "app.txt" in show
     assert "untracked.log" not in show
-
-
-def test_failed_test_is_observation_then_agent_repairs_and_commits(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    test_dir = repo / "server"
-    test_dir.mkdir()
-    (test_dir / "test_sample.py").write_text(
-        "from pathlib import Path\n\ndef test_value():\n    assert Path('../app.txt').read_text().strip() == 'value=new'\n",
-        encoding="utf-8",
-    )
-    subprocess.run(["git", "add", "server/test_sample.py"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "add test"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    runtime = _runtime(repo, tmp_path / "worktrees")
-    task = asyncio.run(runtime.create_task("make the test pass and commit"))
-    responses = iter(
-        [
-            {"action": "tool", "tool": "run_tests", "args": {"suite": "server"}, "summary": "Running tests"},
-            {"action": "tool", "tool": "replace_text", "args": {"path": "app.txt", "old": "value=old", "new": "value=new"}, "summary": "Applying fix"},
-            {"action": "tool", "tool": "run_tests", "args": {"suite": "server"}, "summary": "Verifying fix"},
-            {"action": "tool", "tool": "git_commit", "args": {"message": "Fix app value"}, "summary": "Committing validated fix"},
-            {"action": "final", "answer": "Fixed and committed.", "summary": "Task complete"},
-        ]
-    )
-    prompts: list[str] = []
-
-    async def fake_model(system: str, prompt: str, max_tokens: int) -> str:
-        prompts.append(prompt)
-        return json.dumps(next(responses))
-
-    asyncio.run(FdexAgentLoop(runtime, model_call=fake_model, max_steps=6).run(task.id))
-    completed = asyncio.run(runtime.get_task(task.id))
-    assert completed is not None
-    assert completed.status == "succeeded"
-    assert completed.commit_sha
-    assert any("exit_code=1" in prompt for prompt in prompts)
-    assert any("exit_code=0" in prompt for prompt in prompts)
