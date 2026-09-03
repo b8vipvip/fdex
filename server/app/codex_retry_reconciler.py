@@ -378,7 +378,7 @@ async def _materialize_transition_child(
             or int(audit.get("attempt_index") or -1) != next_index
         ):
             return None, "RECOVERY_METADATA_MISMATCH", "retry audit disagrees with transition and immutable task lineage"
-        # Fill legacy blank trigger fields from the transition without changing already-started
+        # Fill pre-transition blank trigger fields from the durable plan without changing already-started
         # Provider/Host evidence. record_queued's conflict clause preserves non-empty fields.
         await asyncio.to_thread(
             ledger.record_queued,
