@@ -88,18 +88,16 @@ def test_protected_paths_are_rejected_before_fdex_commit() -> None:
     assert not codex_engine._path_is_protected("server/app/main.py")
 
 
-def test_phase719_rollout_defaults_to_legacy() -> None:
+def test_agent_settings_no_longer_define_an_engine_selector(monkeypatch) -> None:
+    monkeypatch.setenv("FDEX_AGENT_ENGINE", "legacy")
     settings = Settings(_env_file=None)
-    assert settings.fdex_agent_engine == "legacy"
-    assert codex_engine.normalize_engine_mode("codex") == "codex"
-    assert codex_engine.normalize_engine_mode("auto") == "auto"
-    assert codex_engine.normalize_engine_mode("invalid") == "legacy"
+    assert not hasattr(settings, "fdex_agent_engine")
 
 
-def test_admin_template_exposes_codex_rollout_without_secret_fields() -> None:
+def test_admin_template_exposes_codex_as_the_only_agent_core() -> None:
     root = Path(__file__).resolve().parents[2]
     template = (root / "server/app/templates/agent_settings.html").read_text(encoding="utf-8")
-    assert "OpenAI Codex Core" in template
-    assert 'name="fdex_agent_engine"' in template
+    assert "唯一执行核心：OpenAI Codex Core" in template
+    assert 'name="fdex_agent_engine"' not in template
     assert "codex_status.ready" in template
     assert "FDEX_CODEX_PROVIDER_KEY" not in template
