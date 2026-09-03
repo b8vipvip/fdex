@@ -6,6 +6,7 @@ from app.codex_provider_compatibility import (
     COMPATIBILITY_MAX_AGE_HOURS,
     codex_provider_compatibility_store,
 )
+from app.codex_retry_provider_context import excluded_codex_provider_ids
 from app.provider_manager import provider_store
 
 _installed = False
@@ -20,27 +21,43 @@ def _engine_module():
 def rollout_selection(runtime: Any | None = None) -> dict[str, Any]:
     """Choose the first priority Provider with a fresh full Codex compatibility proof.
 
-    Skipping an unverified/unfresh higher-priority Provider is the only automatic Provider
-    failover FDEX performs for Codex. It happens before a user Host starts and therefore before a
-    worktree can be modified. Once a Codex Host/Turn starts, FDEX never switches Providers inside
-    that task; a failure terminalizes the task and Retry creates a fresh task/worktree boundary.
+    Phase 7.38 may temporarily exclude the Provider that just produced a *structured transient*
+    failure, but only inside a newly-created retry AgentTask/worktree context. Selection or
+    reselection happens before a user Host starts and every replacement still needs its own
+    fresh full proof. FDEX never switches Providers inside a started task, Host, or Turn.
     """
     engine = _engine_module()
     runtime = runtime or engine.resolve_codex_runtime()
     compatibility = codex_provider_compatibility_store()
     diagnostics: list[dict[str, Any]] = []
     selected = None
+    excluded = excluded_codex_provider_ids()
 
     for provider in provider_store().list(enabled_only=True, include_secret=True):
+        provider_id = int(provider.get("id") or 0)
+        if provider_id > 0 and provider_id in excluded:
+            diagnostics.append(
+                {
+                    "provider_id": provider_id,
+                    "provider_name": str(provider.get("name") or f"Provider {provider_id}"),
+                    "eligible": False,
+                    "reason": "Phase 7.38 bounded retry temporarily excluded this Provider for the new retry task",
+                    "level": "full-required",
+                    "retry_excluded": True,
+                }
+            )
+            continue
+
         spec = engine.select_codex_provider_from([provider])
         if spec is None:
             diagnostics.append(
                 {
-                    "provider_id": int(provider.get("id") or 0),
+                    "provider_id": provider_id,
                     "provider_name": str(provider.get("name") or ""),
                     "eligible": False,
                     "reason": "未完整配置 Responses 协议、API Key、Base URL 或文本模型",
                     "level": "none",
+                    "retry_excluded": False,
                 }
             )
             continue
@@ -59,6 +76,7 @@ def rollout_selection(runtime: Any | None = None) -> dict[str, Any]:
                 "reason": str(status.get("reason") or ""),
                 "level": str(status.get("level") or "none"),
                 "age_hours": status.get("age_hours"),
+                "retry_excluded": False,
             }
         )
         if bool(status.get("valid")):
@@ -71,6 +89,7 @@ def rollout_selection(runtime: Any | None = None) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "required_level": "full",
         "max_age_hours": COMPATIBILITY_MAX_AGE_HOURS,
+        "retry_excluded_provider_ids": sorted(excluded),
     }
 
 
@@ -117,6 +136,7 @@ def codex_rollout_runtime_status() -> dict[str, object]:
         "rollout_required_level": "full",
         "rollout_max_age_hours": COMPATIBILITY_MAX_AGE_HOURS,
         "rollout_diagnostics": diagnostics,
+        "retry_excluded_provider_ids": list(selection.get("retry_excluded_provider_ids") or []) if selection else [],
     }
 
 
@@ -161,9 +181,9 @@ def provider_rollout_rows() -> dict[str, Any]:
 def install_codex_provider_rollout_runtime() -> None:
     """Install the Provider proof gate at every already-imported Codex launch/status seam.
 
-    Phase 7.36 no longer has an Agent engine switch. This gate now decides only whether the
-    mandatory Codex Host is ready to start. Failure is terminal/fail-closed and never selects a
-    different Agent core.
+    Phase 7.36 removed Agent engine fallback. Phase 7.38 additionally permits task-scoped Provider
+    reselection only for a newly-created bounded retry task; every candidate still passes this same
+    fresh-full compatibility gate.
     """
     global _installed
     if _installed:
