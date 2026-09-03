@@ -1,112 +1,187 @@
 # Codex Retry Chain Reconciliation / Codex 重试链崩溃恢复
 
-Phase 7.41 closes the process-crash gap left after Phase 7.38 bounded retry, Phase 7.39 logical-task projection and Phase 7.40 atomic task lineage.
+Phase 7.41 closes the worker-crash gaps left after Phase 7.38 bounded retry, Phase 7.39 logical-task projection and Phase 7.40 atomic task lineage.
 
-Phase 7.41 用于补齐 Phase 7.38 有界重试、Phase 7.39 逻辑任务投影和 Phase 7.40 原子任务血缘之后仍存在的 **Worker 进程崩溃恢复缺口**。
+Phase 7.41 补齐 Phase 7.38 有界重试、Phase 7.39 逻辑任务投影和 Phase 7.40 原子任务血缘之后仍存在的 **Worker 进程崩溃恢复窗口**。
 
 ## 中文
 
-### 1. 问题
+### 1. 为什么只持久化 child 还不够
 
-正常 Coding Agent 执行会在 logical root 的 `AgentTaskStore.run_lock(root_task_id)` 下覆盖整条自动重试链。Phase 7.38 的 retry child 还有自己的 task lock。Linux `flock` 在 Worker 退出后由内核自动释放，因此“锁不会永久死掉”；但此前没有任何调度器在锁释放后主动寻找 `auto_retry` 孤儿任务。
+正常 Coding Agent 执行会在 logical root 的 `AgentTaskStore.run_lock(root_task_id)` 下覆盖整条自动重试链；每个 physical retry child 还有自己的 task lock。Linux `flock` 会在 Worker 退出后由内核释放，但锁释放本身不会重新调度任务。
 
-结果是：Worker 如果在自动 retry child 已持久化后退出，数据库可能永久留下：
-
-```text
-root.status = running
-child.task_kind = auto_retry
-child.status = queued | running
-```
-
-Thread/Turn 层已有 Phase 7.21 orphan reconciliation，但它不会重新调度 AgentTask。
-
-### 2. Phase 7.41 恢复原则
-
-Phase 7.41 新增后台 `codex_retry_reconciler`。每 15 秒扫描：
+Phase 7.40 已解决“child 已创建、retry audit 尚未写入时 child 身份丢失”的问题，但完整 retry 流程仍有多个 crash point：
 
 ```text
-task_kind = auto_retry
-status IN (queued, running)
+failed attempt
+  -> structured retry decision
+  -> source terminalize / worktree discard
+  -> create child
+  -> attach child audit
+  -> backoff
+  -> start Provider / Host / Turn
+  -> child terminal result
+  -> project result back to logical root
 ```
 
-扫描是内部跨 owner 调度查询，不改变任何用户/API owner scope。真正接管前必须先取得 logical root 的 crash-safe `flock`。因此多个 Uvicorn Worker 可以同时运行 reconciler，但同一 logical root 只有一个 Worker 能进入恢复路径。
+如果只扫描 `auto_retry child`，Worker 死在“decision 已做出、child 尚未创建”时仍会留下永久 `root=running`。
 
-### 3. 唯一允许自动 replay 的状态
+### 2. Durable retry transition journal
 
-只有同时满足以下条件才自动接管：
+Phase 7.41 新增 `codex_retry_transitions`。当 Phase 7.38 判断 `decision.retry == true` 时，FDEX 在同一个 SQLite `BEGIN IMMEDIATE` 事务中同时写入：
 
-1. `child.task_kind == auto_retry`；
-2. child 仍为 `queued`；
-3. logical root 存在、owner 一致、仍为 `running`；
-4. root 没有 cancellation；
-5. Phase 7.40 主表 lineage 与 Phase 7.39 audit 完全一致：root、parent、attempt index 都匹配；
-6. retry audit 仍为 `queued`；
-7. `started_at` 为空；
-8. `provider_id == 0`；
-9. 当前 attempt 没有 durable Codex Turn；
-10. 原 backoff 已到期。
+- 当前 physical attempt 的失败 decision；
+- `source_attempt_task_id`；
+- `source_attempt_index`；
+- `next_attempt_index`；
+- structured `decision_code / decision_reason`；
+- 原始 backoff；
+- task-local Provider exclusions。
 
-满足后，reconciler 调用 `FdexAgentLoop.run_from_retry_child()`。它不会创建另一套 retry policy，而是重新进入与正常执行完全相同的 `_drive_chain()`。
+这个 transaction **发生在 source terminalize、worktree discard 和 child create 之前**。
 
-### 4. 为什么 running attempt 不自动 replay
+因此一旦系统已经承诺“要执行下一次 retry”，重启后不需要重新解析错误字符串，也不需要猜当时的 Provider/backoff 决策。
 
-即使数据库里暂时还没有 Turn，只要 attempt 已 `running`、retry audit 已 `started` 或 Provider 已被记录，就说明它已经越过 Provider/Host start boundary。
-
-Phase 7.33/7.38 的不变量是：
-
-> started Codex Host / Turn / task / worktree 内不得切换 Provider。
-
-进程死亡后重新启动 Host 时，如果没有一个独立、不可变的 Provider pin，就不能证明新 Host 一定复用原 Provider。因此 Phase 7.41 不把“没有 Turn”误当成“绝对安全”。它会以 `ATTEMPT_ALREADY_STARTED` fail-closed。
-
-如果已有属于这个 physical attempt 的 durable Turn，则状态进一步升级为 `SIDE_EFFECT_UNKNOWN`：模型可能已执行 command/file/tool side effect，因此绝不自动 replay。
-
-### 5. audit 缺失也不猜
-
-Phase 7.40 能保证 child 身份在主 `agent_tasks` 行里原子存在，即使 Worker 死在 `codex_retry_attempts` 写入之前也不会把 child 暴露成普通用户任务。
-
-但 Phase 7.41 不会因此猜测丢失的 Provider exclusion、trigger reason 或 backoff。主 lineage 存在而 retry audit 缺失时：
+### 3. 正常状态机写入顺序
 
 ```text
-RECOVERY_METADATA_MISSING
+decide retry
+    ↓
+atomic: attempt decision + retry transition plan
+    ↓
+terminalize failed child if needed
+    ↓
+discard failed worktree
+    ↓
+create auto_retry child
+    ↓
+attach child_task_id to transition
+    ↓
+write/verify child attempt audit
+    ↓
+wait original backoff
+    ↓
+Provider preflight / Host / Turn
 ```
 
-reconciler 只补一个最小审计行用于说明恢复失败，然后将 child/root fail-closed。
+`FdexAgentLoop._drive_chain()` 和后台 reconciler 使用同一套状态机；reconciler 不是第二个 retry engine。
 
-### 6. cancellation 与 terminal root
+### 4. Root-centric reconciliation
 
-- root 已 `succeeded / failed / canceled`：遗留 child 只会被取消，不会执行；
-- root 已收到 cancel：child 与 root 都按取消路径收口；
-- root 缺失或 lineage 不一致：fail-closed；
-- backoff 未到：保持 queued，等待下次 tick。
+每个 Server Worker 每 15 秒扫描：
 
-### 7. 直接运行内部 child 被禁止
+```text
+logical_root.status = running
+AND logical_root.id = logical_root.logical_root_id
+AND structured retry attempt audit exists
+```
 
-`FdexAgentLoop.run(task_id)` 现在明确拒绝 `task_kind=auto_retry`。
+扫描是内部跨 owner 调度查询，不改变任何用户/API owner scope。真正处理前必须成功获取 logical root 的 crash-safe `flock`。正常执行中的 root 已持有该锁，因此其他 Worker 只会得到 `busy`；只有原 Worker 已退出后，reconciler 才能成为新的唯一执行者。
 
-因此即使 owner 从显式 retry-chain audit API 得到 child task ID，也不能把它通过普通 `/run` 路径伪装成一个新的 logical root。内部 child 只能由：
+普通 `queued` 用户任务不会被扫描。`user / manual_retry / resume / fork` root 如果已经进入 Codex 且 Worker 死亡，可以被 **fail-closed 收口**，但不会自动重放原始 started attempt。
 
-- 正常 Phase 7.38 root execution chain；或
-- Phase 7.41 在取得 root lease 后的 orphan recovery
+### 5. 可以恢复的 crash windows
 
-执行。
+#### A. transition 已提交，child 尚未创建
 
-### 8. 不改变的边界
+reconciler 使用 transition 中的 exact next index、backoff 和 exclusions 完成 source cleanup，然后创建计划中的 `auto_retry` child。
+
+#### B. child 主记录已创建，但 transition attach 尚未完成
+
+Phase 7.40 主表 lineage 能定位唯一的 `(root, parent, attempt_index)` child。reconciler 将它 attach 到 transition，不会再创建第二个 child。
+
+#### C. child 已创建，但 Phase 7.39 child audit 尚未写入
+
+此时 **不会 fail-closed**。transition 已经保存完整 policy metadata，所以 child audit 可以从 transition 精确重建。只有 transition 本身不存在时，FDEX 才拒绝推断。
+
+#### D. 7.40 升级遗留 queued child
+
+如果升级前已经存在：
+
+- immutable `auto_retry` lineage；
+- Phase 7.39 structured child audit；
+- audit 尚未 Provider/Host started；
+
+7.41 可以从这份已有 audit 建立兼容 transition，然后继续恢复。仍然不读取 human error/event text。
+
+#### E. backoff 中 Worker 死亡
+
+backoff 以 durable transition 的 `created_at + backoff_seconds` 为准。未到期时 child 保持 queued；到期后才能执行。
+
+#### F. child 已 terminal，但 root 尚未投影
+
+如果 child 已 durable `succeeded`，reconciler **不重新运行 Codex**，而是调用现有 `complete_logical_root_from_retry()` 把结果、Git metadata 和最终状态投影回 root。
+
+如果 child 已 durable `failed/canceled` 且没有下一 transition，则只收口 logical root，同样不会 replay child。
+
+### 6. 绝不自动 replay 的状态
+
+只要新的 child 已越过 Provider/Host start boundary：
+
+- main task 已 `running`；或
+- audit 有 `started_at`；或
+- `provider_id > 0`；或
+- transition state 已 `started`；
+
+就不能重新启动该 physical attempt。原因是 Phase 7.33/7.38 要求：
+
+> 已启动的 Codex Host / Turn / task / worktree 内不得切换 Provider。
+
+Worker 死亡后如果重新启动 Host，当前没有独立于 attempt audit 的不可变 Provider process pin 可以证明一定复用原 Provider，所以统一 `ATTEMPT_ALREADY_STARTED` fail-closed。
+
+如果该 physical attempt 已有 durable Codex Turn，则风险更高，状态为 `SIDE_EFFECT_UNKNOWN`，因为 command/file/network/tool side effect 可能已经发生。
+
+### 7. 没有 transition 时不猜
+
+如果 root/attempt 已经进入 `running`，但 Worker 在 durable retry transition 提交之前退出：
+
+```text
+ORPHAN_ATTEMPT_NO_TRANSITION
+```
+
+FDEX 会终止 orphan root，而不是重新运行这个 started attempt，也不会根据 `429`、`timeout`、event 文本等推导 retry。
+
+这仍然是 fail-closed，但不会再留下永久 `running` 任务。
+
+### 8. Retry budget 与 lineage 仍是硬边界
+
+transition 必须满足：
+
+```text
+next_attempt_index = source_attempt_index + 1
+1 <= next_attempt_index <= MAX_AUTO_RETRIES
+```
+
+当前 `MAX_AUTO_RETRIES = 2`。任何超预算、重复 attempt index、parent/root 不一致、transition-child 冲突或 audit-policy 不一致都会 fail-closed。
+
+### 9. 内部 child 不能脱离 root 运行
+
+`FdexAgentLoop.run(task_id)` 明确拒绝 `task_kind=auto_retry`。
+
+内部 child 只能由：
+
+- 正常 Phase 7.38 logical-root execution chain；或
+- Phase 7.41 在取得 logical-root lease 后的 orphan reconciliation
+
+执行。即使 owner 从显式 retry-chain audit API 得到 child ID，也不能把它通过普通 `/run` 路径变成新的 logical root。
+
+### 10. 不改变的边界
 
 Phase 7.41 不改变：
 
-- Codex-only Agent Core；
+- official OpenAI Codex 是唯一 Coding Agent Core；
 - Phase 7.33 fresh-full compatibility；
 - Phase 7.37 structured health retry signal；
-- Phase 7.38 最多 2 次自动 retry；
-- 每次 retry 的新 AgentTask / worktree / Host boundary；
-- side-effect replay suppression；
-- GitHub commit/push/PR 仍由 FDEX 持有；
+- Phase 7.38 original + 最多 2 个 retry child；
+- 每次 retry 使用新的 AgentTask / worktree / Host boundary；
+- Provider 不在 started Host 内切换；
+- GitHub commit/push/PR authority 仍由 FDEX 持有；
 - Coding Agent 不回退到 `client_ai`。
 
 ## English summary
 
-Phase 7.41 adds a durable background reconciler for orphaned automatic retry attempts. Every server worker may scan the shared task database, but recovery is serialized by the logical-root crash-safe `flock`. The reconciler only reclaims an `auto_retry` child that is still queued, whose immutable Phase 7.40 lineage matches its Phase 7.39 audit row, whose audit has not selected a Provider or crossed Host start, whose physical attempt has no durable Codex Turn, and whose original backoff has elapsed.
+Phase 7.41 adds a durable retry-transition journal and a logical-root-centric crash reconciler. A retryable Phase 7.38 decision and the exact next-attempt intent are committed atomically before source terminalization, worktree cleanup or child creation. The transition records the source/next attempt indices, structured decision, original backoff and task-local Provider exclusions.
 
-A started attempt is never blindly replayed. Provider/Host-start evidence yields `ATTEMPT_ALREADY_STARTED`; a durable Turn yields `SIDE_EFFECT_UNKNOWN`. Missing audit metadata yields `RECOVERY_METADATA_MISSING`. All of these fail closed because replay would otherwise guess Provider intent or side-effect state. Normal user/manual-retry/resume/fork tasks are never scanned by this reconciler.
+Every worker may scan running logical roots, but the crash-safe root `flock` remains the sole execution authority. The reconciler can safely finish a planned-but-not-created child, attach a child created just before a crash, reconstruct a missing child audit from the durable transition, adopt an already-audited pre-7.41 queued child, respect the remaining backoff, and project an already-terminal child outcome back to the root without rerunning Codex.
 
-Recovered queued children re-enter the existing `FdexAgentLoop._drive_chain()` rather than introducing a second retry engine. Directly invoking `FdexAgentLoop.run()` on an internal `auto_retry` task is rejected, preventing an internal attempt from being detached from its logical-root execution lease.
+A Provider/Host-started physical attempt is never replayed. Such a state fails closed as `ATTEMPT_ALREADY_STARTED`; durable Turn evidence becomes `SIDE_EFFECT_UNKNOWN`. If the worker dies before any durable retry transition exists, the orphan started attempt is terminalized as `ORPHAN_ATTEMPT_NO_TRANSITION` rather than being guessed or left permanently running. Retry budget, immutable task lineage, Provider immutability, Codex-only execution and FDEX-owned Git publication remain unchanged.
