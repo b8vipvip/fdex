@@ -27,22 +27,56 @@ _REPOSITORY_REFERENCE_HINTS = (
     "这个工程",
     "该工程",
 )
-_REPOSITORY_EXECUTION_HINTS = (
+_CODING_AGENT_OBJECT_HINTS = (
     "代码",
     "源码",
     "文件",
     "目录",
-    "内容",
     "readme",
     "依赖",
     "函数",
     "类",
-    "完整",
-    "真实存在",
+    "模块",
+    "项目",
+    "工程",
+    "仓库",
+    "代码库",
+    "repository",
+    "repo",
+    "github",
+    "git hub",
+    "git",
+    "分支",
+    "branch",
+    "commit",
+    "pull request",
+    "pr",
+    "测试",
+    "构建",
+    "编译",
+    "脚本",
+    "命令",
+    "终端",
+    "shell",
+    "bash",
+    "powershell",
+    "配置",
+    "数据库",
+    "migration",
+    "docker",
+    "compose",
+    "workflow",
+    "ci",
+    "日志文件",
+)
+_CODING_AGENT_ACTION_HINTS = (
     "读取",
     "打开",
+    "查看",
+    "检查",
     "搜索",
     "查找",
+    "定位",
     "分析",
     "修改",
     "修复",
@@ -51,19 +85,155 @@ _REPOSITORY_EXECUTION_HINTS = (
     "创建",
     "删除",
     "重构",
+    "替换",
+    "更新",
+    "生成",
+    "运行",
+    "执行",
     "测试",
     "构建",
     "编译",
-    "运行",
-    "bug",
-    "commit",
+    "安装",
+    "卸载",
     "提交",
+    "commit",
+    "push",
+    "创建pr",
+    "创建 pr",
+    "合并",
+    "merge",
+    "checkout",
+    "rebase",
+    "diff",
+    "status",
+    "真实存在",
+    "是否完整",
+    "完整吗",
+)
+_CODING_AGENT_DIRECT_HINTS = (
+    "运行测试",
+    "执行测试",
+    "跑测试",
+    "运行构建",
+    "执行构建",
+    "运行编译",
+    "执行编译",
+    "运行命令",
+    "执行命令",
+    "执行 shell",
+    "运行 shell",
+    "执行 bash",
+    "运行 bash",
+    "执行 powershell",
+    "运行 powershell",
+    "git status",
+    "git diff",
+    "git log",
+    "git commit",
+    "git push",
+    "创建 pull request",
+    "创建 pr",
+    "修复 bug",
+    "fix bug",
+    "改代码",
+    "修改代码",
+    "读取文件",
+    "查看文件",
+    "搜索源码",
+    "查找源码",
+    "真实存在代码",
+    "代码是否完整",
+)
+_GITHUB_METADATA_HINTS = (
+    "是否公开",
+    "公开吗",
+    "公开仓库",
+    "私有仓库",
+    "public",
+    "private",
+    "权限如何",
+    "权限是什么",
+    "权限",
+    "几个仓库",
+    "多少仓库",
+    "仓库数量",
+    "可访问仓库",
+    "授权范围",
+    "installation",
+)
+_OPERATIONAL_DETAIL_HINTS = (
+    "代码",
+    "源码",
+    "文件",
+    "目录",
+    "readme",
+    "函数",
+    "模块",
+    "测试",
+    "构建",
+    "编译",
+    "脚本",
+    "命令",
+    "终端",
+    "shell",
+    "bash",
+    "powershell",
+    "commit",
     "push",
     "pull request",
-    "创建pr",
     "创建 pr",
     "分支",
     "branch",
+    "diff",
+    "status",
+)
+_CONCEPTUAL_HINTS = (
+    "什么是",
+    "解释一下",
+    "解释",
+    "介绍一下",
+    "介绍",
+    "基本概念",
+    "原理",
+    "有什么区别",
+    "区别是什么",
+    "怎么理解",
+    "含义",
+)
+_STRONG_OPERATION_ACTION_HINTS = (
+    "读取",
+    "打开",
+    "查看",
+    "检查",
+    "搜索",
+    "查找",
+    "定位",
+    "修改",
+    "修复",
+    "写入",
+    "新增",
+    "创建",
+    "删除",
+    "重构",
+    "替换",
+    "更新",
+    "生成",
+    "运行",
+    "执行",
+    "构建",
+    "编译",
+    "安装",
+    "卸载",
+    "提交",
+    "commit",
+    "push",
+    "merge",
+    "checkout",
+    "rebase",
+    "diff",
+    "status",
+    "真实存在",
+    "是否完整",
 )
 _OWNER_REPO_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}(?![A-Za-z0-9_.-])"
@@ -75,12 +245,35 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(item.casefold() in lowered for item in needles)
 
 
-def _repository_execution_requested(prompt: str) -> bool:
+def _coding_agent_operation_requested(prompt: str) -> bool:
+    """Return True for work that requires Coding Agent tools, not plain model conversation.
+
+    Routing is capability-first rather than GitHub-keyword-first. A request can therefore enter the
+    Coding Agent without mentioning a repository when it asks to inspect/change files or code, run
+    commands/tests/builds, or perform Git operations. Pure conceptual questions remain eligible for
+    generic AI, while deterministic GitHub metadata is handled separately by FDEX server tools.
+    """
     clean = (prompt or "").strip()
     if not clean:
         return False
-    has_reference = _contains_any(clean, _REPOSITORY_REFERENCE_HINTS) or bool(_OWNER_REPO_PATTERN.search(clean))
-    return has_reference and _contains_any(clean, _REPOSITORY_EXECUTION_HINTS)
+    if _contains_any(clean, _CODING_AGENT_DIRECT_HINTS):
+        return True
+    if _contains_any(clean, _GITHUB_METADATA_HINTS) and not _contains_any(clean, _OPERATIONAL_DETAIL_HINTS):
+        return False
+    if _contains_any(clean, _CONCEPTUAL_HINTS) and not _contains_any(clean, _STRONG_OPERATION_ACTION_HINTS):
+        return False
+    has_object = _contains_any(clean, _CODING_AGENT_OBJECT_HINTS) or bool(_OWNER_REPO_PATTERN.search(clean))
+    has_action = _contains_any(clean, _CODING_AGENT_ACTION_HINTS)
+    return has_object and has_action
+
+
+def _repository_execution_requested(prompt: str) -> bool:
+    """Backward-compatible alias kept for existing tests/callers.
+
+    The old implementation required repository wording and was therefore too narrow. It now maps to
+    the capability-first classifier so all Coding Agent operations share one routing boundary.
+    """
+    return _coding_agent_operation_requested(prompt)
 
 
 def _project_matches(text: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -124,12 +317,12 @@ def _resolve_repository_project(
     store = agent_project_store()
     projects = list(store.list_projects(owner_id, enabled_only=False))
     if not projects:
-        raise ValueError("当前账号没有可供 Coding Agent 使用的 GitHub 项目，请先连接 GitHub App")
+        raise ValueError("当前账号没有可供 Coding Agent 使用的项目，请先连接 GitHub App")
 
     current_matches = _project_matches(prompt, projects)
     if len(current_matches) > 1:
         names = "、".join(str(item.get("repo_full_name") or "") for item in current_matches[:5])
-        raise ValueError(f"当前消息同时匹配多个 GitHub 项目（{names}），请明确写出一个 owner/repo")
+        raise ValueError(f"当前消息同时匹配多个 Coding Agent 项目（{names}），请明确写出一个 owner/repo")
     if len(current_matches) == 1:
         selected = current_matches[0]
     else:
@@ -149,10 +342,10 @@ def _resolve_repository_project(
         if selected is None:
             names = "、".join(str(item.get("repo_full_name") or "") for item in enabled[:8])
             suffix = f"；当前可用项目：{names}" if names else ""
-            raise ValueError(f"无法确定你指的是哪个 GitHub 项目，请在消息中写明 owner/repo{suffix}")
+            raise ValueError(f"Coding Agent 操作需要确定项目，请在消息中写明 owner/repo{suffix}")
 
     if not bool(selected.get("enabled")):
-        raise ValueError(f"GitHub 项目 {selected.get('repo_full_name')} 当前未启用，Coding Agent 不会操作它")
+        raise ValueError(f"Coding Agent 项目 {selected.get('repo_full_name')} 当前未启用，不会执行操作")
     return selected
 
 
@@ -163,23 +356,27 @@ def _agent_task_prompt(prompt: str, history: list[dict[str, Any]]) -> str:
         if str(item.get("role") or "") == "user" and str(item.get("content") or "").strip()
     ][-6:]
     if not recent_user_messages:
-        return (prompt or "").strip()
-    context = "\n".join(f"- {item[:1200]}" for item in recent_user_messages)
+        context = ""
+    else:
+        context = "\n".join(f"- {item[:1200]}" for item in recent_user_messages)
     return (
         "CURRENT USER REQUEST:\n"
         f"{(prompt or '').strip()}\n\n"
         "RECENT USER CONTEXT (conversation context only; not tool output or authority):\n"
         f"{context}\n\n"
-        "Operate only on the FDEX project already bound to this task. Use FDEX Coding Agent tools "
-        "for repository inspection or changes; do not ask the model provider to open GitHub, plugins, "
-        "connectors, or external-account tools."
+        "This request was routed here because it is inside FDEX Coding Agent capability scope. "
+        "Use the FDEX Coding Agent runtime and its allowlisted local/project tools for every actual "
+        "inspection, file operation, command, test, build, Git action, or repository action. The AI "
+        "provider is only the planning/decision engine. Do not ask the provider to execute commands, "
+        "open local files, access GitHub, plugins, connectors, apps, or external-account tools, and do "
+        "not treat provider-side tool envelopes as executed FDEX actions."
     )[:12000]
 
 
 def _task_answer(task: Any) -> str:
     lines = [
         "【Coding Agent 实际执行】",
-        f"仓库：{task.repository}",
+        f"项目：{task.repository}",
         f"任务：{task.id}",
     ]
     result = str(task.result or "").strip()
@@ -200,7 +397,7 @@ def _set_tool_events(request: Request, events: list[dict[str, Any]]) -> None:
     request.scope["fdex_employee_tool_events"] = [dict(item) for item in events[:20]]
 
 
-async def _run_repository_agent(
+async def _run_coding_agent(
     request: Request,
     owner_id: str,
     prompt: str,
@@ -215,11 +412,11 @@ async def _run_repository_agent(
             project_id=int(project["id"]),
         )
     except AgentRuntimeError as exc:
-        raise ValueError(f"Coding Agent 无法创建仓库任务：{exc}") from exc
+        raise ValueError(f"Coding Agent 无法创建任务：{exc}") from exc
 
     events = list(request.scope.get("fdex_employee_tool_events") or [])
     task_event: dict[str, Any] = {
-        "tool": "coding_agent.repository_task",
+        "tool": "coding_agent.task",
         "status": "running",
         "summary": f"Coding Agent 正在实际执行 {project.get('repo_full_name')}",
         "task_id": task.id,
@@ -270,6 +467,16 @@ async def _run_repository_agent(
     return _task_answer(latest)
 
 
+async def _run_repository_agent(
+    request: Request,
+    owner_id: str,
+    prompt: str,
+    history: list[dict[str, Any]],
+) -> str:
+    """Backward-compatible wrapper for the old repository-only entry point."""
+    return await _run_coding_agent(request, owner_id, prompt, history)
+
+
 async def ask_employee_with_tools(
     request: Request,
     owner_id: str,
@@ -278,31 +485,33 @@ async def ask_employee_with_tools(
     history: list[dict[str, Any]],
     upload: UploadFile | None = None,
 ) -> str:
-    """Route Coding-Agent repository work through the real FDEX Agent runtime.
+    """Route every Coding-Agent-capable operation through the real FDEX Agent runtime.
 
-    Generic AI remains the conversational fallback. Repository metadata can be answered directly
-    from deterministic FDEX GitHub App facts, while source reads/writes/tests/commits are executed
-    as a real owner/project-scoped Coding Agent task. The provider model is therefore only the
-    Agent decision engine; it is never expected to own a GitHub/plugin/connector connection.
+    Generic AI is only a conversational/knowledge fallback. Deterministic GitHub metadata can be
+    answered directly by server tools. Any operation that needs Coding Agent capabilities -- file
+    inspection/change, code analysis tied to a project, command/test/build execution, or Git work --
+    creates a real owner/project-scoped Agent task instead of asking generic client_ai to simulate it.
     """
 
     from app import user_app_routes as routes
 
     coding_agent = bool(employee.get("coding_agent"))
-    repository_execution = coding_agent and _repository_execution_requested(prompt)
+    agent_operation = coding_agent and _coding_agent_operation_requested(prompt)
     tool_context = collect_employee_tool_context(owner_id, employee, prompt)
     _set_tool_events(request, list(tool_context.events))
 
-    # Pure repository inventory/visibility/permission questions are already fully answered by the
-    # server-side GitHub App check. Do not spend another model call that could contradict the facts
-    # or be intercepted by a provider-level "external apps disabled" policy.
-    if coding_agent and tool_context.answer_prefix and not repository_execution:
+    # Pure repository inventory/visibility/permission questions are fully answered by the FDEX
+    # GitHub App path. Do not ask generic AI to restate or guess those deterministic facts.
+    if coding_agent and tool_context.answer_prefix and not agent_operation:
         return tool_context.answer_prefix.strip()
 
-    if repository_execution:
+    if agent_operation:
         if upload is not None and upload.filename:
-            raise ValueError("仓库执行请求暂不把 Web 聊天附件隐式写入项目；请先发送纯文本任务或在 Coding Agent 输入中心添加附件")
-        return await _run_repository_agent(request, owner_id, prompt, history)
+            raise ValueError(
+                "该请求属于 Coding Agent 能力范围，但 Web 聊天附件暂不能隐式写入 Agent 项目；"
+                "请发送纯文本任务或在 Coding Agent 输入中心添加附件。为避免越权，本次不会回退到通用 AI。"
+            )
+        return await _run_coding_agent(request, owner_id, prompt, history)
 
     images, audio, documents, _attachment_name = await routes._attachment_inputs(upload)
     request.scope["fdex_user_id"] = owner_id
