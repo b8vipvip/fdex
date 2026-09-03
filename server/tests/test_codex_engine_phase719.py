@@ -90,8 +90,12 @@ def test_protected_paths_are_rejected_before_fdex_commit() -> None:
 
 def test_agent_settings_no_longer_define_or_normalize_engine_modes(monkeypatch) -> None:
     monkeypatch.setenv("FDEX_AGENT_ENGINE", "legacy")
+    monkeypatch.setenv("FDEX_AGENT_MAX_STEPS", "29")
+    monkeypatch.setenv("FDEX_AGENT_MODEL_MAX_TOKENS", "3999")
     settings = Settings(_env_file=None)
     assert not hasattr(settings, "fdex_agent_engine")
+    assert not hasattr(settings, "fdex_agent_max_steps")
+    assert not hasattr(settings, "fdex_agent_model_max_tokens")
     assert not hasattr(codex_engine, "normalize_engine_mode")
 
 
