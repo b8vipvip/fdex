@@ -150,54 +150,43 @@
 
   window.fetch = async function fdexLoggedFetch(input, init = {}) {
     const started = performance.now();
-    let url = '';
+    let parsed;
     let method = 'GET';
     try {
-      if (input instanceof Request) {
-        url = input.url;
-        method = String(init.method || input.method || 'GET').toUpperCase();
-      } else {
-        url = String(input || '');
-        method = String(init.method || 'GET').toUpperCase();
-      }
-      const parsed = new URL(url, window.location.href);
-      const sameOrigin = parsed.origin === window.location.origin;
-      const shouldLog = sameOrigin && parsed.pathname !== ENDPOINT;
-      try {
-        const response = await originalFetch(input, init);
-        if (shouldLog) {
-          const elapsedMs = Math.round(performance.now() - started);
-          const level = response.status >= 500 ? 'error' : response.status >= 400 || elapsedMs >= 5000 ? 'warn' : 'info';
-          append(level, 'web_network', 'fetch_complete', `${method} ${parsed.pathname} -> HTTP ${response.status}`, {
-            method,
-            path: parsed.pathname,
-            status: response.status,
-            ok: response.ok,
-            redirected: response.redirected,
-            elapsed_ms: elapsedMs,
-          });
-        }
-        return response;
-      } catch (error) {
-        if (shouldLog) {
-          append('error', 'web_network', 'fetch_exception', `${method} ${parsed.pathname} failed`, {
-            method,
-            path: parsed.pathname,
-            elapsed_ms: Math.round(performance.now() - started),
-            error_type: error?.name || 'Error',
-            error: error?.message || String(error),
-          });
-        }
-        throw error;
-      }
-    } catch (error) {
-      append('error', 'web_network', 'fetch_wrapper_exception', 'Web fetch diagnostics wrapper failed', {
-        method,
-        path: safePath(url),
-        error_type: error?.name || 'Error',
-        error: error?.message || String(error),
-      });
+      const url = input instanceof Request ? input.url : String(input || '');
+      method = String(init.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+      parsed = new URL(url, window.location.href);
+    } catch (_) {
       return originalFetch(input, init);
+    }
+
+    const shouldLog = parsed.origin === window.location.origin && parsed.pathname !== ENDPOINT;
+    try {
+      const response = await originalFetch(input, init);
+      if (shouldLog) {
+        const elapsedMs = Math.round(performance.now() - started);
+        const level = response.status >= 500 ? 'error' : response.status >= 400 || elapsedMs >= 5000 ? 'warn' : 'info';
+        append(level, 'web_network', 'fetch_complete', `${method} ${parsed.pathname} -> HTTP ${response.status}`, {
+          method,
+          path: parsed.pathname,
+          status: response.status,
+          ok: response.ok,
+          redirected: response.redirected,
+          elapsed_ms: elapsedMs,
+        });
+      }
+      return response;
+    } catch (error) {
+      if (shouldLog) {
+        append('error', 'web_network', 'fetch_exception', `${method} ${parsed.pathname} failed`, {
+          method,
+          path: parsed.pathname,
+          elapsed_ms: Math.round(performance.now() - started),
+          error_type: error?.name || 'Error',
+          error: error?.message || String(error),
+        });
+      }
+      throw error;
     }
   };
 
