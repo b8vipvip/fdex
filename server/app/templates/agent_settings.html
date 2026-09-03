@@ -6,8 +6,8 @@
 
 {% block content %}
 <section class="panel form-section">
-    <div class="panel-header"><div><h2>Agent Runtime</h2><p>Phase 7.20 直接宿主 OpenAI 官方 Codex <code>app-server</code>；API Key/模型仍统一来自 FDEX 的<strong>统一供应商模型池</strong>。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
-    <div class="inline-note success-note">FDEX 不 fork Codex Core。账号、项目、GitHub App、worktree、审计、Provider 与远程写权限继续由 <strong>FDEX</strong> 控制；Codex 官方 Runtime 负责 Thread / Turn / Item、执行、补丁、沙箱及其原生扩展能力。</div>
+    <div class="panel-header"><div><h2>Codex Runtime</h2><p>Coding Agent 只使用 OpenAI 官方 Codex <code>app-server</code>；API Key/模型仍统一来自 FDEX 的<strong>统一供应商模型池</strong>。</p></div><span class="badge {% if settings.fdex_agent_enabled %}success{% endif %}">{% if settings.fdex_agent_enabled %}已启用{% else %}已关闭{% endif %}</span></div>
+    <div class="inline-note success-note">FDEX 不 fork Codex Core，也不再维护 Legacy/Auto Agent 执行选择。账号、项目、GitHub App、worktree、审计、Provider 与远程写权限继续由 <strong>FDEX</strong> 控制；Agent 权限开启后，任务唯一执行核心就是官方 Codex Runtime。</div>
 
     <div class="content-grid equal" style="margin-top:16px">
         <div class="inline-note {% if codex_status.ready %}success-note{% else %}warning-note{% endif %}">
@@ -16,38 +16,29 @@
             已就绪 · {{ codex_status.runtime_version or '版本未知' }} · {{ codex_status.runtime_source }} · {{ codex_status.provider_name }} / {{ codex_status.model }}<br>
             <span class="muted">Protocol: {{ codex_status.protocol }} · Host: {{ codex_status.sdk_version }}</span>
             {% else %}
-            未就绪：{{ codex_status.reason or '未检测到官方 Codex Runtime 或 Responses 供应商' }}
+            未就绪：{{ codex_status.reason or '未检测到官方 Codex Runtime 或 fresh full-compatible Responses 供应商' }}
             {% endif %}
         </div>
-        <div class="inline-note">
-            <strong>当前引擎：{{ agent_engine }}</strong><br>
-            <span class="muted">legacy=原 FDEX 工具循环；codex=强制官方 Codex；auto=Codex 就绪时优先，否则在任务开始前回退 legacy。</span>
+        <div class="inline-note success-note">
+            <strong>唯一执行核心：OpenAI Codex Core</strong><br>
+            <span class="muted">不存在 legacy/auto 回退。Codex Runtime 或 Provider rollout 未就绪时任务直接 fail-closed，不会切到旧 FDEX Agent 或普通 AI。</span>
         </div>
     </div>
 
     <form method="post" action="/admin/agent" class="form-stack" data-confirm="保存后 FDEX 服务会自动重启。确定继续吗？" style="margin-top:16px">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="checkbox-field aligned"><input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}><span>启用 Coding Agent Runtime</span></label>
-        <label class="field">
-            <span>Coding Agent 执行引擎</span>
-            <select name="fdex_agent_engine">
-                <option value="legacy" {% if agent_engine == 'legacy' %}selected{% endif %}>Legacy FDEX Engine（兼容回退）</option>
-                <option value="codex" {% if agent_engine == 'codex' %}selected{% endif %} {% if not codex_status.ready %}disabled{% endif %}>OpenAI Codex Core{% if not codex_status.ready %}（当前未就绪）{% endif %}</option>
-                <option value="auto" {% if agent_engine == 'auto' %}selected{% endif %}>Auto（优先 Codex，未就绪自动回退）</option>
-            </select>
-            <small>Phase 7.20 已改为直接 app-server JSON-RPC。生产首次升级仍建议保持 Legacy，先完成真实 Responses/tool smoke task，再切换 Codex/Auto。</small>
-        </label>
-        <div class="inline-note">Runtime 解析顺序：<code>FDEX_AGENT_CODEX_BIN</code> → 系统 <code>codex</code> → bundled 官方 Runtime。这样可以采用比 Python SDK 更新的官方 Codex 版本，而不等待 SDK 发布节奏。</div>
+        <label class="checkbox-field aligned"><input type="checkbox" name="fdex_agent_enabled" value="true" {% if settings.fdex_agent_enabled %}checked{% endif %}><span>启用 Coding Agent（OpenAI Codex Core）</span></label>
+        <div class="inline-note">Runtime 解析顺序：<code>FDEX_AGENT_CODEX_BIN</code> → 系统 <code>codex</code> → bundled 官方 Runtime。Phase 7.33 fresh-full Provider smoke gate 继续作为启动条件；它只决定“Codex 能否安全启动”，不再决定是否回退其它引擎。</div>
         <div class="inline-note">每个 FDEX 账号拥有独立 <code>CODEX_HOME</code>，允许同一账号复用 Codex 的 thread/history/skills/hooks/plugin/MCP 本地状态；不同账号绝不共享。服务端 SMTP/GitHub/Admin 密钥不会传给 Codex，Provider API Key 也不会进入 Codex shell 命令环境。</div>
         <div class="inline-note {% if token_ready %}success-note{% else %}warning-note{% endif %}">{% if token_ready %}Agent 注册令牌已配置。新版客户端首次使用它注册账号级凭据，后续不会继续共享此全局令牌。{% else %}Agent 注册令牌尚未就绪，请运行服务器更新脚本。{% endif %}</div>
-        <button class="button primary" type="submit">保存 Runtime 设置</button>
+        <button class="button primary" type="submit">保存 Codex 设置</button>
     </form>
 </section>
 
 <section class="panel form-section">
     <div class="panel-header"><div><h2>执行沙箱资源</h2><p>FDEX 负责账号/项目/task worktree 隔离；官方 Codex Runtime 使用自身 workspace-write/执行策略，FDEX 仍掌握最终 commit/push/PR 权限。</p></div><span class="badge success">空闲 RAM ≈ 0</span></div>
     <div class="content-grid equal">
-        <div><strong>默认单任务内存上限</strong><p class="muted">{{ settings.fdex_agent_sandbox_memory_mb }} MB。现有 FDEX 测试/编译工具继续通过 systemd transient sandbox 执行；Codex 整个进程树的统一 cgroup 约束将在后续 Native Host 阶段继续收口。</p></div>
+        <div><strong>默认单任务内存上限</strong><p class="muted">{{ settings.fdex_agent_sandbox_memory_mb }} MB。Codex 整个进程树由 Phase 7.32 systemd/cgroup v2 资源边界约束。</p></div>
         <div><strong>默认 CPU / 并发</strong><p class="muted">CPU {{ settings.fdex_agent_sandbox_cpu_percent }}% · 全局最多 {{ settings.fdex_agent_sandbox_max_concurrent }} 个构建任务同时执行。</p></div>
     </div>
     <div class="inline-note">项目目录：<code>{{ settings.fdex_agent_sandbox_root }}/owners/&lt;account&gt;/</code>；Codex 用户状态：<code>{{ settings.fdex_agent_codex_home_root }}/&lt;account&gt;/</code>。Thread 可持久化，但账号边界不会改变。</div>
@@ -116,7 +107,7 @@
         <div><strong>账号 / 项目隔离</strong><p class="muted">不同账号使用不同 owner/CODEX_HOME/GitHub 凭据；不同项目不共用 repository/worktree。Codex 只收到当前任务 worktree。</p></div>
         <div><strong>密钥隔离</strong><p class="muted">Codex 子进程经过 FDEX 环境清洗；GitHub/SMTP/Admin 等服务密钥不会继承，模型 API Key 仅供 Codex Runtime 调用上游，shell 工具环境明确不继承它。</p></div>
         <div><strong>GitHub 写权限</strong><p class="muted">Codex 被明确禁止直接 push/PR。只有任务结束后，FDEX 根据项目 allow_push/allow_pr 决定是否使用账号自己的 GitHub App 权限推送 <code>fdex-agent/*</code> 分支。</p></div>
-        <div><strong>交互式权限</strong><p class="muted">原生协议已经接收审批、权限请求、MCP elicitation、用户输入等 server request；在 FDEX UI 决策桥完成前全部 fail-closed，不能由 Codex 自行扩大权限。</p></div>
+        <div><strong>交互式权限</strong><p class="muted">原生协议已经接收审批、权限请求、MCP elicitation、用户输入等 server request；FDEX 的 owner/project policy 仍是上限，用户审批不能越过宿主安全边界。</p></div>
         <div><strong>保护路径</strong><p class="muted">Codex 结果在提交前再次扫描；若触碰 <code>.env</code>、<code>server/data</code> 或 <code>.git</code> 内部路径，FDEX 会阻止 commit/push。</p></div>
     </div>
 </section>

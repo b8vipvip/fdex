@@ -10,7 +10,7 @@ from starlette.responses import Response
 
 from app.agent_projects import agent_project_store
 from app.audit import write_audit
-from app.codex_engine import codex_runtime_status, normalize_engine_mode
+from app.codex_engine import codex_runtime_status
 from app.codex_runtime_admin_routes import router as codex_runtime_admin_router
 from app.codex_subagent_admin_routes import router as codex_subagent_admin_router
 from app.config import SERVER_DIR, fresh_settings, get_settings
@@ -50,7 +50,6 @@ def agent_settings_page(request: Request) -> Response:
             connections=store.list_connections(owner_id),
             projects=store.list_projects(owner_id),
             codex_status=codex_runtime_status(),
-            agent_engine=normalize_engine_mode(settings.fdex_agent_engine),
         ),
     )
 
@@ -60,38 +59,32 @@ def save_agent_settings(
     request: Request,
     csrf_token: str = Form(...),
     fdex_agent_enabled: str | None = Form(None),
-    fdex_agent_engine: str = Form("legacy"),
 ) -> Response:
     if not is_admin(request): return _login_redirect()
     verify_csrf(request, csrf_token)
     enabled = fdex_agent_enabled == "true"; settings_before = fresh_settings()
-    requested_engine = (fdex_agent_engine or "legacy").strip().lower()
-    if requested_engine not in {"legacy", "codex", "auto"}:
-        set_flash(request, "Coding Agent 引擎设置无效。", "error")
-        return RedirectResponse("/admin/agent", status_code=303)
-    if requested_engine == "codex":
-        status = codex_runtime_status()
-        if not bool(status.get("ready")):
-            set_flash(request, f"不能切换到 Codex：{status.get('reason') or 'Codex 未就绪'}", "error")
-            return RedirectResponse("/admin/agent", status_code=303)
-    write_env(
-        {
-            "FDEX_AGENT_ENABLED": "true" if enabled else "false",
-            "FDEX_AGENT_ENGINE": requested_engine,
-        }
-    )
+    status = codex_runtime_status()
+    write_env({"FDEX_AGENT_ENABLED": "true" if enabled else "false"})
     get_settings.cache_clear()
     write_audit(
         request,
         "save_agent_settings",
         enabled=enabled,
         previous_enabled=settings_before.fdex_agent_enabled,
-        engine=requested_engine,
-        previous_engine=normalize_engine_mode(settings_before.fdex_agent_engine),
+        engine="codex",
+        codex_ready=bool(status.get("ready")),
     )
     try:
         task = schedule_service_restart(fresh_settings()); write_audit(request, "restart_after_agent_settings", task=task)
-        set_flash(request, f"Coding Agent {'已启用' if enabled else '已关闭'}，引擎={requested_engine}；服务将在约 2 秒后自动重启并应用设置。")
+        if enabled and not bool(status.get("ready")):
+            detail = str(status.get("reason") or "Codex 未就绪")
+            set_flash(
+                request,
+                f"Coding Agent 已启用，唯一执行核心为 OpenAI Codex；当前 Codex 尚未就绪：{detail}。任务会 fail-closed，不会回退旧 Agent 或普通 AI。服务将在约 2 秒后自动重启。",
+                "error",
+            )
+        else:
+            set_flash(request, f"Coding Agent {'已启用' if enabled else '已关闭'}；执行核心固定为 OpenAI Codex。服务将在约 2 秒后自动重启并应用设置。")
     except (ValueError, RuntimeError) as exc:
         write_audit(request, "restart_after_agent_settings", success=False, error=str(exc)); set_flash(request, f"Coding Agent 设置已保存，但自动重启失败：{exc}。请到“版本与维护”手动重启服务。", "error")
     return RedirectResponse("/admin/agent", status_code=303)

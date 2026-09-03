@@ -43,11 +43,13 @@ def test_rollout_installer_rebinds_every_preimported_codex_gate(
     assert codex_host_runtime.select_codex_provider is verified_provider
 
 
-def test_admin_engine_switch_source_uses_rebound_status_symbol() -> None:
+def test_admin_agent_settings_uses_rollout_status_without_engine_switch() -> None:
     source = agent_admin_routes.__file__
     assert source is not None
     text = open(source, encoding="utf-8").read()
 
     assert "codex_status=codex_runtime_status()" in text
     assert "status = codex_runtime_status()" in text
-    assert 'if requested_engine == "codex":' in text
+    assert "requested_engine" not in text
+    assert "FDEX_AGENT_ENGINE" not in text
+    assert 'engine="codex"' in text

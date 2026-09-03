@@ -163,24 +163,14 @@ def test_loopback_smoke_capability_is_hashed_scoped_and_records_exact_tool_call(
 
     wrong = smoke_mcp._handle_one(
         token,
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "fdex_smoke_echo", "arguments": {"marker": "WRONG"}},
-        },
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "fdex_smoke_echo", "arguments": {"marker": "WRONG"}}},
     )
     assert wrong and wrong["result"]["isError"] is True
     assert store.smoke_capability(token)["call_count"] == 0
 
     correct = smoke_mcp._handle_one(
         token,
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {"name": "fdex_smoke_echo", "arguments": {"marker": "MARKER-733"}},
-        },
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "fdex_smoke_echo", "arguments": {"marker": "MARKER-733"}}},
     )
     assert correct and correct["result"]["isError"] is False
     state = store.smoke_capability(token)
@@ -233,7 +223,7 @@ def test_no_full_provider_means_codex_not_selected(monkeypatch: pytest.MonkeyPat
     assert rollout.rollout_selection(_runtime())["provider"] is None
 
 
-def test_phase733_smoke_and_failover_are_evidence_based_and_pre_start_only() -> None:
+def test_phase733_smoke_and_failover_are_evidence_based_and_codex_only() -> None:
     root = Path(__file__).parents[1] / "app"
     smoke = (root / "codex_provider_smoke.py").read_text(encoding="utf-8")
     rollout_source = (root / "codex_provider_rollout.py").read_text(encoding="utf-8")
@@ -250,12 +240,13 @@ def test_phase733_smoke_and_failover_are_evidence_based_and_pre_start_only() -> 
     assert "never switches Providers inside" in rollout_source
     assert "fresh full" in rollout_source
 
-    # auto may fall back only before run_codex_task is entered. There is no catch around a started
-    # Codex Host that resumes the legacy loop on the same worktree.
-    helper = agent_loop.split("async def _maybe_run_official_codex", 1)[1].split("class FdexAgentLoop", 1)[0]
-    assert "if mode == \"auto\"" in helper
-    assert "await run_codex_task(runtime, task_id)" in helper
-    assert "except" not in helper
+    assert "run_codex_task" in agent_loop
+    assert "codex_runtime_status" in agent_loop
+    assert "engine.fallback" not in agent_loop
+    assert "route_text" not in agent_loop
+    assert "model_call" not in agent_loop
+    assert "legacy" in agent_loop.lower()  # explanatory migration comment only
+    assert "if mode" not in agent_loop
 
 
 def test_phase733_admin_and_main_wiring_never_render_plain_api_key() -> None:

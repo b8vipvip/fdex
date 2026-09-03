@@ -1,90 +1,82 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import subprocess
 from pathlib import Path
 
-from app.agent_loop import FdexAgentLoop, parse_decision
+from app.agent_loop import FdexAgentLoop
 from app.agent_runtime import FdexAgentRuntime
 
 
-def _init_repo(path: Path) -> None:
-    subprocess.run(["git", "init"], cwd=path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "FDEX Test"], cwd=path, check=True)
-    (path / "README.md").write_text("# fdex agent test\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-
-def test_parse_decision_accepts_only_allowlisted_tool() -> None:
-    decision = parse_decision(
-        json.dumps({"action": "tool", "tool": "git_status", "summary": "Inspecting repository"}),
-        ("git_status",),
-    )
-    assert decision.tool == "git_status"
-
-
-def test_agent_loop_runs_tool_then_finishes(tmp_path: Path) -> None:
-    _init_repo(tmp_path)
-    runtime = FdexAgentRuntime(workspace=tmp_path)
+def _runtime(tmp_path: Path) -> FdexAgentRuntime:
+    runtime = FdexAgentRuntime(workspace=tmp_path, worktree_root=tmp_path / "worktrees")
     runtime.enabled = True
-    task = asyncio.run(runtime.create_task("inspect repository state"))
-    responses = iter(
-        [
-            json.dumps({"action": "tool", "tool": "git_status", "summary": "Checking repository status"}),
-            json.dumps({"action": "final", "answer": "Repository is clean.", "summary": "Inspection complete"}),
-        ]
+    return runtime
+
+
+def test_agent_entry_always_uses_official_codex(monkeypatch, tmp_path: Path) -> None:
+    from app import codex_engine, codex_host_entry
+
+    runtime = _runtime(tmp_path)
+    task = asyncio.run(runtime.create_task("explain the current project"))
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        codex_engine,
+        "codex_runtime_status",
+        lambda: {"ready": True, "reason": "", "runtime_version": "test"},
     )
-    prompts: list[str] = []
 
-    async def fake_model(system: str, prompt: str, max_tokens: int) -> str:
-        assert "shared provider-management pool" in system
-        assert "shell access" in system
-        assert max_tokens >= 128
-        prompts.append(prompt)
-        return next(responses)
+    async def fake_codex(runtime_arg: FdexAgentRuntime, task_id: str) -> None:
+        assert runtime_arg is runtime
+        calls.append(task_id)
+        await runtime_arg.complete_task(task_id, "handled by official Codex")
 
-    asyncio.run(FdexAgentLoop(runtime, model_call=fake_model, max_steps=3).run(task.id))
+    monkeypatch.setattr(codex_host_entry, "run_codex_task", fake_codex)
+
+    asyncio.run(FdexAgentLoop(runtime).run(task.id))
     completed = asyncio.run(runtime.get_task(task.id))
+
+    assert calls == [task.id]
     assert completed is not None
     assert completed.status == "succeeded"
-    assert completed.result == "Repository is clean."
-    assert any(event.type == "tool.completed" for event in completed.events)
-    assert any(event.type == "agent.progress" for event in completed.events)
-    assert "TOOL: git_status" in prompts[1]
-    assert "OWNER SCOPE:" in prompts[0]
+    assert completed.result == "handled by official Codex"
 
 
-def test_agent_loop_rejects_model_tool_escalation(tmp_path: Path) -> None:
-    _init_repo(tmp_path)
-    runtime = FdexAgentRuntime(workspace=tmp_path)
-    runtime.enabled = True
-    task = asyncio.run(runtime.create_task("delete everything"))
+def test_agent_entry_fails_closed_when_codex_is_not_ready(monkeypatch, tmp_path: Path) -> None:
+    from app import codex_engine, codex_host_entry
 
-    async def fake_model(system: str, prompt: str, max_tokens: int) -> str:
-        return json.dumps({"action": "tool", "tool": "shell", "summary": "Trying shell"})
+    runtime = _runtime(tmp_path)
+    task = asyncio.run(runtime.create_task("run tests"))
+    called = False
 
-    asyncio.run(FdexAgentLoop(runtime, model_call=fake_model, max_steps=2).run(task.id))
+    monkeypatch.setattr(
+        codex_engine,
+        "codex_runtime_status",
+        lambda: {"ready": False, "reason": "Provider has no fresh full Codex proof"},
+    )
+
+    async def forbidden_codex(*_args, **_kwargs) -> None:
+        nonlocal called
+        called = True
+        raise AssertionError("Codex host must not start before rollout readiness")
+
+    monkeypatch.setattr(codex_host_entry, "run_codex_task", forbidden_codex)
+
+    asyncio.run(FdexAgentLoop(runtime).run(task.id))
     failed = asyncio.run(runtime.get_task(task.id))
+
+    assert called is False
     assert failed is not None
     assert failed.status == "failed"
-    assert "disallowed tool" in failed.error
-    assert not any(event.type == "tool.started" for event in failed.events)
+    assert "fresh full" in failed.error
+    assert not any(event.type == "engine.fallback" for event in failed.events)
 
 
-def test_agent_loop_stops_at_step_limit(tmp_path: Path) -> None:
-    _init_repo(tmp_path)
-    runtime = FdexAgentRuntime(workspace=tmp_path)
-    runtime.enabled = True
-    task = asyncio.run(runtime.create_task("keep inspecting"))
-
-    async def fake_model(system: str, prompt: str, max_tokens: int) -> str:
-        return json.dumps({"action": "tool", "tool": "git_status", "summary": "Inspecting again"})
-
-    asyncio.run(FdexAgentLoop(runtime, model_call=fake_model, max_steps=2).run(task.id))
-    failed = asyncio.run(runtime.get_task(task.id))
-    assert failed is not None
-    assert failed.status == "failed"
-    assert "maximum steps (2)" in failed.error
+def test_agent_loop_api_no_longer_accepts_legacy_model_loop_injection(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    try:
+        FdexAgentLoop(runtime, model_call=lambda *_args: None)  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:  # pragma: no cover - regression guard
+        raise AssertionError("legacy model_call injection unexpectedly remained available")

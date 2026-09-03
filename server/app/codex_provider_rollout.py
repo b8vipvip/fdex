@@ -159,7 +159,12 @@ def provider_rollout_rows() -> dict[str, Any]:
 
 
 def install_codex_provider_rollout_runtime() -> None:
-    """Install the Phase 7.33 provider gate at every already-imported Codex launch/status seam."""
+    """Install the Provider proof gate at every already-imported Codex launch/status seam.
+
+    Phase 7.36 no longer has an Agent engine switch. This gate now decides only whether the
+    mandatory Codex Host is ready to start. Failure is terminal/fail-closed and never selects a
+    different Agent core.
+    """
     global _installed
     if _installed:
         return
@@ -168,10 +173,8 @@ def install_codex_provider_rollout_runtime() -> None:
     engine.codex_runtime_status = codex_rollout_runtime_status
 
     # These modules imported Codex functions into module globals before the rollout installer runs.
-    # Rebind every such reference once, before FastAPI starts serving requests. In particular,
-    # `agent_admin_routes` must use the rollout-aware status for both rendering and the POST that
-    # permits switching FDEX_AGENT_ENGINE to `codex`; otherwise the admin control plane could
-    # approve Codex from the old configuration-only readiness check.
+    # Rebind every such reference once, before FastAPI starts serving requests, so all user Hosts,
+    # capability-control Hosts and admin readiness surfaces enforce the same fresh-full proof.
     import app.agent_admin_routes as agent_admin
     import app.codex_capability_control as capability
     import app.codex_host_runtime as host
