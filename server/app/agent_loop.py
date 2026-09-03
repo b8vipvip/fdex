@@ -25,8 +25,9 @@ class FdexAgentLoop:
     """Stable Codex-only execution facade with bounded recovery and logical-task projection.
 
     Phase 7.38 owns retry safety. Phase 7.39 adds a structured attempt ledger without changing any
-    retry decision or authority boundary. Internal retry children remain real durable AgentTasks,
-    but the user-facing task stays the logical root and normal task lists hide those children.
+    retry decision or authority boundary. Phase 7.40 makes retry lineage atomic in AgentTask.
+    Phase 7.41 can therefore resume only a durable, not-yet-started ``auto_retry`` child after the
+    former logical-task worker dies, while continuing to use this exact same bounded retry driver.
 
     The legacy FDEX Agent core remains deleted: this facade never selects it and never falls back
     from the official Codex Host to an ordinary AI execution path.
@@ -168,19 +169,15 @@ class FdexAgentLoop:
 
         return await run_retry_child_locked(child, runner)
 
-    async def run(self, task_id: str) -> AgentTask:
-        root = await self.runtime.get_task(task_id)
-        if root is None:
-            raise AgentRuntimeError("task not found")
-        if root.status not in {"queued", "running"}:
-            raise AgentRuntimeError(f"task cannot run from status: {root.status}")
-
-        current, capture = await self._run_one_attempt(
-            root.id,
-            root_task_id=root.id,
-            attempt_index=0,
-        )
-        retry_count = 0
+    async def _drive_chain(
+        self,
+        root: AgentTask,
+        current: AgentTask,
+        capture: RetryAttemptCapture | None,
+        *,
+        retry_count: int,
+    ) -> AgentTask:
+        """Drive the remainder of one bounded logical retry chain from an existing attempt."""
 
         while True:
             if current.status == "succeeded":
@@ -312,3 +309,81 @@ class FdexAgentLoop:
                     code="RETRY_CHILD_BUSY",
                     retry_count=retry_count,
                 )
+
+    async def run(self, task_id: str) -> AgentTask:
+        root = await self.runtime.get_task(task_id)
+        if root is None:
+            raise AgentRuntimeError("task not found")
+        if root.task_kind == "auto_retry":
+            raise AgentRuntimeError(
+                "internal automatic retry tasks cannot be run as logical roots; Phase 7.41 owns orphan recovery"
+            )
+        if root.status not in {"queued", "running"}:
+            raise AgentRuntimeError(f"task cannot run from status: {root.status}")
+
+        current, capture = await self._run_one_attempt(
+            root.id,
+            root_task_id=root.id,
+            attempt_index=0,
+        )
+        return await self._drive_chain(root, current, capture, retry_count=0)
+
+    async def run_from_retry_child(self, task_id: str) -> AgentTask:
+        """Resume a durable queued auto-retry after an external root execution lease is reclaimed.
+
+        This is deliberately stricter than ``run``. The child must still be queued, its immutable
+        Phase 7.40 lineage must match a running logical root, and its Phase 7.39 audit row must prove
+        that Provider/Host execution never started. The background reconciler enforces backoff and
+        owns the root flock before calling this method.
+        """
+
+        child = await self.runtime.get_task(task_id)
+        if child is None:
+            raise AgentRuntimeError("retry child not found")
+        if child.task_kind != "auto_retry":
+            raise AgentRuntimeError("recovery requires an automatic retry task")
+        if child.status != "queued":
+            raise AgentRuntimeError("only a queued automatic retry can be recovered")
+        if not child.logical_root_id or child.logical_root_id == child.id or child.attempt_index < 1:
+            raise AgentRuntimeError("automatic retry lineage is invalid")
+
+        root = await self.runtime.get_task(child.logical_root_id)
+        if root is None or root.owner_id != child.owner_id:
+            raise AgentRuntimeError("logical retry root not found")
+        if root.status != "running" or root.cancel_requested:
+            raise AgentRuntimeError("logical retry root is not recoverable")
+
+        ledger = codex_retry_chain_store()
+        audit = await asyncio.to_thread(ledger.get_attempt, child.owner_id, child.id)
+        if audit is None:
+            raise AgentRuntimeError("automatic retry audit metadata is missing")
+        if (
+            str(audit.get("root_task_id") or "") != root.id
+            or str(audit.get("parent_task_id") or "") != child.parent_task_id
+            or int(audit.get("attempt_index") or -1) != child.attempt_index
+        ):
+            raise AgentRuntimeError("automatic retry audit metadata does not match primary lineage")
+        if (
+            str(audit.get("state") or "").lower() != "queued"
+            or str(audit.get("started_at") or "")
+            or int(audit.get("provider_id") or 0) > 0
+        ):
+            raise AgentRuntimeError("automatic retry already crossed the Provider/Host start boundary")
+
+        excluded = frozenset(
+            int(item)
+            for item in list(audit.get("excluded_provider_ids") or [])
+            if isinstance(item, int) and item > 0
+        )
+        current, capture = await self._run_retry_child(
+            child,
+            root_task_id=root.id,
+            attempt_index=child.attempt_index,
+            excluded_provider_ids=excluded,
+        )
+        return await self._drive_chain(
+            root,
+            current,
+            capture,
+            retry_count=child.attempt_index,
+        )
