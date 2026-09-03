@@ -143,8 +143,8 @@ def test_phase737_admin_console_wiring_and_polling_contract() -> None:
     assert "const pollMs = 5000" in script
     assert "'/admin/agent/health.json'" in script
     assert "'/admin/agent/health/check'" in script
-    assert '@router.get(".json"' in routes
-    assert '@router.post("/check"' in routes
+    assert '@router.get("/health.json"' in routes
+    assert '@router.post("/health/check"' in routes
 
 
 def test_phase737_monitor_source_never_serializes_provider_secrets() -> None:
