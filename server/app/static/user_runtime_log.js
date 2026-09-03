@@ -12,6 +12,7 @@
   const MAX_ENTRIES = 400;
   const MAX_STORAGE_CHARS = 512 * 1024;
   const BATCH_SIZE = 50;
+  const KEEPALIVE_BATCH_SIZE = 10;
   const FLUSH_INTERVAL_MS = 30_000;
   const originalFetch = window.fetch.bind(window);
   let queue = [];
@@ -103,7 +104,8 @@
 
   async function flush(keepalive = false) {
     if (flushPromise || queue.length === 0 || !navigator.onLine) return flushPromise || 0;
-    const batch = queue.slice(0, BATCH_SIZE);
+    const batchLimit = keepalive ? KEEPALIVE_BATCH_SIZE : BATCH_SIZE;
+    const batch = queue.slice(0, batchLimit);
     const payload = {
       device_name: browserLabel(),
       platform: 'web',
@@ -189,6 +191,31 @@
       throw error;
     }
   };
+
+  if (typeof window.EventSource === 'function') {
+    const NativeEventSource = window.EventSource;
+    class FdexLoggedEventSource extends NativeEventSource {
+      constructor(url, options) {
+        const started = performance.now();
+        super(url, options);
+        const path = safePath(url);
+        this.addEventListener('open', () => {
+          append('info', 'web_sse', 'eventsource_open', 'Web SSE connection opened', {
+            path,
+            elapsed_ms: Math.round(performance.now() - started),
+            ready_state: this.readyState,
+          });
+        });
+        this.addEventListener('error', () => {
+          append(this.readyState === NativeEventSource.CLOSED ? 'error' : 'warn', 'web_sse', 'eventsource_error', 'Web SSE connection error/reconnect', {
+            path,
+            ready_state: this.readyState,
+          });
+        });
+      }
+    }
+    window.EventSource = FdexLoggedEventSource;
+  }
 
   window.addEventListener('error', (event) => {
     const target = event.target;
