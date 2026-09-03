@@ -8,14 +8,14 @@ from app.audit import write_audit
 from app.codex_agent_health import codex_agent_health_snapshot, run_codex_agent_health_check
 from app.security import is_admin, verify_csrf
 
-router = APIRouter(prefix="/admin/agent/health", include_in_schema=False)
+router = APIRouter(prefix="/admin/agent", include_in_schema=False)
 
 
 def _unauthorized() -> JSONResponse:
     return JSONResponse({"ok": False, "error": "admin authentication required"}, status_code=401)
 
 
-@router.get(".json", response_model=None)
+@router.get("/health.json", response_model=None)
 def agent_health_json(request: Request) -> Response:
     if not is_admin(request):
         return _unauthorized()
@@ -24,7 +24,7 @@ def agent_health_json(request: Request) -> Response:
     return response
 
 
-@router.post("/check", response_model=None)
+@router.post("/health/check", response_model=None)
 async def agent_health_check(
     request: Request,
     csrf_token: str = Form(...),
