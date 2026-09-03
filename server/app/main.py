@@ -64,6 +64,11 @@ install_provider_protocol_runtime()
 # tested without creating a circular "must already be unlocked to run the unlock test" dependency.
 install_codex_provider_rollout_runtime()
 
+# Phase 7.37 consumes the already-installed rollout selector. The background monitor never changes
+# Agent routing or unlocks a Provider; it only persists Runtime/Host/isolation/live-network/full-smoke
+# health snapshots for the admin console and later bounded-retry policy.
+from app.codex_agent_health import start_codex_agent_health_monitor, stop_codex_agent_health_monitor
+from app.codex_agent_health_admin_routes import router as codex_agent_health_admin_router
 from app.user_app_routes import router as user_app_router
 from app.agent_identity_runtime import install_agent_identity_runtime
 
@@ -180,6 +185,7 @@ app.include_router(github_app_admin_router)
 app.include_router(mail_admin_router)
 app.include_router(user_admin_router)
 app.include_router(agent_admin_router)
+app.include_router(codex_agent_health_admin_router)
 app.include_router(codex_provider_admin_router)
 app.include_router(update_monitor_router)
 app.include_router(provider_admin_router)
@@ -195,6 +201,7 @@ app.include_router(agent_router)
 @app.on_event("startup")
 async def start_security_cleanup_tasks() -> None:
     await start_github_app_flow_cleanup()
+    await start_codex_agent_health_monitor()
     # Leases are short-lived and raw tokens are never stored, but reconcile expired rows on each
     # process start so a worker crash cannot leave durable state that still looks active.
     remote_mcp_lease_store().purge_expired()
@@ -202,6 +209,7 @@ async def start_security_cleanup_tasks() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_memory_clients() -> None:
+    await stop_codex_agent_health_monitor()
     await stop_github_app_flow_cleanup()
     await close_memory_coordinator()
 
