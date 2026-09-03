@@ -243,14 +243,26 @@ class FdexAgentLoop:
                 await terminalize_task_failure(self.runtime, current.id, error)
 
             await discard_failed_attempt_worktree(self.runtime, current)
+            next_index = retry_count + 1
             child = await create_auto_retry_child(
                 self.runtime,
                 current,
-                root_task_id=root.id,
-                retry_number=retry_count + 1,
+                retry_number=next_index,
                 decision=decision,
             )
-            retry_count += 1
+            await asyncio.to_thread(
+                codex_retry_chain_store().record_queued,
+                owner_id=child.owner_id,
+                root_task_id=root.id,
+                attempt_task_id=child.id,
+                parent_task_id=current.id,
+                attempt_index=next_index,
+                trigger_code=decision.code,
+                trigger_reason=decision.reason,
+                backoff_seconds=decision.delay_seconds,
+                excluded_provider_ids=decision.excluded_provider_ids,
+            )
+            retry_count = next_index
 
             await asyncio.sleep(max(0.0, float(decision.delay_seconds)))
             if await asyncio.to_thread(self.runtime.task_store.cancel_requested, root.id):
