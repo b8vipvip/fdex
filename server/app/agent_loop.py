@@ -5,6 +5,7 @@ import asyncio
 from app.agent_runtime import AgentRuntimeError, AgentTask, FdexAgentRuntime
 from app.codex_retry_chain_store import codex_retry_chain_store
 from app.codex_retry_controller import (
+    MAX_AUTO_RETRIES,
     RetryAttemptCapture,
     capture_codex_attempt,
     complete_logical_root_from_retry,
@@ -22,12 +23,12 @@ install_codex_retry_failure_capture()
 
 
 class FdexAgentLoop:
-    """Stable Codex-only execution facade with bounded recovery and logical-task projection.
+    """Stable Codex-only execution facade with bounded durable recovery.
 
-    Phase 7.38 owns retry safety. Phase 7.39 adds a structured attempt ledger without changing any
-    retry decision or authority boundary. Phase 7.40 makes retry lineage atomic in AgentTask.
-    Phase 7.41 can therefore resume only a durable, not-yet-started ``auto_retry`` child after the
-    former logical-task worker dies, while continuing to use this exact same bounded retry driver.
+    Phase 7.38 owns retry policy, Phase 7.39 the structured attempt audit, Phase 7.40 immutable
+    task lineage, and Phase 7.41 the crash-recoverable transition journal. A retryable decision and
+    its exact next-attempt intent are committed before any source cleanup or child creation, so a
+    replacement worker can continue the same bounded state machine without inventing policy.
 
     The legacy FDEX Agent core remains deleted: this facade never selects it and never falls back
     from the official Codex Host to an ordinary AI execution path.
@@ -179,6 +180,7 @@ class FdexAgentLoop:
     ) -> AgentTask:
         """Drive the remainder of one bounded logical retry chain from an existing attempt."""
 
+        ledger = codex_retry_chain_store()
         while True:
             if current.status == "succeeded":
                 if current.id == root.id:
@@ -220,14 +222,14 @@ class FdexAgentLoop:
                 retry_number=retry_count + 1,
                 failed_provider_id=capture.provider_id,
             )
-            await self._record_attempt_decision(
-                current,
-                state="failed",
-                code=decision.code,
-                reason=decision.reason,
-                error=error,
-            )
             if not decision.retry:
+                await self._record_attempt_decision(
+                    current,
+                    state="failed",
+                    code=decision.code,
+                    reason=decision.reason,
+                    error=error,
+                )
                 return await finalize_logical_root_failure(
                     self.runtime,
                     root,
@@ -237,13 +239,30 @@ class FdexAgentLoop:
                     retry_count=retry_count,
                 )
 
+            next_index = retry_count + 1
+            # Phase 7.41 crash fence: persist the failed-attempt decision and the complete next
+            # retry intent in one SQLite transaction *before* source terminalization, worktree
+            # cleanup or child creation. Every later state can therefore be reconstructed exactly.
+            await asyncio.to_thread(
+                ledger.record_retry_plan,
+                owner_id=current.owner_id,
+                root_task_id=root.id,
+                source_attempt_task_id=current.id,
+                source_attempt_index=retry_count,
+                next_attempt_index=next_index,
+                decision_code=decision.code,
+                decision_reason=decision.reason,
+                error=error,
+                backoff_seconds=decision.delay_seconds,
+                excluded_provider_ids=decision.excluded_provider_ids,
+            )
+
             # Child attempts are durable audit records. The logical root deliberately remains
             # non-terminal until the bounded chain has one final success/failure outcome.
             if current.id != root.id:
                 await terminalize_task_failure(self.runtime, current.id, error)
 
             await discard_failed_attempt_worktree(self.runtime, current)
-            next_index = retry_count + 1
             child = await create_auto_retry_child(
                 self.runtime,
                 current,
@@ -251,7 +270,13 @@ class FdexAgentLoop:
                 decision=decision,
             )
             await asyncio.to_thread(
-                codex_retry_chain_store().record_queued,
+                ledger.attach_transition_child,
+                owner_id=child.owner_id,
+                source_attempt_task_id=current.id,
+                child_task_id=child.id,
+            )
+            await asyncio.to_thread(
+                ledger.record_queued,
                 owner_id=child.owner_id,
                 root_task_id=root.id,
                 attempt_task_id=child.id,
@@ -276,6 +301,12 @@ class FdexAgentLoop:
                     code="TASK_CANCELED",
                     reason="logical root was canceled during automatic retry backoff",
                     error="Coding Agent task canceled during automatic retry backoff",
+                )
+                await asyncio.to_thread(
+                    ledger.mark_transition_state,
+                    owner_id=current.owner_id,
+                    source_attempt_task_id=current.id,
+                    state="canceled",
                 )
                 return await finalize_logical_root_failure(
                     self.runtime,
@@ -329,13 +360,7 @@ class FdexAgentLoop:
         return await self._drive_chain(root, current, capture, retry_count=0)
 
     async def run_from_retry_child(self, task_id: str) -> AgentTask:
-        """Resume a durable queued auto-retry after an external root execution lease is reclaimed.
-
-        This is deliberately stricter than ``run``. The child must still be queued, its immutable
-        Phase 7.40 lineage must match a running logical root, and its Phase 7.39 audit row must prove
-        that Provider/Host execution never started. The background reconciler enforces backoff and
-        owns the root flock before calling this method.
-        """
+        """Resume a durable queued auto-retry after an external root execution lease is reclaimed."""
 
         child = await self.runtime.get_task(task_id)
         if child is None:
@@ -344,8 +369,13 @@ class FdexAgentLoop:
             raise AgentRuntimeError("recovery requires an automatic retry task")
         if child.status != "queued":
             raise AgentRuntimeError("only a queued automatic retry can be recovered")
-        if not child.logical_root_id or child.logical_root_id == child.id or child.attempt_index < 1:
-            raise AgentRuntimeError("automatic retry lineage is invalid")
+        if (
+            not child.logical_root_id
+            or child.logical_root_id == child.id
+            or child.attempt_index < 1
+            or child.attempt_index > MAX_AUTO_RETRIES
+        ):
+            raise AgentRuntimeError("automatic retry lineage or retry budget is invalid")
 
         root = await self.runtime.get_task(child.logical_root_id)
         if root is None or root.owner_id != child.owner_id:
