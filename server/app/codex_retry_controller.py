@@ -310,11 +310,15 @@ async def create_auto_retry_child(
 ) -> AgentTask:
     """Create a fresh AgentTask/worktree boundary and preserve context by safe fork."""
 
+    logical_root_id = str(source.logical_root_id or source.id)
     child = await runtime.create_task(
         source.prompt,
         owner_id=source.owner_id,
         project_id=source.project_id,
         parent_task_id=source.id,
+        task_kind="auto_retry",
+        logical_root_id=logical_root_id,
+        attempt_index=retry_number,
     )
     child.emit(
         "retry.auto_attempt",
