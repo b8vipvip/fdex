@@ -53,20 +53,17 @@ class Settings(BaseSettings):
     fdex_imap_starttls: bool = False
     fdex_imap_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
-    # Legacy one-provider fields are retained only for migration. Runtime AI traffic,
-    # including Coding Agent, is routed through the encrypted provider pool.
+    # Legacy one-provider fields are retained only for migration. Runtime AI traffic is routed
+    # through the encrypted provider pool. Coding Agent execution itself is Codex-only.
     ai_provider: str = "openai_compatible"
     ai_base_url: str = ""
     ai_api_key: str = ""
     ai_model: str = ""
     ai_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
 
-    # Coding Agent uses the shared provider pool. No Agent-specific AI endpoint/key/model exists.
+    # Coding Agent is an enable/disable capability only. There is no engine selector: when
+    # enabled, every Coding Agent task executes through the official Codex native Host.
     fdex_agent_enabled: bool = True
-    # Phase 7.20 drives the official Codex app-server through native JSON-RPC. legacy is
-    # retained during rollout; codex requires a ready runtime/provider; auto falls back only
-    # before a Codex turn has started.
-    fdex_agent_engine: str = "legacy"
     # Optional operator pin for an official Codex binary. When empty, FDEX tries PATH and
     # then the official bundled openai-codex-cli-bin fallback.
     fdex_agent_codex_bin: str = ""
