@@ -112,6 +112,8 @@ class ClientRuntimeLogStore:
                         ON client_runtime_logs(owner_id, received_at DESC, id DESC);
                     CREATE INDEX IF NOT EXISTS idx_client_runtime_logs_level
                         ON client_runtime_logs(level, received_at DESC, id DESC);
+                    CREATE INDEX IF NOT EXISTS idx_client_runtime_logs_platform
+                        ON client_runtime_logs(platform, received_at DESC, id DESC);
                     """
                 )
             self._initialized = True
@@ -185,6 +187,7 @@ class ClientRuntimeLogStore:
         self,
         *,
         owner_id: str = "",
+        platform: str = "",
         level: str = "",
         component: str = "",
         query: str = "",
@@ -195,6 +198,9 @@ class ClientRuntimeLogStore:
         if owner_id.strip():
             clauses.append("owner_id=?")
             params.append(owner_id.strip())
+        if platform.strip():
+            clauses.append("platform=?")
+            params.append(platform.strip().lower()[:40])
         if level.strip().lower() in _ALLOWED_LEVELS:
             clauses.append("level=?")
             params.append(level.strip().lower())
@@ -202,9 +208,9 @@ class ClientRuntimeLogStore:
             clauses.append("component=?")
             params.append(component.strip()[:120])
         if query.strip():
-            clauses.append("(message LIKE ? OR event LIKE ? OR component LIKE ? OR device_name LIKE ?)")
+            clauses.append("(message LIKE ? OR event LIKE ? OR component LIKE ? OR device_name LIKE ? OR platform LIKE ?)")
             needle = f"%{query.strip()[:120]}%"
-            params.extend([needle, needle, needle, needle])
+            params.extend([needle, needle, needle, needle, needle])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, min(int(limit), 5000)))
         with self.db() as conn:
@@ -237,6 +243,14 @@ class ClientRuntimeLogStore:
                 (max(1, min(limit, 1000)),),
             ).fetchall()
         return [str(row["owner_id"]) for row in rows if str(row["owner_id"])]
+
+    def platforms(self, limit: int = 20) -> list[str]:
+        with self.db() as conn:
+            rows = conn.execute(
+                "SELECT platform,MAX(id) latest FROM client_runtime_logs GROUP BY platform ORDER BY latest DESC LIMIT ?",
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [str(row["platform"]) for row in rows if str(row["platform"])]
 
 
 _store: ClientRuntimeLogStore | None = None
