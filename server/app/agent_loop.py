@@ -27,6 +27,9 @@ class FdexAgentLoop:
     Phase 7.38 owns retry safety. Phase 7.39 adds a structured attempt ledger without changing any
     retry decision or authority boundary. Internal retry children remain real durable AgentTasks,
     but the user-facing task stays the logical root and normal task lists hide those children.
+
+    The legacy FDEX Agent core remains deleted: this facade never selects it and never falls back
+    from the official Codex Host to an ordinary AI execution path.
     """
 
     def __init__(self, runtime: FdexAgentRuntime) -> None:
