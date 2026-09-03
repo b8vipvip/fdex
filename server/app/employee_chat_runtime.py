@@ -187,6 +187,54 @@ _OPERATIONAL_DETAIL_HINTS = (
     "diff",
     "status",
 )
+_CONCEPTUAL_HINTS = (
+    "什么是",
+    "解释一下",
+    "解释",
+    "介绍一下",
+    "介绍",
+    "基本概念",
+    "原理",
+    "有什么区别",
+    "区别是什么",
+    "怎么理解",
+    "含义",
+)
+_STRONG_OPERATION_ACTION_HINTS = (
+    "读取",
+    "打开",
+    "查看",
+    "检查",
+    "搜索",
+    "查找",
+    "定位",
+    "修改",
+    "修复",
+    "写入",
+    "新增",
+    "创建",
+    "删除",
+    "重构",
+    "替换",
+    "更新",
+    "生成",
+    "运行",
+    "执行",
+    "构建",
+    "编译",
+    "安装",
+    "卸载",
+    "提交",
+    "commit",
+    "push",
+    "merge",
+    "checkout",
+    "rebase",
+    "diff",
+    "status",
+    "真实存在",
+    "是否完整",
+)
 _OWNER_REPO_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}(?![A-Za-z0-9_.-])"
 )
@@ -211,6 +259,8 @@ def _coding_agent_operation_requested(prompt: str) -> bool:
     if _contains_any(clean, _CODING_AGENT_DIRECT_HINTS):
         return True
     if _contains_any(clean, _GITHUB_METADATA_HINTS) and not _contains_any(clean, _OPERATIONAL_DETAIL_HINTS):
+        return False
+    if _contains_any(clean, _CONCEPTUAL_HINTS) and not _contains_any(clean, _STRONG_OPERATION_ACTION_HINTS):
         return False
     has_object = _contains_any(clean, _CODING_AGENT_OBJECT_HINTS) or bool(_OWNER_REPO_PATTERN.search(clean))
     has_action = _contains_any(clean, _CODING_AGENT_ACTION_HINTS)
