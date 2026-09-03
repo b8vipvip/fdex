@@ -45,14 +45,21 @@ async def agent_health_check(
         response.headers["Cache-Control"] = "no-store, max-age=0"
         return response
     except Exception as exc:
+        # The health core already sanitizes the errors it persists. Do not reflect an arbitrary
+        # exception string back to the browser or audit log because a transport exception could
+        # theoretically contain request metadata supplied by a third-party Provider.
         write_audit(
             request,
             "codex_agent_health_manual_check",
             success=False,
-            error=str(exc)[:700],
+            error_type=type(exc).__name__,
         )
         response = JSONResponse(
-            {"ok": False, "error": str(exc)[:700], "health": codex_agent_health_snapshot()},
+            {
+                "ok": False,
+                "error": "Codex Agent 链路检测未完成；请查看最新健康快照和服务端运行日志。",
+                "health": codex_agent_health_snapshot(),
+            },
             status_code=503,
         )
         response.headers["Cache-Control"] = "no-store, max-age=0"
