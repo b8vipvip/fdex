@@ -78,8 +78,6 @@ class Settings(BaseSettings):
     fdex_agent_build_timeout_seconds: float = Field(default=900.0, ge=30.0, le=1800.0)
     fdex_agent_max_output_chars: int = Field(default=20000, ge=1000, le=200000)
     fdex_agent_max_file_chars: int = Field(default=200000, ge=1000, le=1000000)
-    fdex_agent_max_steps: int = Field(default=10, ge=1, le=30)
-    fdex_agent_model_max_tokens: int = Field(default=1600, ge=128, le=4000)
     fdex_agent_sandbox_memory_mb: int = Field(default=2048, ge=128, le=16384)
     fdex_agent_sandbox_cpu_percent: int = Field(default=150, ge=10, le=800)
     fdex_agent_sandbox_pids_max: int = Field(default=512, ge=32, le=4096)

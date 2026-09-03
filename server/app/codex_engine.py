@@ -49,11 +49,6 @@ class CodexRuntimeSpec:
     source: str
 
 
-def normalize_engine_mode(value: str) -> str:
-    mode = (value or "legacy").strip().lower()
-    return mode if mode in {"legacy", "codex", "auto"} else "legacy"
-
-
 def select_codex_provider_from(providers: Iterable[dict[str, Any]]) -> CodexProviderSpec | None:
     for provider in providers:
         protocols = [str(item).strip().lower() for item in (provider.get("protocol_order") or [])]
