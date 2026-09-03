@@ -58,7 +58,7 @@ Command/file/permission approvals, official `item/tool/requestUserInput`, typed 
 
 ### Phase 7.24 — MCP elicitation ✅
 
-Official `mcpServer/elicitation/request` support is complete with constrained standard modes and fail-closed unsupported modes.
+Official `mcpServer/elicitation/request` support is complete with constrained standard modes and fail-closed unsupported modes. Local stdio Plugin/MCP children remain under the Phase 7.32 process-tree limits, while arbitrary tenant-provided stdio command registration, credential injection and executable Plugin mutation remain out of scope and fail closed.
 
 ### Phase 7.25–7.28 — Remote MCP security stack ✅
 
