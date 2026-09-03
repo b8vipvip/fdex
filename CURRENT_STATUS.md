@@ -5,21 +5,22 @@ Last updated / 最后更新：2026-09-03
 ## Current baseline / 当前基线
 
 - Default branch / 默认分支：`main`
-- Accepted Coding Agent architecture：**Phase 7.36 — Codex-only Agent Core**
-- Phase 7.36 core PR：**#102 — Make Coding Agent execution Codex-only**
-- Phase 7.36 core merge commit：`6a63b64e383421fbb95c5beb0a633d30d9a7c48b`
-- Phase 7.36 PR head：`a92976653021d0b778c4871d766f8d247079337c`
-- PR CI：`33708726683` — FastAPI + Android unit + Android Debug APK — success
-- Post-merge `main` run：`33708877552` (`Build and Test #1493`) — FastAPI + Android unit + Android Debug APK — success
-- Previous Codex Host rollout baseline：**Phase 7.33**, PR #95, `main@080c4ba962ce72cd43f0ee0802aef8050b290748`
-- Previous Web Agent-first routing：PR #101, `main@1f3036ab90f65fdee154fc114b9261c025749378`
+- Current accepted Coding Agent architecture：**Phase 7.38 — Codex Bounded Retry Controller**
+- Accepted `main`：`6eeb880aa5a3cc5836be128a720081020243c0dd`
+- Phase 7.37 PR：**#104 — Add Codex Agent health monitor and live admin status**
+- Phase 7.37 final head：`cd99f99891393c7f5ec3662712f2c2373640545c`
+- Phase 7.37 merge：`1cbf145c84bb345615f37434bea79b79fe65e2d6`
+- Phase 7.37 PR CI：`33713572859` (`Build and Test #1504`) — success
+- Phase 7.37 post-merge CI：`33713741855` (`Build and Test #1505`) — success
+- Phase 7.38 PR：**#105 — Add structured bounded retry for Codex tasks**
+- Phase 7.38 final head：`0506b195343570c87ddb140efc6bd442508b3b6e`
+- Phase 7.38 merge：`6eeb880aa5a3cc5836be128a720081020243c0dd`
+- Phase 7.38 final PR CI：`33716497231` (`Build and Test #1507`) — FastAPI + Android unit + Android Debug APK — success
+- Phase 7.38 post-merge CI：`33733769670` (`Build and Test #1508`) — FastAPI + Android unit + Android Debug APK — success
+- Current development candidate：**Phase 7.39 — Retry Chain Observability / Logical Task Projection** on `feature/codex-retry-chain-observability-20260903`; it is **not accepted until its final PR head and merged-main CI both pass**.
 - Current Android stable release：**v1.1.36**
 
-Phase 7.36 changes the execution invariant: **if a 智体 has Coding Agent permission, its task uses the official OpenAI Codex native Host as the only Agent core.** There is no Legacy/Auto Agent execution mode and no fallback from Coding Agent to ordinary `client_ai`.
-
-Phase 7.33 fresh-full Provider compatibility remains authoritative, but it is now only a **Codex readiness/safety gate**. If the official Runtime or a fresh full-compatible Provider is unavailable, the Coding Agent task fails closed instead of switching to another Agent core.
-
-A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse older green CI after a branch changes.
+A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse an older green run after a branch changes.
 
 ## Product and authority model / 产品与权限模型
 
@@ -29,14 +30,20 @@ Execution boundary:
 
 ```text
 employee.coding_agent == true
-    -> FDEX owner / project / worktree boundary
-    -> Phase 7.33 fresh-full Codex readiness gate
+    -> FDEX owner / project / isolated worktree
+    -> Phase 7.33 fresh-full Provider readiness gate
     -> official codex app-server Thread / Turn
+    -> Phase 7.37 structured health evidence
+    -> on structured transient failure only:
+         Phase 7.38 NEW retry AgentTask + NEW worktree + NEW Host boundary
+         at most 2 automatic retries
     -> FDEX validates and publishes resulting Git state
 
 employee.coding_agent == false
     -> ordinary FDEX client_ai conversation path
 ```
+
+There is no Legacy/Auto Agent execution mode and no fallback from a Coding-Agent-enabled 智体 to ordinary `client_ai`.
 
 ## Official Codex Host progress / 官方 Codex Host 进度
 
@@ -95,16 +102,12 @@ Accepted in PR #93 at `main@56d7f4ab938e5597f1cfb880ee3302f04c1a3b15`.
 
 Accepted in PR #94 at `main@6c59b2b6c96132770589040c763c3ebd97793307`.
 
-Completed:
-
 - every real FDEX-provider Host runs in a transient systemd service;
 - cgroup v2 Memory/CPU/PID limits cover app-server and all descendants;
 - `KillMode=control-group`, graceful stop and verified all-process SIGKILL fallback;
-- `BindsTo=<FDEX service>` lifecycle ownership;
 - Provider secret values stay out of systemd-run argv;
 - fail-closed Linux/systemd/cgroup-v2 production preflight;
-- official OpenAI Codex Release validation, staged SHA-256 download and safe extraction;
-- immutable managed Runtime installs and `/admin/agent/runtime` upgrade/rollback surface;
+- official OpenAI Codex Release validation, immutable managed Runtime installs and safe rollback;
 - stale Codex trees stop before Runtime pin changes;
 - cross-worker Runtime launch/switch `flock` fence closes the old-runtime launch race.
 
@@ -119,10 +122,9 @@ Accepted in PR #95 at `main@080c4ba962ce72cd43f0ee0802aef8050b290748`.
 - production requires a fresh `full` proof, default freshness 168 hours;
 - fingerprint binds Provider/API-key identity/model order/protocol/timeout/Runtime/governance/resource limits/app version;
 - real smoke uses official `codex app-server` in an isolated scratch workspace;
-- `full` requires real wire, command/file side effects, MCP, reasoning and Multi-Agent evidence;
-- stale/unverified Providers may be skipped only before a Codex Host starts;
-- there is no Provider switch inside a started task/worktree;
-- Retry creates a fresh task/worktree boundary where Provider selection may run again.
+- stale/unverified Providers may be skipped only **before a user Host starts**;
+- FDEX **never switches Providers inside** a started Codex Host/Turn/task/worktree;
+- Retry may re-run Provider selection only at a fresh task/worktree/Host boundary.
 
 ### Phase 7.35 — Agent-first Web Coding Agent routing ✅
 
@@ -137,38 +139,81 @@ Accepted in PR #101 at `main@1f3036ab90f65fdee154fc114b9261c025749378`.
 
 ### Phase 7.36 — Codex-only Agent Core ✅
 
-Accepted in PR #102 at `main@6a63b64e383421fbb95c5beb0a633d30d9a7c48b`.
+Accepted in PR #102 at `main@6a63b64e383421fbb95c5beb0a633d30d9a7c48b`, with final cleanup in PR #103 at `main@9ff2f19f618d1196aaa434ef96315e769d00d219`.
 
-Completed:
+- removed the legacy FDEX model JSON-tool execution loop;
+- removed `legacy|auto|codex` runtime selection and `FDEX_AGENT_ENGINE`;
+- removed the dead `normalize_engine_mode()` and old model-loop tuning settings;
+- `FdexAgentLoop` is a Codex-only stable call-site facade;
+- Codex readiness failure terminalizes the task;
+- Coding Agent never falls back to ordinary `client_ai`.
 
-- removed the legacy FDEX model JSON-tool execution loop from the production Agent entry point;
-- removed `legacy|auto|codex` runtime selection from Settings and admin UI;
-- removed `FDEX_AGENT_ENGINE` from `.env.example`;
-- `FdexAgentLoop` remains only as a stable compatibility facade for route/background call sites and always enters the official Codex Host;
-- Codex readiness failure terminalizes the task instead of producing `engine.fallback`;
-- Coding Agent never falls back to ordinary `client_ai`;
-- Phase 7.33 fresh-full proof is retained strictly as a fail-closed Codex readiness gate;
-- documentation now defines official Codex Runtime as the sole Coding Agent core;
-- final dead `normalize_engine_mode()` compatibility residue is removed by the Phase 7.36 cleanup change, with a regression assertion that the helper no longer exists.
+### Phase 7.37 — Codex Agent Health Monitor ✅
+
+Accepted in PR #104 at `main@1cbf145c84bb345615f37434bea79b79fe65e2d6`.
+
+Structured health chain:
+
+- official Runtime resolve/version;
+- Phase 7.32 process isolation availability;
+- native app-server initialize/initialized handshake;
+- lightweight Provider DNS/TLS/HTTP/rate-limit/5xx reachability;
+- Phase 7.33 full compatibility/fingerprint/freshness;
+- actual rollout-selected Provider;
+- durable `READY / DEGRADED / BLOCKED / DISABLED / UNKNOWN` state and machine-readable codes.
+
+The monitor does not unlock Providers and does not alter Agent routing. `/models` 401/403 remains advisory rather than overriding an otherwise fresh full proof. Structured health codes, not human error strings, are the recovery-policy input.
+
+### Phase 7.38 — Codex Bounded Retry Controller ✅
+
+Accepted in PR #105 at `main@6eeb880aa5a3cc5836be128a720081020243c0dd`.
+
+- original attempt + at most 2 automatic retry children;
+- default backoff 2s then 8s;
+- each retry is a new AgentTask, worktree and Codex Host boundary;
+- automatic retry only for structured `PROVIDER_RATE_LIMITED`, `PROVIDER_UNREACHABLE` and `HOST_UNAVAILABLE` evidence;
+- Runtime/process-isolation/config/smoke/fingerprint/compatibility errors remain fail-closed;
+- human `task.error` text, including a literal `429` or `timeout`, never decides retry eligibility;
+- no replay after changed-files/commit/push/PR side-effect boundary;
+- failed Provider can be task-locally excluded only when a different Provider is both live-healthy and fresh-full compatible;
+- Provider identity is immutable inside a started Host/Turn;
+- recovery context may fork only from a proven `last_completed_turn_id`; an incomplete failed Turn is not a checkpoint;
+- root cancellation propagates to an active retry child and stops queued retry after backoff;
+- root remains the user-facing logical task; child attempts remain durable audit tasks.
+
+### Phase 7.39 — Retry Chain Observability / Logical Task Projection 🚧
+
+Current development candidate on `feature/codex-retry-chain-observability-20260903`. Acceptance is pending final PR and merged-main CI.
+
+Target behavior:
+
+- structured `codex_retry_attempts` ledger records physical attempt/provider/health/backoff/decision metadata;
+- normal task history hides only Phase 7.38 internal automatic retry attempts while keeping them durable for accounting/cleanup/audit;
+- logical root detail displays the complete recovery chain;
+- Codex Thread/Turn, Item/SSE, approval/requestUserInput, Steer and Compact follow the active/latest execution attempt;
+- direct internal child Web detail redirects to logical root;
+- authenticated Agent API exposes an owner-scoped explicit retry-chain projection;
+- no execution, retry, Provider or GitHub authority boundary changes.
 
 ## Production rollout / 生产部署
 
-After deploying this baseline to the real FDEX Center:
+For the accepted Phase 7.38 baseline:
 
-1. update the server to the accepted `main`;
-2. old `.env` entries named `FDEX_AGENT_ENGINE` have no runtime effect and may be deleted;
-3. open `/admin/agent/codex-providers`;
-4. run/refresh real `full` smoke for each Provider intended for Coding Agent use;
+1. deploy `main@6eeb880aa5a3cc5836be128a720081020243c0dd` or a later accepted main;
+2. remove obsolete `FDEX_AGENT_ENGINE`, `FDEX_AGENT_MAX_STEPS`, `FDEX_AGENT_MODEL_MAX_TOKENS` env entries if still present;
+3. verify Phase 7.32 Runtime/process isolation health;
+4. open `/admin/agent/codex-providers` and refresh real `full` smoke for intended Providers;
 5. verify at least one Provider has a fresh `full` proof bound to the current fingerprint;
-6. enable Coding Agent;
-7. if the readiness gate is not satisfied, treat the task failure as a configuration/compatibility problem — there is intentionally no legacy/generic fallback;
-8. re-run full smoke after Provider key/model/endpoint, Runtime, governance, resource-limit or app-version changes.
+6. verify `/admin/agent` Phase 7.37 health chain is not hard-blocked;
+7. enable Coding Agent;
+8. treat readiness/fingerprint/smoke failures as configuration/compatibility failures — there is intentionally no legacy/generic fallback;
+9. re-run full smoke after Provider key/model/endpoint, Runtime, governance, resource-limit or app-version changes.
 
 GitHub CI is not a substitute for deployed Provider full-smoke because CI does not hold the real Center Provider credentials.
 
 ## Android-native parity
 
-Phase 7.36 is server/Web/Codex Host architecture work and does not by itself require a new Android stable release. Keep **v1.1.36** unless Android source or release-worthy Android behavior changes.
+Phase 7.37–7.39 are server/Web/Codex Host architecture work and do not themselves require a new Android stable release. Keep **v1.1.36** unless Android source or release-worthy Android behavior changes. Every server architecture PR still must pass Android unit tests and Debug APK build to protect shared API/runtime compatibility.
 
 ## Development rules / 后续规则
 
@@ -182,10 +227,11 @@ Phase 7.36 is server/Web/Codex Host architecture work and does not by itself req
 8. Cgroup containment is not a substitute for filesystem sandboxing.
 9. Generic Provider health is not a Codex compatibility proof.
 10. A production Codex Provider requires fresh full evidence bound to its current fingerprint.
-11. Never switch Provider inside a started Codex task/worktree.
-12. Unsupported or unverifiable tool/permission/Plugin states fail closed.
-13. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
-14. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
+11. Never switch Provider inside a started Codex Host/Turn/task/worktree.
+12. Automatic recovery must use structured health evidence, a bounded budget and a new task/worktree/Host boundary.
+13. Unsupported or unverifiable tool/permission/Plugin states fail closed.
+14. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
+15. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
 
 ## Reference docs / 参考文档
 
@@ -200,3 +246,5 @@ Phase 7.36 is server/Web/Codex Host architecture work and does not by itself req
 - `docs/CODEX_SUBAGENT_GOVERNANCE.md`
 - `docs/CODEX_PROCESS_ISOLATION_RUNTIME.md`
 - `docs/CODEX_PROVIDER_ROLLOUT.md`
+- `docs/CODEX_BOUNDED_RETRY.md`
+- `docs/CODEX_RETRY_OBSERVABILITY.md`

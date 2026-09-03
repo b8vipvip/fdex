@@ -45,6 +45,9 @@ class AgentTaskStore:
     The runtime can be served by several Uvicorn workers and can be restarted without losing
     task state. A small flock file serializes execution of one task across workers. No model
     prompt or tool result is written outside the owner-scoped task row.
+
+    Phase 7.39 keeps internal automatic retry attempts durable but removes them from ordinary task
+    history by default. Direct lookup, active-count and workspace cleanup still include them.
     """
 
     def __init__(self, path: Path | None = None, lock_root: Path | None = None) -> None:
@@ -97,6 +100,35 @@ class AgentTaskStore:
                         ON agent_tasks(owner_id, updated_at DESC, id DESC);
                     CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_status
                         ON agent_tasks(owner_id, status, updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS codex_retry_attempts (
+                        attempt_task_id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL,
+                        root_task_id TEXT NOT NULL,
+                        parent_task_id TEXT NOT NULL DEFAULT '',
+                        attempt_index INTEGER NOT NULL DEFAULT 0,
+                        state TEXT NOT NULL DEFAULT 'queued',
+                        provider_id INTEGER NOT NULL DEFAULT 0,
+                        provider_name TEXT NOT NULL DEFAULT '',
+                        model TEXT NOT NULL DEFAULT '',
+                        trigger_code TEXT NOT NULL DEFAULT '',
+                        trigger_reason TEXT NOT NULL DEFAULT '',
+                        decision_code TEXT NOT NULL DEFAULT '',
+                        decision_reason TEXT NOT NULL DEFAULT '',
+                        backoff_seconds REAL NOT NULL DEFAULT 0,
+                        excluded_provider_ids_json TEXT NOT NULL DEFAULT '[]',
+                        error TEXT NOT NULL DEFAULT '',
+                        started_at TEXT NOT NULL DEFAULT '',
+                        completed_at TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_retry_owner_root_attempt
+                        ON codex_retry_attempts(owner_id,root_task_id,attempt_index);
+                    CREATE INDEX IF NOT EXISTS idx_codex_retry_owner_root
+                        ON codex_retry_attempts(owner_id,root_task_id,attempt_index);
+                    CREATE INDEX IF NOT EXISTS idx_codex_retry_owner_internal
+                        ON codex_retry_attempts(owner_id,attempt_index,updated_at DESC);
                     """
                 )
             try:
@@ -283,20 +315,45 @@ class AgentTaskStore:
             ).fetchone()
         return self._row(row) if row is not None else None
 
-    def list(self, owner_id: str, *, status: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    def list(
+        self,
+        owner_id: str,
+        *,
+        status: str = "",
+        limit: int = 50,
+        include_internal: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List user-visible logical tasks unless internal retry attempts are explicitly requested."""
+
         self.init()
         owner_id = _owner(owner_id)
         limit = max(1, min(int(limit), 100))
         status = (status or "").strip().lower()
+        visibility = "" if include_internal else """
+            AND NOT EXISTS (
+                SELECT 1 FROM codex_retry_attempts retry
+                WHERE retry.owner_id=agent_tasks.owner_id
+                  AND retry.attempt_task_id=agent_tasks.id
+                  AND retry.attempt_index>0
+            )
+        """
         with self.db() as conn:
             if status:
                 rows = conn.execute(
-                    "SELECT * FROM agent_tasks WHERE owner_id=? AND status=? ORDER BY updated_at DESC,id DESC LIMIT ?",
+                    f"""
+                    SELECT agent_tasks.* FROM agent_tasks
+                    WHERE owner_id=? AND status=? {visibility}
+                    ORDER BY updated_at DESC,id DESC LIMIT ?
+                    """,
                     (owner_id, status, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM agent_tasks WHERE owner_id=? ORDER BY updated_at DESC,id DESC LIMIT ?",
+                    f"""
+                    SELECT agent_tasks.* FROM agent_tasks
+                    WHERE owner_id=? {visibility}
+                    ORDER BY updated_at DESC,id DESC LIMIT ?
+                    """,
                     (owner_id, limit),
                 ).fetchall()
         return [self._row(row) for row in rows]
@@ -305,7 +362,8 @@ class AgentTaskStore:
         """Return terminal tasks that still own a worktree.
 
         Filtering in SQLite is important: taking the newest N task-history rows first can hide
-        an older worktree forever when newer task rows have already been cleaned.
+        an older worktree forever when newer task rows have already been cleaned. Internal retry
+        children are intentionally included because they own real isolated worktrees.
         """
         self.init()
         owner_id = _owner(owner_id)
@@ -358,6 +416,7 @@ class AgentTaskStore:
         owner_id = _owner(owner_id)
         with self.db() as conn:
             count = int(conn.execute("SELECT COUNT(*) FROM agent_tasks WHERE owner_id=?", (owner_id,)).fetchone()[0])
+            conn.execute("DELETE FROM codex_retry_attempts WHERE owner_id=?", (owner_id,))
             conn.execute("DELETE FROM agent_tasks WHERE owner_id=?", (owner_id,))
         return count
 

@@ -16,6 +16,7 @@ from app.codex_host_guard import compact_codex_thread
 from app.codex_host_runtime import create_codex_continuation, queue_codex_steer
 from app.codex_host_store import codex_host_store
 from app.codex_interaction_store import codex_interaction_store
+from app.codex_retry_chain_store import codex_retry_chain_store
 from app.config import SERVER_DIR
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 
@@ -35,6 +36,24 @@ def _task(owner_id: str, task_id: str) -> dict[str, object] | None:
         return agent_task_store().get(owner_id, task_id)
     except ValueError:
         return None
+
+
+def _retry_chain(owner_id: str, task_id: str) -> dict[str, object] | None:
+    try:
+        return codex_retry_chain_store().chain_for_task(owner_id, task_id)
+    except (KeyError, ValueError, RuntimeError):
+        return None
+
+
+def _effective_execution_task_id(owner_id: str, task_id: str) -> str:
+    """Resolve a logical root to the attempt that currently owns (or last owned) Codex execution."""
+
+    chain = _retry_chain(owner_id, task_id)
+    if chain is None:
+        return task_id
+    active = str(chain.get("active_attempt_task_id") or "")
+    latest = str(chain.get("latest_attempt_task_id") or "")
+    return active or latest or task_id
 
 
 async def _execute(owner_id: str, task_id: str) -> None:
@@ -86,6 +105,8 @@ def agent_center(request: Request, status: str = "") -> Response:
     if clean_status not in {"", "queued", "running", "succeeded", "failed", "canceled"}:
         clean_status = ""
     projects = agent_project_store().list_projects(owner_id, enabled_only=True)
+    # AgentTaskStore hides Phase 7.38 internal retry children by default. They remain durable and
+    # appear under their logical root detail instead of becoming duplicate user-created tasks.
     tasks = agent_task_store().list(owner_id, status=clean_status, limit=80)
     usage = agent_runtime().execution_sandbox.account_usage(owner_id)
     operation = account_operation_status(owner_id)
@@ -100,6 +121,8 @@ def agent_center(request: Request, status: str = "") -> Response:
             task=None,
             codex_session=None,
             codex_interactions=[],
+            retry_chain=None,
+            execution_task_id="",
             status_filter=clean_status,
             usage=usage,
             operation=operation.to_dict(),
@@ -150,10 +173,22 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
     if task is None:
         _flash(request, "Coding Agent 任务不存在或不属于当前账号", "error")
         return RedirectResponse("/account/agent", status_code=303)
+
+    retry_chain = _retry_chain(owner_id, task_id)
+    if retry_chain and bool(retry_chain.get("requested_is_internal")):
+        # Internal attempts are inspectable through the logical root projection; they are not a
+        # second user-facing task identity.
+        root_task_id = str(retry_chain.get("root_task_id") or "")
+        if root_task_id and root_task_id != task_id:
+            return RedirectResponse(f"/account/agent/tasks/{root_task_id}", status_code=302)
+
+    execution_task_id = _effective_execution_task_id(owner_id, task_id)
     projects = agent_project_store().list_projects(owner_id, enabled_only=True)
     usage = agent_runtime().execution_sandbox.account_usage(owner_id)
-    codex_session = codex_host_store().task_state(owner_id, task_id)
-    codex_interactions = codex_interaction_store().list_for_task(owner_id, task_id, limit=100)
+    codex_session = codex_host_store().task_state(owner_id, execution_task_id)
+    if codex_session is None and execution_task_id != task_id:
+        codex_session = codex_host_store().task_state(owner_id, task_id)
+    codex_interactions = codex_interaction_store().list_for_task(owner_id, execution_task_id, limit=100)
     return templates.TemplateResponse(
         "user_agent.html",
         _ctx(
@@ -163,6 +198,8 @@ def agent_task_detail(task_id: str, request: Request) -> Response:
             task=task,
             codex_session=codex_session,
             codex_interactions=codex_interactions,
+            retry_chain=retry_chain,
+            execution_task_id=execution_task_id,
             projects=projects,
             tasks=[],
             status_filter="",
@@ -316,8 +353,9 @@ async def codex_steer_task(
     assert user is not None
     try:
         _verify_csrf(request, csrf_token)
-        control = await queue_codex_steer(owner_id=owner_id, task_id=task_id, text=text)
-        _flash(request, f"Steer 已进入 Codex Host 控制队列（#{control['id']}）", "success")
+        execution_task_id = _effective_execution_task_id(owner_id, task_id)
+        control = await queue_codex_steer(owner_id=owner_id, task_id=execution_task_id, text=text)
+        _flash(request, f"Steer 已进入当前 Codex attempt 控制队列（#{control['id']}）", "success")
     except (ValueError, AgentRuntimeError, KeyError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)
@@ -336,11 +374,12 @@ async def codex_compact_task(
     assert user is not None
     try:
         _verify_csrf(request, csrf_token)
-        session = await asyncio.to_thread(codex_host_store().task_state, owner_id, task_id)
+        execution_task_id = _effective_execution_task_id(owner_id, task_id)
+        session = await asyncio.to_thread(codex_host_store().task_state, owner_id, execution_task_id)
         if session is None:
             raise AgentRuntimeError("task has no persisted Codex thread")
-        background_tasks.add_task(_compact, owner_id, task_id)
-        _flash(request, "已提交 Codex Thread compact；活动 Turn 会先完成，再串行压缩上下文", "success")
+        background_tasks.add_task(_compact, owner_id, execution_task_id)
+        _flash(request, "已提交当前 Codex attempt 的 Thread compact；活动 Turn 会先完成，再串行压缩上下文", "success")
     except (ValueError, AgentRuntimeError, KeyError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/agent/tasks/{task_id}", status_code=303)

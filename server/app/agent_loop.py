@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.agent_runtime import AgentRuntimeError, AgentTask, FdexAgentRuntime
+from app.codex_retry_chain_store import codex_retry_chain_store
 from app.codex_retry_controller import (
     RetryAttemptCapture,
     capture_codex_attempt,
@@ -21,25 +22,44 @@ install_codex_retry_failure_capture()
 
 
 class FdexAgentLoop:
-    """Stable Codex-only execution facade with Phase 7.38 bounded recovery.
+    """Stable Codex-only execution facade with bounded recovery and logical-task projection.
 
-    There is still no legacy Agent core and no ordinary-AI fallback. A failed Codex attempt is
-    eligible for replay only when Phase 7.37 produces a structured transient health code, the
-    attempt has not crossed FDEX's commit/publish boundary, and the retry budget remains.
+    Phase 7.38 owns retry safety. Phase 7.39 adds a structured attempt ledger without changing any
+    retry decision or authority boundary. Internal retry children remain real durable AgentTasks,
+    but the user-facing task stays the logical root and normal task lists hide those children.
 
-    Every replay is a new AgentTask/worktree. If a healthy fresh-full alternate Provider exists,
-    the failed Provider may be excluded only for that new task; Provider identity never changes
-    inside a started Host/Turn.
+    The legacy FDEX Agent core remains deleted: this facade never selects it and never falls back
+    from the official Codex Host to an ordinary AI execution path.
     """
 
     def __init__(self, runtime: FdexAgentRuntime) -> None:
         self.runtime = runtime
+
+    async def _record_attempt_decision(
+        self,
+        task: AgentTask,
+        *,
+        state: str,
+        code: str,
+        reason: str,
+        error: str = "",
+    ) -> None:
+        await asyncio.to_thread(
+            codex_retry_chain_store().record_decision,
+            owner_id=task.owner_id,
+            attempt_task_id=task.id,
+            state=state,
+            decision_code=code,
+            decision_reason=reason,
+            error=error,
+        )
 
     async def _run_one_attempt(
         self,
         task_id: str,
         *,
         root_task_id: str,
+        attempt_index: int,
         excluded_provider_ids: frozenset[int] = frozenset(),
     ) -> tuple[AgentTask, RetryAttemptCapture | None]:
         task = await self.runtime.get_task(task_id)
@@ -47,6 +67,16 @@ class FdexAgentLoop:
             raise AgentRuntimeError("task not found")
         if task.status not in {"queued", "running"}:
             raise AgentRuntimeError(f"task cannot run from status: {task.status}")
+
+        ledger = codex_retry_chain_store()
+        await asyncio.to_thread(
+            ledger.record_queued,
+            owner_id=task.owner_id,
+            root_task_id=root_task_id,
+            attempt_task_id=task.id,
+            parent_task_id=task.parent_task_id,
+            attempt_index=attempt_index,
+        )
 
         # Import at execution time so Phase 7.33's rollout installer has already rebound the
         # status/provider seams. Retry-scoped exclusions are active before preflight and Host
@@ -58,10 +88,28 @@ class FdexAgentLoop:
             status = codex_runtime_status()
             if not bool(status.get("ready")):
                 reason = str(status.get("reason") or "Codex engine is not ready")
+                await self._record_attempt_decision(
+                    task,
+                    state="blocked",
+                    code="PREFLIGHT_NOT_READY",
+                    reason=reason,
+                    error=reason,
+                )
                 failed = await terminalize_task_failure(self.runtime, task_id, reason)
                 return failed, None
 
             provider_id = int(status.get("provider_id") or 0)
+            await asyncio.to_thread(
+                ledger.record_started,
+                owner_id=task.owner_id,
+                root_task_id=root_task_id,
+                attempt_task_id=task.id,
+                parent_task_id=task.parent_task_id,
+                attempt_index=attempt_index,
+                provider_id=provider_id,
+                provider_name=str(status.get("provider_name") or ""),
+                model=str(status.get("model") or ""),
+            )
             with capture_codex_attempt(
                 task_id,
                 root_task_id=root_task_id,
@@ -77,6 +125,29 @@ class FdexAgentLoop:
             latest = await self.runtime.get_task(task_id)
             if latest is None:
                 raise AgentRuntimeError("task disappeared after Codex execution")
+            if latest.status == "succeeded":
+                await asyncio.to_thread(
+                    ledger.record_terminal,
+                    owner_id=latest.owner_id,
+                    attempt_task_id=latest.id,
+                    state="succeeded",
+                )
+            elif latest.status == "canceled":
+                await self._record_attempt_decision(
+                    latest,
+                    state="canceled",
+                    code="TASK_CANCELED",
+                    reason="task cancellation reached a Codex safe boundary",
+                    error=latest.error,
+                )
+            elif not capture.failed and latest.status == "failed":
+                await self._record_attempt_decision(
+                    latest,
+                    state="failed",
+                    code="ATTEMPT_FAILED_UNCAPTURED",
+                    reason="Codex attempt terminalized outside the bounded retry capture seam",
+                    error=latest.error,
+                )
             return latest, capture
 
     async def _run_retry_child(
@@ -84,12 +155,14 @@ class FdexAgentLoop:
         child: AgentTask,
         *,
         root_task_id: str,
+        attempt_index: int,
         excluded_provider_ids: frozenset[int],
     ) -> tuple[AgentTask, RetryAttemptCapture | None]:
         async def runner() -> tuple[AgentTask, RetryAttemptCapture | None]:
             return await self._run_one_attempt(
                 child.id,
                 root_task_id=root_task_id,
+                attempt_index=attempt_index,
                 excluded_provider_ids=excluded_provider_ids,
             )
 
@@ -102,7 +175,11 @@ class FdexAgentLoop:
         if root.status not in {"queued", "running"}:
             raise AgentRuntimeError(f"task cannot run from status: {root.status}")
 
-        current, capture = await self._run_one_attempt(root.id, root_task_id=root.id)
+        current, capture = await self._run_one_attempt(
+            root.id,
+            root_task_id=root.id,
+            attempt_index=0,
+        )
         retry_count = 0
 
         while True:
@@ -146,6 +223,13 @@ class FdexAgentLoop:
                 retry_number=retry_count + 1,
                 failed_provider_id=capture.provider_id,
             )
+            await self._record_attempt_decision(
+                current,
+                state="failed",
+                code=decision.code,
+                reason=decision.reason,
+                error=error,
+            )
             if not decision.retry:
                 return await finalize_logical_root_failure(
                     self.runtime,
@@ -162,13 +246,26 @@ class FdexAgentLoop:
                 await terminalize_task_failure(self.runtime, current.id, error)
 
             await discard_failed_attempt_worktree(self.runtime, current)
+            next_index = retry_count + 1
             child = await create_auto_retry_child(
                 self.runtime,
                 current,
-                retry_number=retry_count + 1,
+                retry_number=next_index,
                 decision=decision,
             )
-            retry_count += 1
+            await asyncio.to_thread(
+                codex_retry_chain_store().record_queued,
+                owner_id=child.owner_id,
+                root_task_id=root.id,
+                attempt_task_id=child.id,
+                parent_task_id=current.id,
+                attempt_index=next_index,
+                trigger_code=decision.code,
+                trigger_reason=decision.reason,
+                backoff_seconds=decision.delay_seconds,
+                excluded_provider_ids=decision.excluded_provider_ids,
+            )
+            retry_count = next_index
 
             await asyncio.sleep(max(0.0, float(decision.delay_seconds)))
             if await asyncio.to_thread(self.runtime.task_store.cancel_requested, root.id):
@@ -176,6 +273,13 @@ class FdexAgentLoop:
                     await self.runtime.request_cancel(child.owner_id, child.id, force_terminal=True)
                 except AgentRuntimeError:
                     pass
+                await self._record_attempt_decision(
+                    child,
+                    state="canceled",
+                    code="TASK_CANCELED",
+                    reason="logical root was canceled during automatic retry backoff",
+                    error="Coding Agent task canceled during automatic retry backoff",
+                )
                 return await finalize_logical_root_failure(
                     self.runtime,
                     root,
@@ -189,9 +293,17 @@ class FdexAgentLoop:
                 current, capture = await self._run_retry_child(
                     child,
                     root_task_id=root.id,
+                    attempt_index=retry_count,
                     excluded_provider_ids=decision.excluded_provider_ids,
                 )
             except RuntimeError as exc:
+                await self._record_attempt_decision(
+                    child,
+                    state="blocked",
+                    code="RETRY_CHILD_BUSY",
+                    reason=str(exc),
+                    error=str(exc),
+                )
                 return await finalize_logical_root_failure(
                     self.runtime,
                     root,

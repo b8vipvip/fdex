@@ -21,6 +21,7 @@ from app.admin_routes import router as admin_router
 from app.agent_admin_routes import router as agent_admin_router
 from app.agent_policy_portal_routes import router as agent_policy_portal_router
 from app.agent_routes import router as agent_router
+from app.agent_retry_projection_routes import install_agent_retry_projection_routes
 from app.auth_routes import router as auth_router
 from app.center_auth_middleware import CenterUserAuthMiddleware
 from app.client_ai import router as client_ai_router
@@ -52,6 +53,11 @@ from app.user_account_auth_routes import router as user_account_auth_router
 from app.user_admin_routes import router as user_admin_router
 from app.user_agent_task_routes import router as user_agent_task_router
 from app.user_codex_event_routes import router as user_codex_event_router
+
+# Phase 7.39 adds an owner-scoped audit endpoint to the existing Agent API router. Normal task-list
+# responses remain backward compatible and logical-task-only; internal retry attempts are exposed
+# only through the explicit retry-chain projection.
+install_agent_retry_projection_routes()
 
 # The legacy provider manager already stored protocol_order, but the text runtime previously ignored
 # it and always called /chat/completions. Install the protocol-aware runtime before Web app routes
