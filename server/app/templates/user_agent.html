@@ -26,7 +26,7 @@
     {% endif %}
   </section>
   <section class="card span-7 stack">
-    <div class="card-head"><div><h2>任务历史</h2><p>任务和事件持久化在服务端，浏览器关闭后仍可回来查看。</p></div><span class="badge">{{ tasks|length }}</span></div>
+    <div class="card-head"><div><h2>任务历史</h2><p>这里只显示用户级逻辑任务；自动恢复产生的内部 Codex attempt 保留审计，但归并到对应任务详情。</p></div><span class="badge">{{ tasks|length }}</span></div>
     <form action="/account/agent" method="get" class="row"><label style="min-width:180px">状态<select name="status"><option value="" {% if not status_filter %}selected{% endif %}>全部</option><option value="queued" {% if status_filter == 'queued' %}selected{% endif %}>排队</option><option value="running" {% if status_filter == 'running' %}selected{% endif %}>执行中</option><option value="succeeded" {% if status_filter == 'succeeded' %}selected{% endif %}>成功</option><option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>失败</option><option value="canceled" {% if status_filter == 'canceled' %}selected{% endif %}>已取消</option></select></label><button class="secondary" type="submit" style="margin-top:20px">筛选</button></form>
     {% for item in tasks %}<a class="conversation-card" href="/account/agent/tasks/{{ item.id }}"><div><strong>{{ item.project_name }}</strong><div class="fine">{{ item.repository }} · {{ item.updated_at }}</div></div><div><span class="badge {% if item.status == 'succeeded' %}ok{% elif item.status in ['failed','canceled'] %}warn{% endif %}">{{ item.status }}</span><div class="conversation-preview" style="margin-top:5px">{{ item.prompt }}</div></div></a>{% else %}<p class="muted">暂无 Coding Agent 任务。</p>{% endfor %}
   </section>
@@ -35,7 +35,7 @@
   </section>
 </div>
 {% else %}
-{% if not codex_session and task.status in ['queued','running'] %}<meta http-equiv="refresh" content="4">{% endif %}
+{% if task.status in ['queued','running'] %}<meta http-equiv="refresh" content="4">{% endif %}
 <div class="grid">
   <section class="card span-8 stack">
     <div class="row between"><div><h2>{{ task.project_name }}</h2><div class="mono muted">{{ task.repository }}</div></div><span class="badge {% if task.status == 'succeeded' %}ok{% elif task.status in ['failed','canceled'] %}warn{% endif %}">{{ task.status }}</span></div>
@@ -53,9 +53,37 @@
   </section>
   <section class="card span-4 stack"><div class="card-head"><h2>执行事件</h2><span class="badge">{{ task.events|length }}</span></div>{% for event in task.events|reverse %}<div class="repo"><strong>{{ event.type }}</strong><p>{{ event.message }}</p><div class="fine">{{ event.created_at }}</div></div>{% else %}<p class="muted">暂无事件。</p>{% endfor %}</section>
 
+  {% if retry_chain %}
+  <section class="card span-12 stack" id="codex-retry-chain">
+    <div class="card-head"><div><h2>Codex 自动恢复链</h2><p>Phase 7.39 将一个用户任务投影为稳定的 logical root，并把 Phase 7.38 的物理执行尝试作为内部审计链展示；自动 retry 不会在任务历史中重复出现。</p></div><div class="row"><span class="badge">Attempts {{ retry_chain.attempt_count }}</span><span class="badge">Retries {{ retry_chain.retry_count }}</span></div></div>
+    <div class="grid">
+      <div class="span-6 repo"><div class="fine">Logical Root Task</div><strong class="mono">{{ retry_chain.root_task_id }}</strong></div>
+      <div class="span-6 repo"><div class="fine">当前执行投影</div><strong class="mono">{{ execution_task_id or task.id }}</strong></div>
+    </div>
+    {% for attempt in retry_chain.attempts %}
+    <article class="repo stack">
+      <div class="row between">
+        <div><strong>Attempt #{{ attempt.attempt_index }} · {% if attempt.attempt_index == 0 %}原始执行{% else %}自动重试{% endif %}</strong><div class="mono fine">{{ attempt.attempt_task_id }}</div></div>
+        <div class="row"><span class="badge {% if attempt.state == 'succeeded' %}ok{% elif attempt.state in ['failed','blocked','canceled'] %}warn{% endif %}">{{ attempt.state }}</span>{% if attempt.attempt_task_id == execution_task_id %}<span class="badge ok">当前投影</span>{% endif %}</div>
+      </div>
+      <div class="grid">
+        <div class="span-6"><div class="fine">Provider / Model</div><strong>{{ attempt.provider_name or '-' }}</strong><div class="mono fine">{{ attempt.model or '-' }}</div></div>
+        <div class="span-3"><div class="fine">Backoff</div><strong>{{ attempt.backoff_seconds or 0 }}s</strong></div>
+        <div class="span-3"><div class="fine">排除 Provider</div><strong class="mono">{% if attempt.excluded_provider_ids %}{{ attempt.excluded_provider_ids|join(', ') }}{% else %}-{% endif %}</strong></div>
+      </div>
+      {% if attempt.trigger_code %}<div><span class="badge">触发 {{ attempt.trigger_code }}</span>{% if attempt.trigger_reason %}<div class="fine" style="margin-top:5px">{{ attempt.trigger_reason }}</div>{% endif %}</div>{% endif %}
+      {% if attempt.decision_code %}<div><span class="badge {% if attempt.decision_code in ['RETRY_LIMIT_REACHED','TASK_CANCELED','PREFLIGHT_NOT_READY','RETRY_CHILD_BUSY'] %}warn{% endif %}">决策 {{ attempt.decision_code }}</span>{% if attempt.decision_reason %}<div class="fine" style="margin-top:5px">{{ attempt.decision_reason }}</div>{% endif %}</div>{% endif %}
+      {% if attempt.error %}<div class="alert alert-error" style="margin:0">{{ attempt.error }}</div>{% endif %}
+      <div class="fine">{% if attempt.started_at %}开始 {{ attempt.started_at }}{% endif %}{% if attempt.completed_at %} · 完成 {{ attempt.completed_at }}{% endif %}</div>
+    </article>
+    {% endfor %}
+    <p class="fine">这里的 Provider/health/backoff 来自结构化 retry ledger，不通过解析第三方错误字符串推断；Provider 仍禁止在已启动的 Host/Turn 内切换。</p>
+  </section>
+  {% endif %}
+
   {% if codex_session %}
   <section class="card span-8 stack">
-    <div class="card-head"><div><h2>Codex Thread / Turn</h2><p>Phase 7.21 持久层：浏览器、FDEX 服务或 Uvicorn worker 重启后仍保留官方 Codex 协议身份。</p></div><span class="badge {% if codex_session.thread.status == 'idle' %}ok{% elif codex_session.thread.status in ['failed','interrupted'] %}warn{% endif %}">{{ codex_session.thread.status }}</span></div>
+    <div class="card-head"><div><h2>Codex Thread / Turn</h2><p>当前展示执行 attempt <span class="mono">{{ execution_task_id or task.id }}</span> 的官方 Codex 协议状态；logical root 始终保持用户任务身份。</p></div><span class="badge {% if codex_session.thread.status == 'idle' %}ok{% elif codex_session.thread.status in ['failed','interrupted'] %}warn{% endif %}">{{ codex_session.thread.status }}</span></div>
     <div class="grid">
       <div class="span-6 repo"><div class="fine">Thread ID</div><strong class="mono">{{ codex_session.thread.thread_id }}</strong></div>
       <div class="span-3 repo"><div class="fine">任务关系</div><strong>{{ codex_session.binding.relation }}</strong></div>
@@ -102,9 +130,9 @@
   </section>
   <section class="card span-4 stack"><h2>Codex Host 状态</h2><div class="repo"><div class="fine">Provider / Model</div><strong>{{ codex_session.thread.provider_name or '-' }}</strong><div class="mono fine">{{ codex_session.thread.model or '-' }}</div></div><div class="repo"><div class="fine">Thread Root Task</div><strong class="mono">{{ codex_session.thread.root_task_id }}</strong></div><div class="repo"><div class="fine">当前 Worktree</div><div class="mono fine">{{ codex_session.thread.worktree or '-' }}</div></div><p class="fine">Steer/Compact/审批/提问都通过 owner-scoped SQLite 桥交给真正持有 Codex stdio 进程的 worker，不依赖浏览器请求落到同一个 Uvicorn worker。</p></section>
 
-  <section id="codex-interaction-panel" class="card span-12 stack" data-task-id="{{ task.id }}" data-csrf-token="{{ csrf_token }}">
+  <section id="codex-interaction-panel" class="card span-12 stack" data-task-id="{{ execution_task_id or task.id }}" data-csrf-token="{{ csrf_token }}">
     <div class="card-head">
-      <div><h2>Codex 审批与提问</h2><p>Phase 7.23 对接官方 command/file/permissions approval 与 item/tool/requestUserInput。请求保留真实 JSON-RPC/Thread/Turn/Item 身份；secret 回答只短暂加密落盘，Host claim 后立即销毁密文。</p></div>
+      <div><h2>Codex 审批与提问</h2><p>Phase 7.23 对接官方 command/file/permissions approval 与 item/tool/requestUserInput。Phase 7.39 将响应严格发送给实际持有该交互的 execution attempt，而不是逻辑 root。</p></div>
       <div class="row"><span class="badge">交互 <strong id="codex-interaction-count">{{ codex_interactions|length }}</strong></span><span class="badge">待处理 <strong id="codex-interaction-pending-count">{{ codex_interactions|selectattr('state','equalto','pending')|list|length }}</strong></span></div>
     </div>
     <div id="codex-interaction-list" class="stack" aria-live="polite">
@@ -125,7 +153,7 @@
           <div class="fine">请求权限</div><pre class="codex-item-output">{{ req.permissions|tojson(indent=2) }}</pre>
         {% elif interaction.method == 'item/tool/requestUserInput' %}
           {% if interaction.state == 'pending' %}
-          <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="stack">
+          <form action="/account/agent/tasks/{{ execution_task_id or task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="stack">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             {% for question in req.questions or [] %}
             <fieldset class="repo stack">
@@ -144,7 +172,7 @@
         {% endif %}
 
         {% if interaction.state == 'pending' and interaction.method in ['item/commandExecution/requestApproval','item/fileChange/requestApproval'] %}
-        <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
+        <form action="/account/agent/tasks/{{ execution_task_id or task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="primary" type="submit" name="action" value="accept">允许一次</button>
           <button class="secondary" type="submit" name="action" value="acceptForSession">本 Session 允许</button>
@@ -152,7 +180,7 @@
           <button class="secondary" type="submit" name="action" value="cancel">取消</button>
         </form>
         {% elif interaction.state == 'pending' and interaction.method == 'item/permissions/requestApproval' %}
-        <form action="/account/agent/tasks/{{ task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
+        <form action="/account/agent/tasks/{{ execution_task_id or task.id }}/codex/interactions/{{ interaction.id }}/respond" method="post" class="row">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="primary" type="submit" name="action" value="grant_turn">仅本 Turn 授权</button>
           <button class="secondary" type="submit" name="action" value="grant_session">本 Session 授权</button>
@@ -167,9 +195,9 @@
     <p class="fine">FDEX 只提供官方协议允许的决策。command 的 approvalId 与 itemId 分开持久化，避免 zsh/STDIN 子审批误路由；未知 server request 继续 fail-closed。</p>
   </section>
 
-  <section id="codex-item-panel" class="card span-12 stack" data-task-id="{{ task.id }}">
+  <section id="codex-item-panel" class="card span-12 stack" data-task-id="{{ execution_task_id or task.id }}">
     <div class="card-head">
-      <div><h2>Codex Item 实时流</h2><p>Phase 7.22 直接映射官方 ThreadItem。刷新页面会先恢复 SQLite 快照，再从最后事件序号继续 SSE；缺失 item/completed 的 Item 会明确显示 orphaned。</p></div>
+      <div><h2>Codex Item 实时流</h2><p>Phase 7.22 直接映射官方 ThreadItem；Phase 7.39 在自动 retry 时把快照/SSE 切到当前 execution attempt。刷新页面会先恢复 SQLite 快照，再从最后事件序号继续 SSE。</p></div>
       <div class="row"><span id="codex-stream-state" class="badge">准备连接</span><span class="badge">Items <strong id="codex-item-count">0</strong></span><span class="badge">本次实时事件 <strong id="codex-event-count">0</strong></span></div>
     </div>
     <div id="codex-item-list" class="codex-item-list stack" aria-live="polite" aria-busy="false"><p id="codex-item-empty" class="muted">加载 Codex Item 快照……</p></div>
