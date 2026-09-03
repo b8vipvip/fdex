@@ -35,6 +35,75 @@
     </form>
 </section>
 
+<section class="panel form-section" id="codex-health-monitor" data-csrf="{{ csrf_token }}">
+    <div class="panel-header">
+        <div>
+            <h2>Codex Agent 链路监控</h2>
+            <p>后台每 60 秒执行轻量健康检查；官方 <code>app-server</code> initialize/initialized 握手每 5 分钟验证一次。页面每 5 秒只读取已持久化快照，不会因为刷新页面触发模型调用。</p>
+        </div>
+        <span id="codex-health-overall-badge" class="badge warning">检测中</span>
+    </div>
+
+    <div class="inline-note">
+        <strong id="codex-health-code">MONITOR_STARTING</strong> · <span id="codex-health-reason">健康监控尚未完成第一次链路检测</span><br>
+        <span class="muted">最近检测：<span id="codex-health-checked-at">—</span> · 总耗时：<span id="codex-health-duration">—</span> · <span id="codex-health-ui-status">正在读取后台监控状态…</span></span>
+    </div>
+
+    <div class="content-grid equal" style="margin-top:16px">
+        <div class="panel" style="margin:0">
+            <strong>1. Official Codex Runtime</strong>
+            <p id="codex-health-runtime" class="muted">等待检测…</p>
+            <small class="muted">解析耗时：<span id="codex-health-runtime-latency">—</span></small>
+        </div>
+        <div class="panel" style="margin:0">
+            <strong>2. Native App Server Host</strong>
+            <p id="codex-health-host" class="muted">等待握手检测…</p>
+            <small class="muted">最近握手：<span id="codex-health-host-checked-at">—</span></small>
+        </div>
+        <div class="panel" style="margin:0">
+            <strong>3. systemd / cgroup v2</strong>
+            <p id="codex-health-isolation" class="muted">等待检测…</p>
+            <small id="codex-health-resource" class="muted">—</small>
+        </div>
+        <div class="panel" style="margin:0">
+            <strong>4. 当前 Codex Provider</strong>
+            <p id="codex-health-selected-provider" class="muted">等待 selector…</p>
+            <small class="muted">只有 fresh <code>full</code> compatibility Provider 才能进入实际 Codex Turn。</small>
+        </div>
+    </div>
+
+    <div class="panel" style="margin:0 0 16px">
+        <div class="panel-header"><div><h3 style="margin:0">Provider 实时链路 + Full Compatibility</h3><p>实时链路仅检测 DNS/TLS/HTTP/鉴权/限流/5xx，不替代真实 full-smoke。连续瞬时失败用于标记降级，不会修改 Phase 7.33 的安全 gate。</p></div></div>
+        <div class="table-wrap">
+            <table class="data-table" style="min-width:1080px">
+                <thead><tr><th>Provider / Model</th><th>实时链路</th><th>连续失败</th><th>Compatibility</th><th>结构化状态</th><th>Smoke Age</th><th>剩余有效期</th><th>原因</th></tr></thead>
+                <tbody id="codex-health-provider-body"><tr><td colspan="8" class="muted">等待后台监控数据…</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="content-grid equal">
+        <div class="panel" style="margin:0">
+            <strong>自动监测策略</strong>
+            <p class="muted">轻量链路：60 秒；Host JSON-RPC 握手：300 秒；管理页回显：5 秒；历史保留：7 天。多 Uvicorn worker 使用 SQLite lease 选主，避免每个 worker 重复探测。</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+                <button id="codex-health-check-button" class="button primary" type="button">立即检测链路</button>
+                <a class="button secondary" href="/admin/agent/codex-providers">运行 / 查看 Full Smoke</a>
+                <a class="button secondary" href="/admin/agent/runtime">Runtime 管理</a>
+            </div>
+        </div>
+        <div class="panel" style="margin:0">
+            <strong>状态语义</strong>
+            <p class="muted"><code>READY</code>：可接任务；<code>DEGRADED</code>：瞬时链路、429、Host 握手或 smoke 即将过期；<code>BLOCKED</code>：Runtime、process isolation、Provider 鉴权或 fresh-full gate 明确不可用。监控状态不触发 Legacy/普通 AI 回退。</p>
+        </div>
+    </div>
+
+    <div class="panel" style="margin:16px 0 0">
+        <div class="panel-header"><div><h3 style="margin:0">最近健康历史</h3><p>用于回看 Runtime / Provider / compatibility 状态随时间的变化。</p></div></div>
+        <div id="codex-health-history"><div class="muted">暂无历史记录。</div></div>
+    </div>
+</section>
+
 <section class="panel form-section">
     <div class="panel-header"><div><h2>执行沙箱资源</h2><p>FDEX 负责账号/项目/task worktree 隔离；官方 Codex Runtime 使用自身 workspace-write/执行策略，FDEX 仍掌握最终 commit/push/PR 权限。</p></div><span class="badge success">空闲 RAM ≈ 0</span></div>
     <div class="content-grid equal">
@@ -111,4 +180,8 @@
         <div><strong>保护路径</strong><p class="muted">Codex 结果在提交前再次扫描；若触碰 <code>.env</code>、<code>server/data</code> 或 <code>.git</code> 内部路径，FDEX 会阻止 commit/push。</p></div>
     </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/agent_health.js"></script>
 {% endblock %}
