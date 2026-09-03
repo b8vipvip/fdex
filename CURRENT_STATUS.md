@@ -49,7 +49,7 @@ employee.coding_agent == true
          at most 2 automatic retries
     -> Phase 7.39 logical root + physical attempt projection
     -> Phase 7.40 atomic task-kind / logical-root lineage
-    -> Phase 7.41 candidate: reclaim only durable queued auto-retry orphans after root lease loss
+    -> Phase 7.41 candidate: atomic retry-transition intent + root-lease crash reconciliation
     -> FDEX validates and publishes resulting Git state
 
 employee.coding_agent == false
@@ -227,17 +227,21 @@ Current development candidate on `feature/codex-retry-chain-reconciler-20260903`
 
 Target behavior:
 
-- background reconciler scans only durable `task_kind=auto_retry` tasks in `queued/running` state;
+- `codex_retry_transitions` durably records `source -> next attempt` intent before source cleanup or child creation;
+- retryable attempt decision + next index + backoff + Provider exclusions are committed in one SQLite transaction;
+- background reconciliation is logical-root-centric: it scans only `running` roots that already have structured Codex attempt audit evidence;
 - real recovery requires acquiring the logical-root crash-safe `flock`, so multi-worker scans cannot duplicate execution;
-- only a still-queued child with matching Phase 7.40 lineage + Phase 7.39 audit, no Provider/Host start evidence, no durable Turn and elapsed original backoff may be replayed;
-- recovered child re-enters the existing Phase 7.38 `_drive_chain()` rather than creating a second retry engine;
-- `running`, Provider-bound or Host-started attempts fail closed as `ATTEMPT_ALREADY_STARTED`;
-- attempts with a durable Turn fail closed as `SIDE_EFFECT_UNKNOWN`;
-- lineage-without-audit fails closed as `RECOVERY_METADATA_MISSING` instead of guessing Provider exclusion/backoff intent;
-- terminal/canceled logical roots never execute leftover retry children;
-- ordinary `user / manual_retry / resume / fork` tasks are never automatically replayed;
-- `FdexAgentLoop.run()` rejects internal `auto_retry` tasks so an internal child cannot be detached from its logical-root lease;
-- no change to Codex-only execution, retry budget, Provider switching boundary or GitHub authority.
+- a planned child that was never created is created from the exact durable transition;
+- a Phase 7.40 child created before transition attach is found by immutable root/parent/attempt lineage rather than duplicated;
+- a child whose audit insert was interrupted is repaired from the exact transition metadata; no human error/event inference is used;
+- an already-audited pre-7.41 queued child can be adopted into the transition journal for rolling upgrade compatibility;
+- original transition backoff is preserved; recovered child re-enters the existing Phase 7.38 `_drive_chain()` rather than a second retry engine;
+- durable child success/failure is projected back to a still-running root without rerunning Codex;
+- Provider/Host-started attempts fail closed as `ATTEMPT_ALREADY_STARTED` and durable Turn evidence as `SIDE_EFFECT_UNKNOWN`;
+- a started root/attempt with no committed transition is terminalized as `ORPHAN_ATTEMPT_NO_TRANSITION` instead of remaining permanently `running`;
+- transition/audit/lineage mismatch, duplicate attempt index or `next_attempt_index > MAX_AUTO_RETRIES` fails closed;
+- ordinary tasks are never automatically replayed; `FdexAgentLoop.run()` rejects internal `auto_retry` roots;
+- no change to Codex-only execution, Phase 7.38 retry budget, Provider switching boundary or GitHub authority.
 
 ## Production rollout / 生产部署
 
@@ -274,7 +278,7 @@ Phase 7.37–7.41 are server/Web/Codex Host architecture work and do not themsel
 11. Never switch Provider inside a started Codex Host/Turn/task/worktree.
 12. Automatic recovery must use structured health evidence, a bounded budget and a new task/worktree/Host boundary.
 13. Internal retry identity must come from durable AgentTask lineage, never error/event text.
-14. Crash recovery must own the logical-root execution lease and must never replay a Provider/Host-started or side-effect-unknown attempt.
+14. Retry intent must be durable before source cleanup/child creation; crash recovery must own the logical-root lease and never replay a Provider/Host-started or side-effect-unknown attempt.
 15. Unsupported or unverifiable tool/permission/Plugin states fail closed.
 16. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
 17. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
