@@ -75,6 +75,7 @@ install_codex_provider_rollout_runtime()
 # health snapshots for the admin console and later bounded-retry policy.
 from app.codex_agent_health import start_codex_agent_health_monitor, stop_codex_agent_health_monitor
 from app.codex_agent_health_admin_routes import router as codex_agent_health_admin_router
+from app.codex_retry_reconciler import start_codex_retry_chain_reconciler, stop_codex_retry_chain_reconciler
 from app.user_app_routes import router as user_app_router
 from app.agent_identity_runtime import install_agent_identity_runtime
 
@@ -208,6 +209,7 @@ app.include_router(agent_router)
 async def start_security_cleanup_tasks() -> None:
     await start_github_app_flow_cleanup()
     await start_codex_agent_health_monitor()
+    await start_codex_retry_chain_reconciler()
     # Leases are short-lived and raw tokens are never stored, but reconcile expired rows on each
     # process start so a worker crash cannot leave durable state that still looks active.
     remote_mcp_lease_store().purge_expired()
@@ -215,6 +217,7 @@ async def start_security_cleanup_tasks() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_memory_clients() -> None:
+    await stop_codex_retry_chain_reconciler()
     await stop_codex_agent_health_monitor()
     await stop_github_app_flow_cleanup()
     await close_memory_coordinator()
