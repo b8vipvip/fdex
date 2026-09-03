@@ -6,11 +6,18 @@ import shlex
 import shutil
 import subprocess
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from app.account_operations import (
+    AccountOperationBusy,
+    account_deleted_by_hash,
+    account_hash,
+    account_operation,
+)
 from app.agent_projects import agent_project_store
 from app.agent_sandbox import AgentSandboxError, SystemdExecutionSandbox
 from app.agent_tasks import agent_task_store
@@ -84,6 +91,10 @@ class FdexAgentRuntime:
     are populated before the first ``task.created`` emit, so an automatic retry child can never
     exist durably as a user-visible task even if the worker dies before writing richer retry audit
     metadata.
+
+    Phase 7.43 fences every real FDEX-account task creation against account export/erasure/delete
+    with the same cross-worker account-operation flock. The deletion tombstone is checked while
+    that lock is held and the first durable ``task.created`` write occurs before releasing it.
     """
 
     _BASE_TOOLS = (
@@ -149,6 +160,7 @@ class FdexAgentRuntime:
             "cross_worker_task_lock": True,
             "task_cancel_retry": True,
             "atomic_task_kind_lineage": True,
+            "account_operation_task_create_fence": True,
             "sandbox_memory_mb": settings.fdex_agent_sandbox_memory_mb,
             "sandbox_cpu_percent": settings.fdex_agent_sandbox_cpu_percent,
             "sandbox_max_concurrent": settings.fdex_agent_sandbox_max_concurrent,
@@ -274,19 +286,36 @@ class FdexAgentRuntime:
             attempt_index=clean_attempt_index,
             _persist=self._persist_task_sync,
         )
-        if project_id is not None:
-            try:
-                project = agent_project_store().get_project(owner, int(project_id))
-            except (KeyError, ValueError) as exc:
-                raise AgentRuntimeError(str(exc)) from exc
-            if not project["enabled"]:
-                raise AgentRuntimeError("Agent project is disabled")
-            task.project_id = int(project_id)
-            task.project_name = str(project["name"])
-            task.repository = str(project["repo_full_name"])
-            task.base_branch = str(project["base_branch"])
-        # This is the first durable write. Task identity/lineage is already populated here.
-        task.emit("task.created", f"Agent task created for {task.project_name}")
+
+        # The route-level account_operation_status() checks are advisory UX only. Acquire the same
+        # crash-safe cross-worker flock at the runtime's first durable write so a request that
+        # passed an earlier status check cannot race account erasure/deletion. Keep legacy/bootstrap
+        # owners unchanged because they are not Central FDEX identities and have no account tombstone.
+        guard = account_operation(owner, "agent_task_create") if owner.startswith("usr_") else nullcontext()
+        try:
+            with guard:
+                if owner.startswith("usr_") and account_deleted_by_hash(account_hash(owner)):
+                    raise AgentRuntimeError("FDEX account has been deleted")
+                if project_id is not None:
+                    try:
+                        project = agent_project_store().get_project(owner, int(project_id))
+                    except (KeyError, ValueError) as exc:
+                        raise AgentRuntimeError(str(exc)) from exc
+                    if not project["enabled"]:
+                        raise AgentRuntimeError("Agent project is disabled")
+                    task.project_id = int(project_id)
+                    task.project_name = str(project["name"])
+                    task.repository = str(project["repo_full_name"])
+                    task.base_branch = str(project["base_branch"])
+                # This is the first durable write. The account-operation lock and tombstone check
+                # remain authoritative until this row exists, closing check-then-create races.
+                task.emit("task.created", f"Agent task created for {task.project_name}")
+        except AccountOperationBusy as exc:
+            operation = exc.status.operation or "account_data_operation"
+            raise AgentRuntimeError(f"FDEX account data operation is in progress: {operation}") from exc
+        except ValueError as exc:
+            raise AgentRuntimeError(str(exc)) from exc
+
         async with self._lock:
             self._tasks[task.id] = task
         return task
