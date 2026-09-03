@@ -5,8 +5,8 @@ Last updated / 最后更新：2026-09-03
 ## Current baseline / 当前基线
 
 - Default branch / 默认分支：`main`
-- Current accepted Coding Agent architecture：**Phase 7.39 — Retry Chain Observability / Logical Task Projection**
-- Accepted `main`：`54e6f56af95485e4d61aee241caad689eba69aa0`
+- Current accepted Coding Agent architecture：**Phase 7.40 — Atomic Task Kind / Retry Lineage**
+- Accepted `main`：`6b5bd8fec5e4f0f3b6882f0c3e821f03b82b835b`
 - Phase 7.37 PR：**#104 — Add Codex Agent health monitor and live admin status**
 - Phase 7.37 final head：`cd99f99891393c7f5ec3662712f2c2373640545c`
 - Phase 7.37 merge：`1cbf145c84bb345615f37434bea79b79fe65e2d6`
@@ -22,7 +22,12 @@ Last updated / 最后更新：2026-09-03
 - Phase 7.39 merge：`54e6f56af95485e4d61aee241caad689eba69aa0`
 - Phase 7.39 final PR CI：`33735664635` (`Build and Test #1510`) — FastAPI + Android unit + Android Debug APK — success
 - Phase 7.39 post-merge CI：`33735906178` (`Build and Test #1511`) — FastAPI + Android unit + Android Debug APK — success
-- Current development candidate：**Phase 7.40 — Atomic Task Kind / Retry Lineage** on `feature/agent-task-kind-lineage-20260903`; it is **not accepted until its final PR head and merged-main CI both pass**.
+- Phase 7.40 PR：**#107 — Make Agent task kind and retry lineage atomic**
+- Phase 7.40 final head：`cce70b803246904976a574ba22aab0608ace26e0`
+- Phase 7.40 merge：`6b5bd8fec5e4f0f3b6882f0c3e821f03b82b835b`
+- Phase 7.40 final PR CI：`33748131003` (`Build and Test #1513`) — FastAPI + Android unit + Android Debug APK — success
+- Phase 7.40 post-merge CI：`33748381161` (`Build and Test #1514`) — FastAPI + Android unit + Android Debug APK — success
+- Current development candidate：**Phase 7.41 — Durable Retry Chain Reconciler** on `feature/codex-retry-chain-reconciler-20260903`; it is **not accepted until its final PR head and merged-main CI both pass**.
 - Current Android stable release：**v1.1.36**
 
 A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse an older green run after a branch changes.
@@ -43,6 +48,8 @@ employee.coding_agent == true
          Phase 7.38 NEW retry AgentTask + NEW worktree + NEW Host boundary
          at most 2 automatic retries
     -> Phase 7.39 logical root + physical attempt projection
+    -> Phase 7.40 atomic task-kind / logical-root lineage
+    -> Phase 7.41 candidate: atomic retry-transition intent + root-lease crash reconciliation
     -> FDEX validates and publishes resulting Git state
 
 employee.coding_agent == false
@@ -200,27 +207,47 @@ Accepted in PR #106 at `main@54e6f56af95485e4d61aee241caad689eba69aa0`.
 - retry child remains a real AgentTask/worktree/run-lock owner rather than a synthetic UI row;
 - no execution, retry, Provider or GitHub authority boundary changes.
 
-### Phase 7.40 — Atomic Task Kind / Retry Lineage 🚧
+### Phase 7.40 — Atomic Task Kind / Retry Lineage ✅
 
-Current development candidate on `feature/agent-task-kind-lineage-20260903`. Acceptance is pending final PR-head and merged-main CI.
+Accepted in PR #107 at `main@6b5bd8fec5e4f0f3b6882f0c3e821f03b82b835b`.
 
-Target behavior:
-
-- `agent_tasks` itself owns immutable `task_kind / logical_root_id / attempt_index` identity;
+- `agent_tasks` owns immutable `task_kind / logical_root_id / attempt_index` identity;
 - legal task kinds are `user / auto_retry / manual_retry / resume / fork`;
 - only `auto_retry` is hidden from ordinary history; manual Retry, Resume and Fork remain visible new logical tasks;
 - auto-retry kind/root/attempt are present before the first durable `task.created` write;
 - Phase 7.39 retry ledger remains Provider/health/backoff/decision audit rather than task-identity authority;
 - Phase 7.39 databases migrate existing retry children from structured ledger evidence, never from human error/event text;
-- a worker crash after child creation but before retry-ledger insertion must not expose the child as a normal task;
+- a worker crash after child creation but before retry-ledger insertion cannot expose the child as a normal task;
 - retry-chain projection can recover a main-table-only attempt as bounded `audit_pending` evidence;
 - retry eligibility, Provider switching rules, side-effect boundary and Codex-only execution remain unchanged.
 
+### Phase 7.41 — Durable Retry Chain Reconciler 🚧
+
+Current development candidate on `feature/codex-retry-chain-reconciler-20260903`. Acceptance is pending final PR-head and merged-main CI.
+
+Target behavior:
+
+- `codex_retry_transitions` durably records `source -> next attempt` intent before source cleanup or child creation;
+- retryable attempt decision + next index + backoff + Provider exclusions are committed in one SQLite transaction;
+- background reconciliation is logical-root-centric: it scans only `running` roots that already have structured Codex attempt audit evidence;
+- real recovery requires acquiring the logical-root crash-safe `flock`, so multi-worker scans cannot duplicate execution;
+- a planned child that was never created is created from the exact durable transition;
+- a Phase 7.40 child created before transition attach is found by immutable root/parent/attempt lineage rather than duplicated;
+- a child whose audit insert was interrupted is repaired from the exact transition metadata; no human error/event inference is used;
+- an already-audited pre-7.41 queued child can be adopted into the transition journal for rolling upgrade compatibility;
+- original transition backoff is preserved; recovered child re-enters the existing Phase 7.38 `_drive_chain()` rather than a second retry engine;
+- durable child success/failure is projected back to a still-running root without rerunning Codex;
+- Provider/Host-started attempts fail closed as `ATTEMPT_ALREADY_STARTED` and durable Turn evidence as `SIDE_EFFECT_UNKNOWN`;
+- a started root/attempt with no committed transition is terminalized as `ORPHAN_ATTEMPT_NO_TRANSITION` instead of remaining permanently `running`;
+- transition/audit/lineage mismatch, duplicate attempt index or `next_attempt_index > MAX_AUTO_RETRIES` fails closed;
+- ordinary tasks are never automatically replayed; `FdexAgentLoop.run()` rejects internal `auto_retry` roots;
+- no change to Codex-only execution, Phase 7.38 retry budget, Provider switching boundary or GitHub authority.
+
 ## Production rollout / 生产部署
 
-For the accepted Phase 7.39 baseline:
+For the accepted Phase 7.40 baseline:
 
-1. deploy `main@54e6f56af95485e4d61aee241caad689eba69aa0` or a later accepted main;
+1. deploy `main@6b5bd8fec5e4f0f3b6882f0c3e821f03b82b835b` or a later accepted main;
 2. remove obsolete `FDEX_AGENT_ENGINE`, `FDEX_AGENT_MAX_STEPS`, `FDEX_AGENT_MODEL_MAX_TOKENS` env entries if still present;
 3. verify Phase 7.32 Runtime/process isolation health;
 4. open `/admin/agent/codex-providers` and refresh real `full` smoke for intended Providers;
@@ -234,7 +261,7 @@ GitHub CI is not a substitute for deployed Provider full-smoke because CI does n
 
 ## Android-native parity
 
-Phase 7.37–7.40 are server/Web/Codex Host architecture work and do not themselves require a new Android stable release. Keep **v1.1.36** unless Android source or release-worthy Android behavior changes. Every server architecture PR still must pass Android unit tests and Debug APK build to protect shared API/runtime compatibility.
+Phase 7.37–7.41 are server/Web/Codex Host architecture work and do not themselves require a new Android stable release. Keep **v1.1.36** unless Android source or release-worthy Android behavior changes. Every server architecture PR still must pass Android unit tests and Debug APK build to protect shared API/runtime compatibility.
 
 ## Development rules / 后续规则
 
@@ -251,9 +278,10 @@ Phase 7.37–7.40 are server/Web/Codex Host architecture work and do not themsel
 11. Never switch Provider inside a started Codex Host/Turn/task/worktree.
 12. Automatic recovery must use structured health evidence, a bounded budget and a new task/worktree/Host boundary.
 13. Internal retry identity must come from durable AgentTask lineage, never error/event text.
-14. Unsupported or unverifiable tool/permission/Plugin states fail closed.
-15. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
-16. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
+14. Retry intent must be durable before source cleanup/child creation; crash recovery must own the logical-root lease and never replay a Provider/Host-started or side-effect-unknown attempt.
+15. Unsupported or unverifiable tool/permission/Plugin states fail closed.
+16. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
+17. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
 
 ## Reference docs / 参考文档
 
@@ -271,3 +299,4 @@ Phase 7.37–7.40 are server/Web/Codex Host architecture work and do not themsel
 - `docs/CODEX_BOUNDED_RETRY.md`
 - `docs/CODEX_RETRY_OBSERVABILITY.md`
 - `docs/CODEX_TASK_LINEAGE.md`
+- `docs/CODEX_RETRY_RECONCILIATION.md`
