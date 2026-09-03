@@ -10,6 +10,7 @@ from app.agent_tasks import agent_task_store
 from app.codex_host_store import codex_host_store
 from app.codex_interaction_store import codex_interaction_store
 from app.codex_item_store import codex_item_store
+from app.codex_retry_data_lifecycle import delete_owner_retry_task_graph
 from app.codex_task_inputs import codex_task_input_store
 from app.config import fresh_settings
 from app.github_app import GitHubAppClient, GitHubAppError
@@ -123,7 +124,10 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     # Phase 7.29 media lives outside task worktrees. Erase its metadata and generated owner-scoped
     # files before deleting the durable task records so no attachment can become an identity orphan.
     codex_input_cleanup = codex_task_input_store().delete_owner(clean)
-    task_count = agent_task_store().delete_owner(clean)
+    # Phase 7.41 retry-transition rows share the Agent task SQLite database. Erase transition,
+    # attempt and task projections in one BEGIN IMMEDIATE transaction so account deletion cannot
+    # leave retry policy/error/provider metadata behind after the owner task rows disappear.
+    retry_task_cleanup = delete_owner_retry_task_graph(clean)
     settings = fresh_settings()
     removed_dirs = 0
     for configured_root in (settings.fdex_agent_sandbox_root, settings.fdex_agent_worktree_root):
@@ -154,7 +158,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "remote_mcp_leases": remote_mcp_lease_count,
         "remote_mcp_credentials": remote_mcp_credential_count,
         "remote_mcp_servers": remote_mcp_count,
-        "agent_tasks": task_count,
+        "agent_tasks": retry_task_cleanup["agent_tasks"],
+        "codex_retry_attempts": retry_task_cleanup["codex_retry_attempts"],
+        "codex_retry_transitions": retry_task_cleanup["codex_retry_transitions"],
         "codex_interactions": codex_interaction_cleanup,
         "codex_items": codex_item_cleanup,
         "codex_host": codex_cleanup,
