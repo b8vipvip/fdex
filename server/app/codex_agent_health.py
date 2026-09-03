@@ -593,14 +593,21 @@ async def run_codex_agent_health_check(*, force_host: bool = False) -> dict[str,
             (row for row in compatibility if int(row.get("provider_id") or 0) == int(selected.provider_id)),
             None,
         )
-        if selected_live and str(selected_live.get("state")) == "auth_error":
-            state = "BLOCKED"
-            code = "PROVIDER_AUTH_FAILED"
-            reason = f"{selected.name} 实时鉴权失败（HTTP {selected_live.get('status_code') or '401/403'}）"
-        elif str(host.get("state") or "") == "failed":
+        if str(host.get("state") or "") == "failed":
             state = "DEGRADED"
             code = "HOST_UNAVAILABLE"
             reason = str(host.get("reason") or "Codex app-server handshake 失败")
+        elif selected_live and str(selected_live.get("state")) == "auth_error":
+            # `/models` is intentionally only a low-cost reachability signal. Some compatible
+            # gateways restrict model-list metadata while their Responses path remains valid, so
+            # this probe must never override the authoritative fresh-full compatibility gate.
+            state = "DEGRADED"
+            code = "PROVIDER_AUTH_PROBE_FAILED"
+            reason = (
+                f"{selected.name} 的轻量 /models 探针返回 "
+                f"HTTP {selected_live.get('status_code') or '401/403'}；"
+                "fresh-full compatibility 仍是 Codex 执行权威"
+            )
         elif selected_live and str(selected_live.get("state")) == "rate_limited":
             state = "DEGRADED"
             code = "PROVIDER_RATE_LIMITED"
