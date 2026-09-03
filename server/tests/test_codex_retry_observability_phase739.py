@@ -31,6 +31,9 @@ def _task(
     parent: str = "",
     status: str = "running",
     worktree: str = "",
+    task_kind: str = "user",
+    logical_root_id: str = "",
+    attempt_index: int = 0,
 ) -> AgentTask:
     task = AgentTask(
         id=task_id,
@@ -42,16 +45,31 @@ def _task(
         parent_task_id=parent,
         status=status,  # type: ignore[arg-type]
         worktree=worktree,
+        task_kind=task_kind,  # type: ignore[arg-type]
+        logical_root_id=logical_root_id or task_id,
+        attempt_index=attempt_index,
         _persist=store.save,
     )
     task.emit("task.created", "created")
     return task
 
 
+def _auto_child(store: AgentTaskStore, *, worktree: str = "") -> AgentTask:
+    return _task(
+        store,
+        CHILD,
+        parent=ROOT,
+        worktree=worktree,
+        task_kind="auto_retry",
+        logical_root_id=ROOT,
+        attempt_index=1,
+    )
+
+
 def test_default_task_history_hides_internal_retry_but_accounting_keeps_it(monkeypatch, tmp_path: Path) -> None:
     tasks, chain = _stores(monkeypatch, tmp_path)
     root = _task(tasks, ROOT)
-    child = _task(tasks, CHILD, parent=ROOT, worktree=str(tmp_path / "retry-worktree"))
+    child = _auto_child(tasks, worktree=str(tmp_path / "retry-worktree"))
 
     chain.record_queued(
         owner_id=OWNER,
@@ -86,6 +104,8 @@ def test_default_task_history_hides_internal_retry_but_accounting_keeps_it(monke
 def test_retry_chain_is_owner_scoped_ordered_and_structured(monkeypatch, tmp_path: Path) -> None:
     _tasks, chain = _stores(monkeypatch, tmp_path)
 
+    # Keep the original Phase 7.39 ledger-only audit case: Phase 7.40 uses primary AgentTask
+    # lineage whenever it exists, but old/corrupt missing-task audit rows remain inspectable.
     chain.record_queued(
         owner_id=OWNER,
         root_task_id=ROOT,
@@ -163,7 +183,7 @@ def test_web_projection_follows_effective_attempt_and_redirects_internal_detail(
 
     tasks, chain = _stores(monkeypatch, tmp_path)
     root = _task(tasks, ROOT)
-    child = _task(tasks, CHILD, parent=ROOT)
+    child = _auto_child(tasks)
     chain.record_queued(
         owner_id=OWNER,
         root_task_id=ROOT,
@@ -214,7 +234,7 @@ def test_agent_api_retry_chain_projection_is_explicit_and_owner_scoped(monkeypat
 
     tasks, chain = _stores(monkeypatch, tmp_path)
     _task(tasks, ROOT)
-    _task(tasks, CHILD, parent=ROOT)
+    _auto_child(tasks)
     chain.record_queued(
         owner_id=OWNER,
         root_task_id=ROOT,
@@ -244,7 +264,9 @@ def test_agent_api_retry_chain_projection_is_explicit_and_owner_scoped(monkeypat
     )
     payload = asyncio.run(route.endpoint(ROOT, object()))  # type: ignore[arg-type]
     assert payload["task_id"] == ROOT
+    assert payload["task_kind"] == "user"
     assert payload["logical_task_id"] == ROOT
+    assert payload["attempt_index"] == 0
     assert payload["execution_task_id"] == CHILD
     assert payload["retry_chain"]["attempt_count"] == 2
     assert "worktree" not in str(payload["retry_chain"]).lower()
@@ -259,7 +281,8 @@ def test_phase739_source_contract_keeps_logical_and_execution_identity_separate(
     main = (root / "main.py").read_text(encoding="utf-8")
 
     assert "codex_retry_attempts" in task_store
-    assert "retry.attempt_index>0" in task_store
+    assert "task_kind<>'auto_retry'" in task_store
+    assert "list_execution_lineage" in task_store
     assert "include_internal" in task_store
     assert "retry.auto_attempt" not in task_store  # visibility is structured, never event-text parsing
 
@@ -277,5 +300,6 @@ def test_phase739_source_contract_keeps_logical_and_execution_identity_separate(
     assert "excluded_provider_ids" in template
 
     assert '"/tasks/{task_id}/retry-chain"' in api_projection
+    assert '"task_kind"' in api_projection and '"attempt_index"' in api_projection
     assert "install_agent_retry_projection_routes()" in main
     assert "api_key" not in api_projection.lower()
