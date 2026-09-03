@@ -125,6 +125,87 @@ def test_phase737_runtime_failure_is_blocked_without_generic_agent_fallback(monk
     assert result["selected_provider"] is None
 
 
+def test_phase737_models_auth_probe_is_advisory_and_never_overrides_full_gate(monkeypatch, tmp_path: Path) -> None:
+    store = health.CodexAgentHealthStore(tmp_path / "health.db")
+    runtime = SimpleNamespace(version="0.147.0", source="bundled", path="/codex")
+    selected = SimpleNamespace(provider_id=7, name="Gateway", model="gpt-test")
+    provider = {"id": 7, "name": "Gateway", "api_key": "secret"}
+
+    class Providers:
+        def list(self, *args, **kwargs):
+            return [provider]
+
+    def compatibility_snapshot(_runtime):
+        return selected, [
+            {
+                "provider_id": 7,
+                "provider_name": "Gateway",
+                "model": "gpt-test",
+                "eligible": True,
+                "selected": True,
+                "level": "full",
+                "code": "READY",
+                "reason": "fresh full Codex compatibility smoke verified",
+                "age_hours": 12.0,
+                "remaining_hours": 156.0,
+            }
+        ]
+
+    async def live_probe(_provider, _store):
+        return {
+            "provider_id": 7,
+            "provider_name": "Gateway",
+            "model": "gpt-test",
+            "state": "auth_error",
+            "status_code": 403,
+            "latency_ms": 21,
+            "consecutive_failures": 1,
+            "error": "HTTP 403",
+        }
+
+    async def host_probe(_runtime, _provider):
+        return {
+            "state": "ok",
+            "code": "READY",
+            "reason": "handshake completed",
+            "checked_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "latency_ms": 8,
+            "runtime_version": "0.147.0",
+            "provider_id": 7,
+            "process_unit": "fdex-codex-test.service",
+            "server_info_present": True,
+        }
+
+    monkeypatch.setattr(health, "codex_agent_health_store", lambda: store)
+    monkeypatch.setattr(health, "resolve_codex_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        health,
+        "codex_process_isolation_status",
+        lambda: {
+            "enforced": True,
+            "required": True,
+            "reason": "",
+            "controllers": ["cpu", "memory", "pids"],
+            "parent_unit": "fdex.service",
+            "memory_mb": 2048,
+            "cpu_percent": 150,
+            "pids_max": 512,
+        },
+    )
+    monkeypatch.setattr(health, "_compatibility_snapshot", compatibility_snapshot)
+    monkeypatch.setattr(health, "provider_store", lambda: Providers())
+    monkeypatch.setattr(health, "_probe_provider_live", live_probe)
+    monkeypatch.setattr(health, "_probe_host", host_probe)
+    monkeypatch.setattr(health, "fresh_settings", lambda: SimpleNamespace(fdex_agent_enabled=True))
+
+    result = asyncio.run(health.run_codex_agent_health_check(force_host=True))
+
+    assert result["state"] == "DEGRADED"
+    assert result["code"] == "PROVIDER_AUTH_PROBE_FAILED"
+    assert result["selected_provider"]["provider_id"] == 7
+    assert result["compatibility"][0]["eligible"] is True
+
+
 def test_phase737_admin_console_wiring_and_polling_contract() -> None:
     root = Path(__file__).resolve().parents[2]
     main = (root / "server/app/main.py").read_text(encoding="utf-8")
@@ -145,6 +226,8 @@ def test_phase737_admin_console_wiring_and_polling_contract() -> None:
     assert "'/admin/agent/health/check'" in script
     assert '@router.get("/health.json"' in routes
     assert '@router.post("/health/check"' in routes
+    assert "error_type=type(exc).__name__" in routes
+    assert '"error": str(exc)' not in routes
 
 
 def test_phase737_monitor_source_never_serializes_provider_secrets() -> None:
