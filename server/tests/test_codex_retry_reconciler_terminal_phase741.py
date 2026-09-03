@@ -158,13 +158,7 @@ def test_phase741_transition_journal_is_additive_on_phase740_database(monkeypatc
 
     tasks = AgentTaskStore(tmp_path / "agent-tasks.db", tmp_path / "locks")
     tasks.init()
-    root = asyncio.run(
-        FdexAgentRuntime(workspace=tmp_path / "repo", worktree_root=tmp_path / "worktrees").create_task(
-            "migration marker",
-            owner_id=OWNER,
-        )
-    ) if False else None
-    # Write an old Phase 7.40-style attempt directly before the 7.41 store initializes.
+    # Write an old Phase 7.40-style task/attempt before the 7.41 store initializes.
     with tasks.db() as conn:
         now = "2026-09-03T00:00:00+00:00"
         conn.execute(
