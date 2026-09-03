@@ -22,9 +22,9 @@ def rollout_selection(runtime: Any | None = None) -> dict[str, Any]:
     """Choose the first priority Provider with a fresh full Codex compatibility proof.
 
     Phase 7.38 may temporarily exclude the Provider that just produced a *structured transient*
-    failure, but only inside a newly-created retry AgentTask/worktree context. The replacement must
-    still have its own fresh ``full`` proof. Once any Host/Turn starts, Provider identity remains
-    immutable for that attempt.
+    failure, but only inside a newly-created retry AgentTask/worktree context. Selection or
+    reselection happens before a user Host starts and every replacement still needs its own
+    fresh full proof. FDEX never switches Providers inside a started task, Host, or Turn.
     """
     engine = _engine_module()
     runtime = runtime or engine.resolve_codex_runtime()
