@@ -173,7 +173,7 @@ def test_plain_conceptual_question_can_still_use_generic_ai(monkeypatch) -> None
     monkeypatch.setattr(chat_runtime, "_run_coding_agent", fail_agent)
     monkeypatch.setattr(routes, "_conversation_context", lambda _history: "")
     monkeypatch.setattr(routes, "_employee_system", lambda *_args, **_kwargs: "system")
-    monkeypatch.setattr(routes, "_attachment_inputs", lambda _upload: asyncio.sleep(0, result=([], [], [], "")))
+    monkeypatch.setattr(routes, "_attachment_inputs", lambda _upload: asyncio.sleep(0, result=([], None, [], "")))
 
     request = SimpleNamespace(scope={})
     answer = asyncio.run(
