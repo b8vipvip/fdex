@@ -12,6 +12,7 @@ from app.agent_tasks import agent_task_store
 
 
 _ALLOWED_STATES = {"queued", "running", "succeeded", "failed", "blocked", "canceled"}
+_TRANSITION_STATES = {"planned", "child_created", "started", "settled", "blocked", "canceled"}
 
 
 def _now() -> str:
@@ -31,13 +32,17 @@ def _json_ids(values: Any) -> str:
 
 
 class CodexRetryChainStore:
-    """Structured logical-task/attempt projection for bounded Codex retries.
+    """Structured logical-task/attempt projection and retry-transition audit.
 
     Phase 7.40 makes ``agent_tasks.task_kind/logical_root_id/attempt_index`` the identity and
     lineage authority. ``codex_retry_attempts`` remains the richer audit ledger for actual
-    Provider/Model, structured health, backoff and final retry decisions. Projection merges both:
-    a child created immediately before a worker crash is still discoverable from ``agent_tasks``
-    even when no retry-ledger row was written yet.
+    Provider/Model, structured health, backoff and final retry decisions.
+
+    Phase 7.41 adds ``codex_retry_transitions``. A retryable decision and its *next-attempt intent*
+    are committed in one SQLite transaction before the current worker terminalizes/discards the
+    failed physical attempt or creates the next child. The transition therefore survives every
+    later crash window and gives the reconciler exact backoff/exclusion/attempt metadata instead
+    of forcing it to infer policy from error strings.
     """
 
     def __init__(self) -> None:
@@ -66,9 +71,35 @@ class CodexRetryChainStore:
         with self._init_lock:
             if self._initialized:
                 return
-            # AgentTaskStore owns creation/migration of the shared tables so every projection path
-            # sees task-kind lineage before reading the retry audit ledger.
+            # AgentTaskStore owns creation/migration of the shared task/attempt tables. Phase 7.41
+            # owns only its transition journal and creates it in the same SQLite file.
             agent_task_store().init()
+            with self.db() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS codex_retry_transitions (
+                        source_attempt_task_id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL,
+                        root_task_id TEXT NOT NULL,
+                        source_attempt_index INTEGER NOT NULL,
+                        next_attempt_index INTEGER NOT NULL,
+                        decision_code TEXT NOT NULL DEFAULT '',
+                        decision_reason TEXT NOT NULL DEFAULT '',
+                        backoff_seconds REAL NOT NULL DEFAULT 0,
+                        excluded_provider_ids_json TEXT NOT NULL DEFAULT '[]',
+                        child_task_id TEXT NOT NULL DEFAULT '',
+                        state TEXT NOT NULL DEFAULT 'planned',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_retry_transition_root_next
+                        ON codex_retry_transitions(owner_id,root_task_id,next_attempt_index);
+                    CREATE INDEX IF NOT EXISTS idx_codex_retry_transition_root_state
+                        ON codex_retry_transitions(owner_id,root_task_id,state,next_attempt_index DESC);
+                    CREATE INDEX IF NOT EXISTS idx_codex_retry_transition_child
+                        ON codex_retry_transitions(owner_id,child_task_id);
+                    """
+                )
             self._initialized = True
 
     @staticmethod
@@ -82,6 +113,21 @@ class CodexRetryChainStore:
             parsed = []
         data["excluded_provider_ids"] = [int(item) for item in parsed if isinstance(item, int) and item > 0]
         data["internal"] = int(data.get("attempt_index") or 0) > 0
+        return data
+
+    @staticmethod
+    def _transition_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        data = dict(row)
+        try:
+            parsed = json.loads(str(data.pop("excluded_provider_ids_json") or "[]"))
+        except json.JSONDecodeError:
+            parsed = []
+        data["excluded_provider_ids"] = [int(item) for item in parsed if isinstance(item, int) and item > 0]
+        data["backoff_seconds"] = max(0.0, float(data.get("backoff_seconds") or 0.0))
+        data["source_attempt_index"] = max(0, int(data.get("source_attempt_index") or 0))
+        data["next_attempt_index"] = max(0, int(data.get("next_attempt_index") or 0))
         return data
 
     @staticmethod
@@ -205,6 +251,14 @@ class CodexRetryChainStore:
                     attempt_task_id,
                 ),
             )
+            conn.execute(
+                """
+                UPDATE codex_retry_transitions
+                SET state='started',updated_at=?
+                WHERE owner_id=? AND child_task_id=? AND state IN ('planned','child_created')
+                """,
+                (now, owner_id, attempt_task_id),
+            )
         row = self.get_attempt(owner_id, attempt_task_id)
         assert row is not None
         return row
@@ -245,6 +299,266 @@ class CodexRetryChainStore:
                     attempt_task_id,
                 ),
             )
+
+    def record_retry_plan(
+        self,
+        *,
+        owner_id: str,
+        root_task_id: str,
+        source_attempt_task_id: str,
+        source_attempt_index: int,
+        next_attempt_index: int,
+        decision_code: str,
+        decision_reason: str,
+        error: str,
+        backoff_seconds: float,
+        excluded_provider_ids: Any = (),
+    ) -> dict[str, Any]:
+        """Atomically persist the failed-attempt decision and exact next-retry intent."""
+
+        self.init()
+        source_index = max(0, int(source_attempt_index))
+        next_index = max(0, int(next_attempt_index))
+        if next_index != source_index + 1 or next_index < 1:
+            raise ValueError("invalid Codex retry transition attempt index")
+        now = _now()
+        excluded_json = _json_ids(excluded_provider_ids)
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            source = conn.execute(
+                """
+                SELECT owner_id,root_task_id,attempt_index
+                FROM codex_retry_attempts
+                WHERE owner_id=? AND attempt_task_id=?
+                """,
+                (owner_id, source_attempt_task_id),
+            ).fetchone()
+            if source is None:
+                raise KeyError("retry source audit row is missing")
+            if (
+                str(source["owner_id"] or "") != owner_id
+                or str(source["root_task_id"] or "") != root_task_id
+                or int(source["attempt_index"] or 0) != source_index
+            ):
+                raise ValueError("retry source audit does not match transition lineage")
+            conn.execute(
+                """
+                UPDATE codex_retry_attempts
+                SET state='failed',decision_code=?,decision_reason=?,error=?,
+                    completed_at=CASE WHEN completed_at='' THEN ? ELSE completed_at END,updated_at=?
+                WHERE owner_id=? AND attempt_task_id=?
+                """,
+                (
+                    str(decision_code or "")[:100],
+                    str(decision_reason or "")[:2000],
+                    str(error or "")[:4000],
+                    now,
+                    now,
+                    owner_id,
+                    source_attempt_task_id,
+                ),
+            )
+            existing = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE source_attempt_task_id=?",
+                (source_attempt_task_id,),
+            ).fetchone()
+            if existing is not None and (
+                str(existing["owner_id"] or "") != owner_id
+                or str(existing["root_task_id"] or "") != root_task_id
+                or int(existing["source_attempt_index"] or 0) != source_index
+                or int(existing["next_attempt_index"] or 0) != next_index
+            ):
+                raise ValueError("existing retry transition conflicts with immutable lineage")
+            conn.execute(
+                """
+                INSERT INTO codex_retry_transitions(
+                    source_attempt_task_id,owner_id,root_task_id,source_attempt_index,
+                    next_attempt_index,decision_code,decision_reason,backoff_seconds,
+                    excluded_provider_ids_json,child_task_id,state,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,'','planned',?,?)
+                ON CONFLICT(source_attempt_task_id) DO UPDATE SET
+                    decision_code=excluded.decision_code,
+                    decision_reason=excluded.decision_reason,
+                    backoff_seconds=excluded.backoff_seconds,
+                    excluded_provider_ids_json=excluded.excluded_provider_ids_json,
+                    state=CASE
+                        WHEN codex_retry_transitions.child_task_id<>'' THEN codex_retry_transitions.state
+                        ELSE 'planned'
+                    END,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    source_attempt_task_id,
+                    owner_id,
+                    root_task_id,
+                    source_index,
+                    next_index,
+                    str(decision_code or "")[:100],
+                    str(decision_reason or "")[:2000],
+                    max(0.0, float(backoff_seconds or 0.0)),
+                    excluded_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE source_attempt_task_id=?",
+                (source_attempt_task_id,),
+            ).fetchone()
+        result = self._transition_row(row)
+        assert result is not None
+        return result
+
+    def record_transition_from_existing_child(
+        self,
+        *,
+        owner_id: str,
+        root_task_id: str,
+        source_attempt_task_id: str,
+        source_attempt_index: int,
+        child_task_id: str,
+        next_attempt_index: int,
+        decision_code: str,
+        decision_reason: str,
+        backoff_seconds: float,
+        excluded_provider_ids: Any = (),
+    ) -> dict[str, Any]:
+        """Adopt a pre-7.41 queued child using its already-durable Phase 7.39 audit metadata."""
+
+        self.init()
+        source_index = max(0, int(source_attempt_index))
+        next_index = max(0, int(next_attempt_index))
+        if next_index != source_index + 1 or next_index < 1:
+            raise ValueError("invalid compatibility retry transition index")
+        now = _now()
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE source_attempt_task_id=?",
+                (source_attempt_task_id,),
+            ).fetchone()
+            if existing is not None and str(existing["child_task_id"] or "") not in {"", child_task_id}:
+                raise ValueError("retry transition already points to a different child")
+            conn.execute(
+                """
+                INSERT INTO codex_retry_transitions(
+                    source_attempt_task_id,owner_id,root_task_id,source_attempt_index,
+                    next_attempt_index,decision_code,decision_reason,backoff_seconds,
+                    excluded_provider_ids_json,child_task_id,state,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,'child_created',?,?)
+                ON CONFLICT(source_attempt_task_id) DO UPDATE SET
+                    child_task_id=excluded.child_task_id,
+                    decision_code=CASE WHEN codex_retry_transitions.decision_code<>'' THEN codex_retry_transitions.decision_code ELSE excluded.decision_code END,
+                    decision_reason=CASE WHEN codex_retry_transitions.decision_reason<>'' THEN codex_retry_transitions.decision_reason ELSE excluded.decision_reason END,
+                    backoff_seconds=CASE WHEN codex_retry_transitions.backoff_seconds>0 THEN codex_retry_transitions.backoff_seconds ELSE excluded.backoff_seconds END,
+                    excluded_provider_ids_json=CASE WHEN codex_retry_transitions.excluded_provider_ids_json<>'[]' THEN codex_retry_transitions.excluded_provider_ids_json ELSE excluded.excluded_provider_ids_json END,
+                    state='child_created',updated_at=excluded.updated_at
+                """,
+                (
+                    source_attempt_task_id,
+                    owner_id,
+                    root_task_id,
+                    source_index,
+                    next_index,
+                    str(decision_code or "")[:100],
+                    str(decision_reason or "")[:2000],
+                    max(0.0, float(backoff_seconds or 0.0)),
+                    _json_ids(excluded_provider_ids),
+                    child_task_id,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE source_attempt_task_id=?",
+                (source_attempt_task_id,),
+            ).fetchone()
+        result = self._transition_row(row)
+        assert result is not None
+        return result
+
+    def attach_transition_child(
+        self,
+        *,
+        owner_id: str,
+        source_attempt_task_id: str,
+        child_task_id: str,
+    ) -> dict[str, Any]:
+        self.init()
+        now = _now()
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE owner_id=? AND source_attempt_task_id=?",
+                (owner_id, source_attempt_task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("retry transition plan is missing")
+            existing_child = str(row["child_task_id"] or "")
+            if existing_child and existing_child != child_task_id:
+                raise ValueError("retry transition already owns a different child")
+            conn.execute(
+                """
+                UPDATE codex_retry_transitions
+                SET child_task_id=?,state='child_created',updated_at=?
+                WHERE owner_id=? AND source_attempt_task_id=?
+                """,
+                (child_task_id, now, owner_id, source_attempt_task_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM codex_retry_transitions WHERE source_attempt_task_id=?",
+                (source_attempt_task_id,),
+            ).fetchone()
+        result = self._transition_row(updated)
+        assert result is not None
+        return result
+
+    def mark_transition_state(
+        self,
+        *,
+        owner_id: str,
+        source_attempt_task_id: str,
+        state: str,
+    ) -> None:
+        self.init()
+        clean = str(state or "").strip().lower()
+        if clean not in _TRANSITION_STATES:
+            raise ValueError("invalid Codex retry transition state")
+        with self.db() as conn:
+            conn.execute(
+                """
+                UPDATE codex_retry_transitions SET state=?,updated_at=?
+                WHERE owner_id=? AND source_attempt_task_id=?
+                """,
+                (clean, _now(), owner_id, source_attempt_task_id),
+            )
+
+    def get_transition_for_source(self, owner_id: str, source_attempt_task_id: str) -> dict[str, Any] | None:
+        self.init()
+        with self.db() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM codex_retry_transitions
+                WHERE owner_id=? AND source_attempt_task_id=?
+                """,
+                (owner_id, source_attempt_task_id),
+            ).fetchone()
+        return self._transition_row(row)
+
+    def latest_open_transition_for_root(self, owner_id: str, root_task_id: str) -> dict[str, Any] | None:
+        self.init()
+        with self.db() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM codex_retry_transitions
+                WHERE owner_id=? AND root_task_id=?
+                  AND state IN ('planned','child_created','started')
+                ORDER BY next_attempt_index DESC,created_at DESC
+                LIMIT 1
+                """,
+                (owner_id, root_task_id),
+            ).fetchone()
+        return self._transition_row(row)
 
     def record_terminal(
         self,
@@ -338,7 +652,8 @@ class CodexRetryChainStore:
         # retry and has no retry audit record. Once a child exists, main-table lineage alone is
         # sufficient. Ledger-only rows remain visible as explicit audit compatibility evidence.
         has_internal = any(bool(item.get("internal")) for item in attempts)
-        if task is not None and not audit and not has_internal:
+        transition = self.latest_open_transition_for_root(owner_id, root_task_id)
+        if task is not None and not audit and not has_internal and transition is None:
             return None
         if not attempts:
             return None
@@ -365,6 +680,7 @@ class CodexRetryChainStore:
             "active_attempt_task_id": str((active or {}).get("attempt_task_id") or ""),
             "latest_attempt_task_id": str(latest.get("attempt_task_id") or root_task_id),
             "latest_state": str(latest.get("state") or ""),
+            "pending_transition": transition,
             "attempts": attempts,
         }
 
