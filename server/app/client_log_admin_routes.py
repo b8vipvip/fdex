@@ -17,9 +17,10 @@ def _guard(request: Request) -> RedirectResponse | None:
     return None if is_admin(request) else RedirectResponse("/admin/login", status_code=303)
 
 
-def _filters(owner: str, level: str, component: str, q: str, limit: int) -> dict[str, object]:
+def _filters(owner: str, platform: str, level: str, component: str, q: str, limit: int) -> dict[str, object]:
     return {
         "owner_id": (owner or "").strip()[:100],
+        "platform": (platform or "").strip().lower()[:40],
         "level": (level or "").strip().lower()[:20],
         "component": (component or "").strip()[:120],
         "query": (q or "").strip()[:120],
@@ -31,6 +32,7 @@ def _filters(owner: str, level: str, component: str, q: str, limit: int) -> dict
 def client_logs_page(
     request: Request,
     owner: str = "",
+    platform: str = "",
     level: str = "",
     component: str = "",
     q: str = "",
@@ -38,7 +40,7 @@ def client_logs_page(
 ) -> Response:
     if redirect := _guard(request):
         return redirect
-    filters = _filters(owner, level, component, q, limit)
+    filters = _filters(owner, platform, level, component, q, limit)
     store = client_runtime_log_store()
     logs = store.list(**filters)
     return templates.TemplateResponse(
@@ -47,6 +49,7 @@ def client_logs_page(
             request,
             logs=logs,
             owners=store.owners(),
+            platforms=store.platforms(),
             components=store.components(),
             filters=filters,
         ),
@@ -63,7 +66,7 @@ def _text_export(rows: list[dict[str, object]]) -> str:
     for item in rows:
         details = json.dumps(item.get("details") or {}, ensure_ascii=False, separators=(",", ":"))
         lines.append(
-            "{received_at} [{level}] owner={owner_id} device={device_name} app={app_version} "
+            "{received_at} [{level}] owner={owner_id} platform={platform} device={device_name} app={app_version} "
             "component={component} event={event} client_time={client_time} message={message} details={details}".format(
                 details=details,
                 **item,
@@ -77,6 +80,7 @@ def export_client_logs(
     request: Request,
     format: str = "txt",
     owner: str = "",
+    platform: str = "",
     level: str = "",
     component: str = "",
     q: str = "",
@@ -84,7 +88,7 @@ def export_client_logs(
 ) -> Response:
     if redirect := _guard(request):
         return redirect
-    filters = _filters(owner, level, component, q, limit)
+    filters = _filters(owner, platform, level, component, q, limit)
     rows = client_runtime_log_store().list(**filters)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     if format.strip().lower() == "json":
