@@ -88,10 +88,11 @@ def test_protected_paths_are_rejected_before_fdex_commit() -> None:
     assert not codex_engine._path_is_protected("server/app/main.py")
 
 
-def test_agent_settings_no_longer_define_an_engine_selector(monkeypatch) -> None:
+def test_agent_settings_no_longer_define_or_normalize_engine_modes(monkeypatch) -> None:
     monkeypatch.setenv("FDEX_AGENT_ENGINE", "legacy")
     settings = Settings(_env_file=None)
     assert not hasattr(settings, "fdex_agent_engine")
+    assert not hasattr(codex_engine, "normalize_engine_mode")
 
 
 def test_admin_template_exposes_codex_as_the_only_agent_core() -> None:
