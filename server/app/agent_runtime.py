@@ -17,6 +17,8 @@ from app.agent_tasks import agent_task_store
 from app.config import get_settings
 
 AgentTaskStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
+AgentTaskKind = Literal["user", "auto_retry", "manual_retry", "resume", "fork"]
+_TASK_KINDS = frozenset({"user", "auto_retry", "manual_retry", "resume", "fork"})
 
 
 @dataclass(slots=True)
@@ -46,6 +48,9 @@ class AgentTask:
     changed_files: set[str] = field(default_factory=set)
     cancel_requested: bool = False
     parent_task_id: str = ""
+    task_kind: AgentTaskKind = "user"
+    logical_root_id: str = ""
+    attempt_index: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     events: list[AgentEvent] = field(default_factory=list)
@@ -74,6 +79,11 @@ class FdexAgentRuntime:
     Phase 7.4 persists every task/event to SQLite so history survives process restarts and
     multiple Uvicorn workers. The in-memory map is only a hot cache. Task execution remains
     project/worktree isolated and the durable task store supplies cross-worker run locking.
+
+    Phase 7.40 makes task kind and execution-lineage immutable creation-time metadata. The fields
+    are populated before the first ``task.created`` emit, so an automatic retry child can never
+    exist durably as a user-visible task even if the worker dies before writing richer retry audit
+    metadata.
     """
 
     _BASE_TOOLS = (
@@ -138,6 +148,7 @@ class FdexAgentRuntime:
             "persistent_task_history": True,
             "cross_worker_task_lock": True,
             "task_cancel_retry": True,
+            "atomic_task_kind_lineage": True,
             "sandbox_memory_mb": settings.fdex_agent_sandbox_memory_mb,
             "sandbox_cpu_percent": settings.fdex_agent_sandbox_cpu_percent,
             "sandbox_max_concurrent": settings.fdex_agent_sandbox_max_concurrent,
@@ -157,6 +168,13 @@ class FdexAgentRuntime:
         except ValueError:
             return datetime.now(UTC)
 
+    @staticmethod
+    def _task_ref(value: str, label: str) -> str:
+        clean = str(value or "").strip().lower()
+        if len(clean) != 32 or any(ch not in "0123456789abcdef" for ch in clean):
+            raise AgentRuntimeError(f"invalid {label}")
+        return clean
+
     def _persist_task_sync(self, task: AgentTask) -> None:
         self.task_store.save(task)
 
@@ -170,6 +188,9 @@ class FdexAgentRuntime:
             for item in list(row.get("events") or [])
             if isinstance(item, dict)
         ]
+        kind = str(row.get("task_kind") or "user").strip().lower()
+        if kind not in _TASK_KINDS:
+            kind = "user"
         task = AgentTask(
             id=str(row["id"]),
             prompt=str(row.get("prompt") or ""),
@@ -189,6 +210,9 @@ class FdexAgentRuntime:
             changed_files=set(str(item) for item in list(row.get("changed_files") or [])),
             cancel_requested=bool(row.get("cancel_requested")),
             parent_task_id=str(row.get("parent_task_id") or ""),
+            task_kind=kind,  # type: ignore[arg-type]
+            logical_root_id=str(row.get("logical_root_id") or row.get("id") or ""),
+            attempt_index=max(0, int(row.get("attempt_index") or 0)),
             created_at=self._parse_time(row.get("created_at")),
             updated_at=self._parse_time(row.get("updated_at")),
             events=events,
@@ -203,6 +227,9 @@ class FdexAgentRuntime:
         owner_id: str | None = None,
         project_id: int | None = None,
         parent_task_id: str = "",
+        task_kind: AgentTaskKind = "user",
+        logical_root_id: str = "",
+        attempt_index: int = 0,
     ) -> AgentTask:
         clean_prompt = prompt.strip()
         if not clean_prompt:
@@ -210,15 +237,41 @@ class FdexAgentRuntime:
         if not self.enabled:
             raise AgentRuntimeError("FDEX Agent Runtime is disabled")
         owner = (owner_id or self.default_owner).strip()
+        clean_kind = str(task_kind or "user").strip().lower()
+        if clean_kind not in _TASK_KINDS:
+            raise AgentRuntimeError("invalid Agent task kind")
+        try:
+            clean_attempt_index = int(attempt_index)
+        except (TypeError, ValueError) as exc:
+            raise AgentRuntimeError("invalid Agent attempt index") from exc
+        parent = self._task_ref(parent_task_id, "parent task id") if parent_task_id else ""
+        task_id = uuid.uuid4().hex
+        if clean_kind == "auto_retry":
+            if not parent:
+                raise AgentRuntimeError("automatic retry task requires parent task id")
+            if clean_attempt_index < 1:
+                raise AgentRuntimeError("automatic retry task requires positive attempt index")
+            root = self._task_ref(logical_root_id, "logical root task id")
+            if root == task_id:
+                raise AgentRuntimeError("automatic retry task cannot be its own logical root")
+        else:
+            if clean_attempt_index != 0:
+                raise AgentRuntimeError("user-visible Agent task attempt index must be zero")
+            if clean_kind in {"manual_retry", "resume", "fork"} and not parent:
+                raise AgentRuntimeError(f"{clean_kind} task requires parent task id")
+            root = task_id
         if project_id is not None:
             usage = self.execution_sandbox.account_usage(owner)
             if bool(usage.get("over_limit")):
                 raise AgentRuntimeError("account sandbox disk limit reached; clean completed workspaces before creating a new task")
         task = AgentTask(
-            id=uuid.uuid4().hex,
+            id=task_id,
             prompt=clean_prompt,
             owner_id=owner,
-            parent_task_id=parent_task_id,
+            parent_task_id=parent,
+            task_kind=clean_kind,  # type: ignore[arg-type]
+            logical_root_id=root,
+            attempt_index=clean_attempt_index,
             _persist=self._persist_task_sync,
         )
         if project_id is not None:
@@ -232,6 +285,7 @@ class FdexAgentRuntime:
             task.project_name = str(project["name"])
             task.repository = str(project["repo_full_name"])
             task.base_branch = str(project["base_branch"])
+        # This is the first durable write. Task identity/lineage is already populated here.
         task.emit("task.created", f"Agent task created for {task.project_name}")
         async with self._lock:
             self._tasks[task.id] = task
@@ -300,6 +354,7 @@ class FdexAgentRuntime:
             owner_id=owner_id,
             project_id=source.project_id,
             parent_task_id=source.id,
+            task_kind="manual_retry",
         )
 
     async def _raise_if_cancelled(self, task: AgentTask) -> None:
