@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi import HTTPException
+from starlette.requests import Request
+
+import app.client_runtime_log_routes as client_log_routes
+import app.user_portal_routes as user_portal_routes
+from app.client_runtime_log_routes import ClientLogBatch, ClientLogEntry
 from app.client_runtime_logs import ClientRuntimeLogStore, redact_text
 
 
@@ -72,6 +78,58 @@ def test_client_log_store_separates_android_and_web(tmp_path: Path) -> None:
     assert set(store.platforms()) == {"android", "web"}
 
 
+def test_web_log_upload_uses_server_session_and_forces_web_platform(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def append_batch(self, **kwargs):
+            captured.update(kwargs)
+            return len(kwargs["entries"])
+
+    monkeypatch.setattr(user_portal_routes, "_current_user", lambda request: {"id": "usr_web", "session_id": "ses_web"})
+
+    def verify_csrf(request, provided: str) -> None:
+        assert provided == "csrf-test-value"
+
+    monkeypatch.setattr(user_portal_routes, "_verify_csrf", verify_csrf)
+    monkeypatch.setattr(client_log_routes, "client_runtime_log_store", lambda: FakeStore())
+
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/client-logs/web-batch",
+        "headers": [(b"x-fdex-csrf-token", b"csrf-test-value")],
+    })
+    result = client_log_routes.upload_web_client_logs(
+        ClientLogBatch(
+            device_name="Web Win32",
+            platform="android",
+            app_version="1.2.3",
+            os_version="Browser",
+            entries=[ClientLogEntry(component="web_runtime", event="page_load", message="ready")],
+        ),
+        request,
+    )
+
+    assert result == {"ok": True, "accepted": 1}
+    assert captured["owner_id"] == "usr_web"
+    assert captured["session_id"] == "ses_web"
+    assert captured["platform"] == "web"
+    assert captured["device_name"] == "Web Win32"
+
+
+def test_web_log_upload_rejects_missing_web_session(monkeypatch) -> None:
+    monkeypatch.setattr(user_portal_routes, "_current_user", lambda request: None)
+    request = Request({"type": "http", "method": "POST", "path": "/api/client-logs/web-batch", "headers": []})
+    body = ClientLogBatch(entries=[ClientLogEntry(component="web_runtime", event="page_load")])
+    try:
+        client_log_routes.upload_web_client_logs(body, request)
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("missing Web session should be rejected")
+
+
 def test_redact_text_covers_common_credentials() -> None:
     safe = redact_text("password=hunter2 api_key=sk-secret refresh_token=refresh-secret")
     assert "hunter2" not in safe
@@ -99,7 +157,8 @@ def test_client_log_routes_and_admin_navigation_are_wired() -> None:
     assert 'name="platform"' in page
     assert "Android 与 Web" in page
 
-    assert '/static/user_runtime_log.js' in user_base
+    assert '<script src="/static/user_runtime_log.js"></script>' in user_base
+    assert user_base.index('/static/user_runtime_log.js') < user_base.index('/static/user_chat.js')
     assert 'data-fdex-log-scope' in user_base
     assert '@router.post("/web-batch"' in routes
     assert 'force_platform="web"' in routes
