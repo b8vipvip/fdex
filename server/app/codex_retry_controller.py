@@ -400,13 +400,17 @@ async def complete_logical_root_from_retry(
     *,
     retry_count: int,
 ) -> AgentTask:
-    """Complete the non-terminal logical root from a successful child attempt."""
+    """Complete the non-terminal logical root from a successful child attempt.
+
+    The logical root copies publication metadata but does not take ownership of the child's
+    worktree. This keeps cleanup single-owner and prevents two terminal task rows from referencing
+    the same filesystem path.
+    """
 
     if root.id == final_attempt.id:
         return final_attempt
     root.changed_files.update(final_attempt.changed_files)
     root.branch = final_attempt.branch
-    root.worktree = final_attempt.worktree
     root.commit_sha = final_attempt.commit_sha
     root.pushed = final_attempt.pushed
     root.pr_url = final_attempt.pr_url
@@ -435,7 +439,10 @@ async def finalize_logical_root_failure(
     )
     if current.id != root.id:
         await terminalize_task_failure(runtime, current.id, clean_error)
-        await bind_logical_root_to_final_attempt(root, current)
+        # Do not rebind the logical root to a failed child Thread. If the root was created as a
+        # continuation, its existing binding remains the last stable completed context; if it was a
+        # new Thread with no completed Turn, leaving that binding untouched is still safer than
+        # making a failed retry child the future chat continuation source.
     root.emit(
         "retry.auto_exhausted" if code == "RETRY_LIMIT_REACHED" else "retry.auto_suppressed",
         f"Final retry decision={code}; logical task is now terminal",
