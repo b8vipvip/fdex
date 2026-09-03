@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterator
 
 from app.agent_tasks import agent_task_store
 
@@ -18,8 +19,15 @@ def _now() -> str:
 
 
 def _json_ids(values: Any) -> str:
-    ids = sorted({int(item) for item in (values or []) if int(item) > 0})
-    return json.dumps(ids, separators=(",", ":"))
+    ids: set[int] = set()
+    for item in values or ():
+        try:
+            value = int(item)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            ids.add(value)
+    return json.dumps(sorted(ids), separators=(",", ":"))
 
 
 class CodexRetryChainStore:
@@ -36,12 +44,20 @@ class CodexRetryChainStore:
         self._initialized = False
         self._init_lock = threading.Lock()
 
-    def db(self) -> sqlite3.Connection:
+    @contextmanager
+    def db(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(self.path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def init(self) -> None:
         if self._initialized:
@@ -115,7 +131,6 @@ class CodexRetryChainStore:
                     now,
                 ),
             )
-            conn.commit()
         row = self.get_attempt(owner_id, attempt_task_id)
         assert row is not None
         return row
@@ -157,7 +172,6 @@ class CodexRetryChainStore:
                     attempt_task_id,
                 ),
             )
-            conn.commit()
         row = self.get_attempt(owner_id, attempt_task_id)
         assert row is not None
         return row
@@ -198,7 +212,6 @@ class CodexRetryChainStore:
                     attempt_task_id,
                 ),
             )
-            conn.commit()
 
     def record_terminal(
         self,
