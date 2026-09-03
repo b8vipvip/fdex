@@ -10,6 +10,12 @@
     hour12: false,
   });
 
+  function runtimeLog(level, event, message = '', details = {}) {
+    const logger = window.FdexRuntimeLog;
+    const fn = logger?.[level];
+    if (typeof fn === 'function') fn.call(logger, 'web_chat', event, message, details);
+  }
+
   function beijingTime(value) {
     const date = value ? new Date(value) : new Date();
     if (Number.isNaN(date.getTime())) return value || '';
@@ -79,8 +85,16 @@
     button.textContent = '发送中…';
     textarea.value = '';
 
+    const url = form.action.replace(/\/send$/, '/send-json');
+    const path = new URL(url, window.location.href).pathname;
+    const started = performance.now();
+    runtimeLog('info', 'send_start', 'Web chat request started', {
+      path,
+      message_chars: message.length,
+      has_attachment: Boolean(attachmentName),
+    });
+
     try {
-      const url = form.action.replace(/\/send$/, '/send-json');
       const response = await fetch(url, {
         method: 'POST',
         body: data,
@@ -92,16 +106,35 @@
 
       mine.meta.textContent = `我 · ${beijingTime(payload.user_message?.created_at) || beijingTime()}`;
       const tools = toolSummary(payload);
+      const toolCount = Array.isArray(payload?.tool_events) ? payload.tool_events.length : 0;
       if (!payload.ok) {
+        runtimeLog('error', 'send_failed', payload.error || 'Web chat response failed', {
+          path,
+          http_status: response.status,
+          elapsed_ms: Math.round(performance.now() - started),
+          tool_event_count: toolCount,
+        });
         pending.meta.textContent = `${name} · 回复失败${tools ? ` · ${tools}` : ''}`;
         pending.body.textContent = payload.error || `AI 线路调用失败（HTTP ${response.status}）`;
         pending.article.style.borderColor = '#ef4444';
       } else {
+        runtimeLog('info', 'send_completed', 'Web chat response completed', {
+          path,
+          http_status: response.status,
+          elapsed_ms: Math.round(performance.now() - started),
+          tool_event_count: toolCount,
+          response_chars: String(payload.assistant_message?.content || '').length,
+        });
         pending.meta.textContent = `${name} · ${beijingTime(payload.assistant_message?.created_at) || beijingTime()}${tools ? ` · ${tools}` : ''}`;
         pending.body.textContent = payload.assistant_message?.content || '';
         if (file) file.value = '';
       }
     } catch (error) {
+      runtimeLog('error', 'send_exception', error instanceof Error ? error.message : String(error), {
+        path,
+        elapsed_ms: Math.round(performance.now() - started),
+        error_type: error?.name || 'Error',
+      });
       pending.meta.textContent = `${name} · 网络异常 · ${beijingTime()}`;
       pending.body.textContent = error instanceof Error ? error.message : String(error);
       pending.article.style.borderColor = '#ef4444';
