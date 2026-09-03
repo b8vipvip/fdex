@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/user_portal.css">
 </head>
-<body>
+<body data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
 <div class="user-shell">
     <header class="user-topbar">
         <a class="user-brand" href="/account/messages">
@@ -44,6 +44,7 @@
         {% block content %}{% endblock %}
     </main>
 </div>
+<script src="/static/user_runtime_log.js" defer></script>
 <script src="/static/user_chat.js" defer></script>
 {% block scripts %}{% endblock %}
 </body>
