@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 from app.auth_routes import require_user
 from app.client_runtime_logs import client_runtime_log_store
 from app.config import get_settings
-from app.user_portal_routes import _current_user, _verify_csrf
 
 settings = get_settings()
 router = APIRouter(prefix=f"{settings.api_prefix}/client-logs", tags=["client-logs"])
@@ -65,6 +64,10 @@ def upload_web_client_logs(body: ClientLogBatch, request: Request) -> dict[str, 
     Owner/session attribution is always taken from server-side session state; client-supplied
     platform values are ignored so Web diagnostics cannot masquerade as native Android records.
     """
+    # Import lazily so this lightweight diagnostics API does not pull the entire user portal route
+    # graph into main.py before the runtime bootstrap/install hooks have finished.
+    from app.user_portal_routes import _current_user, _verify_csrf
+
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="FDEX Web login has expired")
