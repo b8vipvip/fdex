@@ -286,7 +286,9 @@ def test_phase738_agent_loop_transparently_recovers_root_with_new_child(monkeypa
 
     final = asyncio.run(FdexAgentLoop(runtime).run(root.id))
     durable_root = asyncio.run(runtime.get_task(root.id))
-    rows = runtime.task_store.list(root.owner_id, limit=20)
+    # Phase 7.39+ hides auto-retry children from normal history. This is an execution/audit test,
+    # so explicitly include internal rows while proving the child remains a real durable AgentTask.
+    rows = runtime.task_store.list(root.owner_id, limit=20, include_internal=True)
     children = [row for row in rows if str(row.get("parent_task_id") or "") == root.id]
 
     assert len(calls) == 2
@@ -298,6 +300,7 @@ def test_phase738_agent_loop_transparently_recovers_root_with_new_child(monkeypa
     assert durable_root.result == "recovered by official Codex"
     assert len(children) == 1
     assert children[0]["id"] == calls[1]
+    assert children[0]["task_kind"] == "auto_retry"
     assert any(event.type == "retry.auto_recovered" for event in durable_root.events)
 
 
@@ -351,11 +354,12 @@ def test_phase738_exhaustion_runs_original_plus_two_children_only(monkeypatch, t
     monkeypatch.setattr(retry, "RETRY_BACKOFF_SECONDS", (0.0, 0.0))
 
     final = asyncio.run(FdexAgentLoop(runtime).run(root.id))
-    rows = runtime.task_store.list(root.owner_id, limit=20)
+    rows = runtime.task_store.list(root.owner_id, limit=20, include_internal=True)
 
     assert len(calls) == 1 + retry.MAX_AUTO_RETRIES
     assert len(set(calls)) == len(calls)
     assert len(rows) == 1 + retry.MAX_AUTO_RETRIES
+    assert sum(1 for row in rows if row["task_kind"] == "auto_retry") == retry.MAX_AUTO_RETRIES
     assert final.status == "failed"
     assert any(event.type == "retry.auto_exhausted" for event in final.events)
 

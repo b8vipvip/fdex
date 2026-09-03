@@ -693,6 +693,7 @@ async def create_codex_continuation(
         owner_id=owner_id,
         project_id=source.project_id,
         parent_task_id=source.id,
+        task_kind="fork" if fork else "resume",
     )
     await asyncio.to_thread(
         codex_host_store().bind_task,

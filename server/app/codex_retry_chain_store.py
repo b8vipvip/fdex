@@ -31,12 +31,13 @@ def _json_ids(values: Any) -> str:
 
 
 class CodexRetryChainStore:
-    """Structured logical-task/attempt ledger for bounded Codex retries.
+    """Structured logical-task/attempt projection for bounded Codex retries.
 
-    AgentTask rows remain the execution authority. This table is a projection/audit layer that
-    records which task is the user-facing logical root, which tasks are internal retry attempts,
-    which Provider each attempt actually used, and which structured health decision caused the
-    next attempt to exist. It never decides whether a retry is allowed.
+    Phase 7.40 makes ``agent_tasks.task_kind/logical_root_id/attempt_index`` the identity and
+    lineage authority. ``codex_retry_attempts`` remains the richer audit ledger for actual
+    Provider/Model, structured health, backoff and final retry decisions. Projection merges both:
+    a child created immediately before a worker crash is still discoverable from ``agent_tasks``
+    even when no retry-ledger row was written yet.
     """
 
     def __init__(self) -> None:
@@ -65,8 +66,8 @@ class CodexRetryChainStore:
         with self._init_lock:
             if self._initialized:
                 return
-            # AgentTaskStore owns creation/migration of the shared table so every code path that
-            # lists tasks can safely reference it even before this projection helper is imported.
+            # AgentTaskStore owns creation/migration of the shared tables so every projection path
+            # sees task-kind lineage before reading the retry audit ledger.
             agent_task_store().init()
             self._initialized = True
 
@@ -82,6 +83,38 @@ class CodexRetryChainStore:
         data["excluded_provider_ids"] = [int(item) for item in parsed if isinstance(item, int) and item > 0]
         data["internal"] = int(data.get("attempt_index") or 0) > 0
         return data
+
+    @staticmethod
+    def _lineage_projection(task: dict[str, Any]) -> dict[str, Any]:
+        """Create a bounded attempt projection when the richer retry ledger is absent."""
+
+        state = str(task.get("status") or "queued").strip().lower()
+        if state not in _ALLOWED_STATES:
+            state = "queued"
+        return {
+            "attempt_task_id": str(task.get("id") or ""),
+            "owner_id": str(task.get("owner_id") or ""),
+            "root_task_id": str(task.get("logical_root_id") or task.get("id") or ""),
+            "parent_task_id": str(task.get("parent_task_id") or ""),
+            "attempt_index": max(0, int(task.get("attempt_index") or 0)),
+            "state": state,
+            "provider_id": 0,
+            "provider_name": "",
+            "model": "",
+            "trigger_code": "",
+            "trigger_reason": "",
+            "decision_code": "",
+            "decision_reason": "",
+            "backoff_seconds": 0.0,
+            "excluded_provider_ids": [],
+            "error": str(task.get("error") or "")[:4000],
+            "started_at": "",
+            "completed_at": "",
+            "created_at": str(task.get("created_at") or ""),
+            "updated_at": str(task.get("updated_at") or ""),
+            "internal": str(task.get("task_kind") or "") == "auto_retry",
+            "audit_pending": True,
+        }
 
     def record_queued(
         self,
@@ -254,9 +287,59 @@ class CodexRetryChainStore:
 
     def chain_for_task(self, owner_id: str, task_id: str) -> dict[str, Any] | None:
         self.init()
-        attempt = self.get_attempt(owner_id, task_id)
-        root_task_id = str((attempt or {}).get("root_task_id") or task_id)
-        attempts = self.list_for_root(owner_id, root_task_id)
+        task_store = agent_task_store()
+        task = task_store.get(owner_id, task_id)
+        audit_attempt = self.get_attempt(owner_id, task_id)
+        if task is None and audit_attempt is None:
+            return None
+
+        # Main-table lineage is authoritative whenever the AgentTask exists. A ledger-only fallback
+        # is retained solely for old/corrupt audit records whose primary task row is unavailable.
+        root_task_id = str(
+            (task or {}).get("logical_root_id")
+            or (audit_attempt or {}).get("root_task_id")
+            or task_id
+        )
+        lineage = task_store.list_execution_lineage(owner_id, root_task_id) if task is not None else []
+        audit = {
+            str(item.get("attempt_task_id") or ""): item
+            for item in self.list_for_root(owner_id, root_task_id)
+            if str(item.get("attempt_task_id") or "")
+        }
+        attempts: list[dict[str, Any]] = []
+        for lineage_task in lineage:
+            attempt_task_id = str(lineage_task.get("id") or "")
+            row = audit.get(attempt_task_id)
+            if row is not None:
+                projected = dict(row)
+                projected["audit_pending"] = False
+                projected["internal"] = str(lineage_task.get("task_kind") or "") == "auto_retry"
+                attempts.append(projected)
+            else:
+                attempts.append(self._lineage_projection(lineage_task))
+
+        # Compatibility for a Phase 7.39 ledger row whose corresponding AgentTask was already
+        # deleted/corrupted: keep the audit evidence visible rather than silently discarding it.
+        known = {str(item.get("attempt_task_id") or "") for item in attempts}
+        for attempt_task_id, row in audit.items():
+            if attempt_task_id not in known:
+                projected = dict(row)
+                projected["audit_pending"] = False
+                attempts.append(projected)
+        attempts.sort(
+            key=lambda item: (
+                int(item.get("attempt_index") or 0),
+                str(item.get("created_at") or ""),
+                str(item.get("attempt_task_id") or ""),
+            )
+        )
+
+        # Do not render a retry-chain panel for a normal AgentTask that has never had an automatic
+        # retry and has no retry audit record. Once a child exists, main-table lineage alone is
+        # sufficient. Ledger-only rows remain visible as explicit audit compatibility evidence.
+        has_internal = any(bool(item.get("internal")) for item in attempts)
+        if task is not None and not audit and not has_internal:
+            return None
         if not attempts:
             return None
         latest = attempts[-1]
@@ -268,10 +351,15 @@ class CodexRetryChainStore:
             ),
             None,
         )
+        requested_is_internal = (
+            str((task or {}).get("task_kind") or "") == "auto_retry"
+            if task is not None
+            else bool(audit_attempt and int(audit_attempt.get("attempt_index") or 0) > 0)
+        )
         return {
             "root_task_id": root_task_id,
             "requested_task_id": task_id,
-            "requested_is_internal": bool(attempt and int(attempt.get("attempt_index") or 0) > 0),
+            "requested_is_internal": requested_is_internal,
             "attempt_count": len(attempts),
             "retry_count": max(0, len(attempts) - 1),
             "active_attempt_task_id": str((active or {}).get("attempt_task_id") or ""),
