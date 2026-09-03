@@ -13,6 +13,7 @@ from app.codex_retry_chain_store import codex_retry_chain_store
 from app.codex_retry_controller import (
     MAX_AUTO_RETRIES,
     RetryDecision,
+    complete_logical_root_from_retry,
     create_auto_retry_child,
     discard_failed_attempt_worktree,
     finalize_logical_root_failure,
@@ -262,6 +263,9 @@ async def _materialize_transition_child(
     source_id = str(transition.get("source_attempt_task_id") or "")
     source_index = int(transition.get("source_attempt_index") or 0)
     next_index = int(transition.get("next_attempt_index") or 0)
+    decision_code = str(transition.get("decision_code") or "")
+    if not source_id or not decision_code:
+        return None, "RETRY_TRANSITION_INVALID", "durable retry transition is missing source or decision identity"
     if next_index < 1 or next_index > MAX_AUTO_RETRIES or next_index != source_index + 1:
         return None, "RETRY_BUDGET_INVALID", "durable retry transition exceeds the accepted bounded retry budget"
 
@@ -362,35 +366,54 @@ async def _materialize_transition_child(
             attempt_task_id=child.id,
             parent_task_id=source.id,
             attempt_index=next_index,
-            trigger_code=str(transition.get("decision_code") or ""),
+            trigger_code=decision_code,
             trigger_reason=str(transition.get("decision_reason") or ""),
             backoff_seconds=float(transition.get("backoff_seconds") or 0.0),
             excluded_provider_ids=list(transition.get("excluded_provider_ids") or []),
         )
-        audit = await asyncio.to_thread(ledger.get_attempt, root.owner_id, child.id)
+    else:
+        if (
+            str(audit.get("root_task_id") or "") != root.id
+            or str(audit.get("parent_task_id") or "") != source.id
+            or int(audit.get("attempt_index") or -1) != next_index
+        ):
+            return None, "RECOVERY_METADATA_MISMATCH", "retry audit disagrees with transition and immutable task lineage"
+        # Fill legacy blank trigger fields from the transition without changing already-started
+        # Provider/Host evidence. record_queued's conflict clause preserves non-empty fields.
+        await asyncio.to_thread(
+            ledger.record_queued,
+            owner_id=root.owner_id,
+            root_task_id=root.id,
+            attempt_task_id=child.id,
+            parent_task_id=source.id,
+            attempt_index=next_index,
+            trigger_code=decision_code,
+            trigger_reason=str(transition.get("decision_reason") or ""),
+            backoff_seconds=float(transition.get("backoff_seconds") or 0.0),
+            excluded_provider_ids=list(transition.get("excluded_provider_ids") or []),
+        )
+
+    audit = await asyncio.to_thread(ledger.get_attempt, root.owner_id, child.id)
     if audit is None:
         return None, "RECOVERY_METADATA_MISSING", "retry child audit could not be reconstructed from durable transition"
+    plan_exclusions = sorted(int(item) for item in list(transition.get("excluded_provider_ids") or []))
+    audit_exclusions = sorted(int(item) for item in list(audit.get("excluded_provider_ids") or []))
+    try:
+        backoff_matches = abs(
+            float(audit.get("backoff_seconds") or 0.0)
+            - float(transition.get("backoff_seconds") or 0.0)
+        ) < 0.000001
+    except (TypeError, ValueError):
+        backoff_matches = False
     if (
         str(audit.get("root_task_id") or "") != root.id
         or str(audit.get("parent_task_id") or "") != source.id
         or int(audit.get("attempt_index") or -1) != next_index
+        or str(audit.get("trigger_code") or "") != decision_code
+        or audit_exclusions != plan_exclusions
+        or not backoff_matches
     ):
-        return None, "RECOVERY_METADATA_MISMATCH", "retry audit disagrees with transition and immutable task lineage"
-
-    # Fill legacy blank trigger fields from the transition without changing an already-started
-    # Provider/Host state. record_queued's conflict clause preserves non-empty audit evidence.
-    await asyncio.to_thread(
-        ledger.record_queued,
-        owner_id=root.owner_id,
-        root_task_id=root.id,
-        attempt_task_id=child.id,
-        parent_task_id=source.id,
-        attempt_index=next_index,
-        trigger_code=str(transition.get("decision_code") or ""),
-        trigger_reason=str(transition.get("decision_reason") or ""),
-        backoff_seconds=float(transition.get("backoff_seconds") or 0.0),
-        excluded_provider_ids=list(transition.get("excluded_provider_ids") or []),
-    )
+        return None, "RECOVERY_METADATA_MISMATCH", "retry audit policy metadata disagrees with durable transition"
     return child, "", ""
 
 
@@ -477,6 +500,55 @@ async def _reconcile_root(candidate: dict[str, Any]) -> str:
 
             audit = await asyncio.to_thread(ledger.get_attempt, owner_id, child.id)
             assert audit is not None
+
+            # A child can have reached a durable terminal state immediately before the worker died.
+            # This is not a replay. Project the already-committed outcome to the still-running root.
+            if child.status == "succeeded":
+                await complete_logical_root_from_retry(
+                    runtime,
+                    root,
+                    child,
+                    retry_count=child.attempt_index,
+                )
+                try:
+                    await asyncio.to_thread(
+                        ledger.mark_transition_state,
+                        owner_id=owner_id,
+                        source_attempt_task_id=source_id,
+                        state="settled",
+                    )
+                except (KeyError, ValueError, RuntimeError):
+                    pass
+                return "recovered"
+            if child.status in {"failed", "canceled"}:
+                terminal_code = str(audit.get("decision_code") or "") or (
+                    "TASK_CANCELED" if child.status == "canceled" else "ORPHAN_RETRY_ATTEMPT_FAILED"
+                )
+                terminal_reason = (
+                    child.error
+                    or str(audit.get("error") or "")
+                    or str(audit.get("decision_reason") or "")
+                    or f"orphan retry child reached terminal state {child.status}"
+                )
+                try:
+                    await asyncio.to_thread(
+                        ledger.mark_transition_state,
+                        owner_id=owner_id,
+                        source_attempt_task_id=source_id,
+                        state="canceled" if child.status == "canceled" else "blocked",
+                    )
+                except (KeyError, ValueError, RuntimeError):
+                    pass
+                await finalize_logical_root_failure(
+                    runtime,
+                    root,
+                    child,
+                    error=terminal_reason,
+                    code=terminal_code,
+                    retry_count=child.attempt_index,
+                )
+                return "canceled" if child.status == "canceled" else "blocked"
+
             turns = await asyncio.to_thread(_attempt_turn_evidence, owner_id, child.id)
             audit_started = bool(
                 str(audit.get("started_at") or "")
