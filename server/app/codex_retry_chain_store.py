@@ -289,15 +289,18 @@ class CodexRetryChainStore:
         self.init()
         task_store = agent_task_store()
         task = task_store.get(owner_id, task_id)
-        if task is None:
-            return None
         audit_attempt = self.get_attempt(owner_id, task_id)
+        if task is None and audit_attempt is None:
+            return None
+
+        # Main-table lineage is authoritative whenever the AgentTask exists. A ledger-only fallback
+        # is retained solely for old/corrupt audit records whose primary task row is unavailable.
         root_task_id = str(
-            task.get("logical_root_id")
+            (task or {}).get("logical_root_id")
             or (audit_attempt or {}).get("root_task_id")
             or task_id
         )
-        lineage = task_store.list_execution_lineage(owner_id, root_task_id)
+        lineage = task_store.list_execution_lineage(owner_id, root_task_id) if task is not None else []
         audit = {
             str(item.get("attempt_task_id") or ""): item
             for item in self.list_for_root(owner_id, root_task_id)
@@ -331,10 +334,11 @@ class CodexRetryChainStore:
             )
         )
 
-        # Do not render a retry-chain panel for a task that has never had an automatic retry and
-        # has no retry audit record. Once a child exists, main-table lineage alone is sufficient.
+        # Do not render a retry-chain panel for a normal AgentTask that has never had an automatic
+        # retry and has no retry audit record. Once a child exists, main-table lineage alone is
+        # sufficient. Ledger-only rows remain visible as explicit audit compatibility evidence.
         has_internal = any(bool(item.get("internal")) for item in attempts)
-        if not audit and not has_internal:
+        if task is not None and not audit and not has_internal:
             return None
         if not attempts:
             return None
@@ -347,7 +351,11 @@ class CodexRetryChainStore:
             ),
             None,
         )
-        requested_is_internal = str(task.get("task_kind") or "") == "auto_retry"
+        requested_is_internal = (
+            str((task or {}).get("task_kind") or "") == "auto_retry"
+            if task is not None
+            else bool(audit_attempt and int(audit_attempt.get("attempt_index") or 0) > 0)
+        )
         return {
             "root_task_id": root_task_id,
             "requested_task_id": task_id,
