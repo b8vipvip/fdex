@@ -1,12 +1,12 @@
 # FDEX Current Status / FDEX 当前状态
 
-Last updated / 最后更新：2026-09-03
+Last updated / 最后更新：2026-09-04
 
 ## Current baseline / 当前基线
 
 - Default branch / 默认分支：`main`
 - Current accepted Coding Agent architecture：**Phase 7.43 — Account Operation / Agent Task Creation Fence**
-- Accepted `main`：`dfb5f65e7c78c563916283662d6738d46b3de648`
+- Accepted architecture `main`：`dfb5f65e7c78c563916283662d6738d46b3de648`
 - Phase 7.37 PR：**#104 — Add Codex Agent health monitor and live admin status**
 - Phase 7.37 final head：`cd99f99891393c7f5ec3662712f2c2373640545c`
 - Phase 7.37 merge：`1cbf145c84bb345615f37434bea79b79fe65e2d6`
@@ -42,10 +42,16 @@ Last updated / 最后更新：2026-09-03
 - Phase 7.43 merge：`dfb5f65e7c78c563916283662d6738d46b3de648`
 - Phase 7.43 final PR CI：`33756444916` (`Build and Test #1529`) — FastAPI + Android unit + Android Debug APK — success
 - Phase 7.43 post-merge CI：`33756690705` (`Build and Test #1530`) — FastAPI + Android unit + Android Debug APK — success
+- v1.1.37 release PR：**#112 — [release] v1.1.37**
+- v1.1.37 release merge / tag target：`b8530ecccdacd3afc12928c647990b8a53d69b0d`
+- v1.1.37 final PR CI：`33827610726` (`Build and Test #1533`) — FastAPI + Android unit + Android Debug APK — success
+- v1.1.37 merged-main CI：`33827785668` (`Build and Test #1534`) — FastAPI + Android unit + Android Debug APK — success
+- v1.1.37 Auto Release CI：`33827948343` (`Auto Release Android APK #1406`) — version/tag/signing/release APK/artifact/GitHub Release — success
+- v1.1.37 signed APK：`fdex-1.1.37.apk` — SHA-256 `30579b6e7bddbd98c2038217fd806d7be0b0b4acfc68439dae8e0b59c6f86bb2`
 - Current development candidate：**none / 无**. Phase 7.43 is the current accepted architecture baseline.
-- Current Android stable release：**v1.1.36**
+- Current Android stable release：**v1.1.37**
 
-A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse an older green run after a branch changes.
+A phase is accepted only from its final reviewed head and the merged `main` check. Do not reuse an older green run after a branch changes. A release is complete only after its tag, signed APK and GitHub Release are verified.
 
 ## Product and authority model / 产品与权限模型
 
@@ -284,9 +290,9 @@ Accepted in PR #110 at `main@dfb5f65e7c78c563916283662d6738d46b3de648`.
 
 ## Production rollout / 生产部署
 
-For the accepted Phase 7.43 baseline:
+For the accepted Phase 7.43 baseline and current v1.1.37 release:
 
-1. deploy `main@dfb5f65e7c78c563916283662d6738d46b3de648` or a later accepted main;
+1. deploy release `v1.1.37` (`b8530ecccdacd3afc12928c647990b8a53d69b0d`) or a later accepted release/main; the Phase 7.43 runtime architecture itself was accepted at `dfb5f65e7c78c563916283662d6738d46b3de648`;
 2. remove obsolete `FDEX_AGENT_ENGINE`, `FDEX_AGENT_MAX_STEPS`, `FDEX_AGENT_MODEL_MAX_TOKENS` env entries if still present;
 3. verify Phase 7.32 Runtime/process isolation health;
 4. open `/admin/agent/codex-providers` and refresh real `full` smoke for intended Providers;
@@ -301,7 +307,7 @@ GitHub CI is not a substitute for deployed Provider full-smoke because CI does n
 
 ## Android-native parity
 
-Phase 7.37–7.43 are server/Web/Codex Host architecture work and do not themselves require a new Android stable release. Keep **v1.1.36** unless Android source or release-worthy Android behavior changes. Every server architecture PR still must pass Android unit tests and Debug APK build to protect shared API/runtime compatibility.
+Phase 7.37–7.43 are primarily server/Web/Codex Host architecture work. **v1.1.37** is now the current signed Android stable release and packages the accepted repository baseline through Phase 7.43. Future Android stable releases should be cut when Android source or release-worthy shared behavior changes, while every server architecture PR continues to pass Android unit tests and Debug APK build to protect shared API/runtime compatibility.
 
 ## Development rules / 后续规则
 
@@ -324,6 +330,7 @@ Phase 7.37–7.43 are server/Web/Codex Host architecture work and do not themsel
 17. Unsupported or unverifiable tool/permission/Plugin states fail closed.
 18. Runtime switching must kill old Codex trees before changing the active binary pin and must use the launch/switch fence.
 19. Require FastAPI + Android unit + Android Debug APK on the final PR head and re-check merged `main`.
+20. A production Android release is complete only after the semver tag points to the intended accepted commit, signing succeeds, and the GitHub Release contains the signed APK asset.
 
 ## Reference docs / 参考文档
 
@@ -345,3 +352,4 @@ Phase 7.37–7.43 are server/Web/Codex Host architecture work and do not themsel
 - `docs/CODEX_RETRY_RECONCILIATION.md`
 - `docs/CODEX_RETRY_DATA_LIFECYCLE.md`
 - `docs/CODEX_AGENT_TASK_ACCOUNT_FENCE.md`
+- `docs/releases/v1.1.37.md`
