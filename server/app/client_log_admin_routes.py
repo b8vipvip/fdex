@@ -8,7 +8,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.admin_routes import _ctx, templates
 from app.client_runtime_logs import client_runtime_log_store
+from app.config import fresh_settings
 from app.security import is_admin
+from app.system_info import service_logs
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
@@ -111,4 +113,21 @@ def export_client_logs(
         _text_export(rows),
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="fdex-client-logs-{stamp}.log"'},
+    )
+
+
+@router.get("/logs/export", response_model=None)
+def export_service_runtime_logs(request: Request, lines: int = 1000) -> Response:
+    if redirect := _guard(request):
+        return redirect
+    requested_lines = max(1, min(int(lines), 5000))
+    settings = fresh_settings()
+    payload = service_logs(settings, requested_lines)
+    if payload and not payload.endswith("\n"):
+        payload += "\n"
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        payload,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="fdex-server-logs-{stamp}.log"'},
     )
