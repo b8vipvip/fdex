@@ -10,7 +10,7 @@ from app.codex_engine import resolve_codex_runtime, select_codex_provider_from
 from app.codex_process_isolation import codex_process_isolation_status
 from app.codex_provider_rollout import provider_rollout_rows
 from app.codex_provider_smoke import run_codex_provider_smoke
-from app.config import SERVER_DIR
+from app.config import SERVER_DIR, fresh_settings
 from app.provider_manager import provider_store
 from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, verify_csrf
 
@@ -25,6 +25,7 @@ def _login_redirect() -> RedirectResponse:
 def _ctx(request: Request, **extra: object) -> dict[str, object]:
     return {
         "request": request,
+        "settings": fresh_settings(),
         "csrf_token": ensure_csrf_token(request),
         "flash": pop_flash(request),
         "current_path": request.url.path,

@@ -73,14 +73,14 @@
             <input type="hidden" name="limit" value="{{ filters.limit }}">
             <button class="button secondary" type="submit">导出 JSON</button>
         </form>
-        <span class="fine">导出文件可直接发给开发人员分析；服务端最多保留 30 天 / 50,000 条。</span>
+        <span class="fine">导出文件可直接发给开发人员分析；服务端最多保留 30 天 / 50,000 条。详情字段仅保留在导出文件中，不在列表展开。</span>
     </div>
 
     {% if logs %}
     <div class="table-wrap">
         <table class="data-table">
             <thead>
-                <tr><th>服务端时间（UTC）</th><th>客户端 / 级别</th><th>账号 / 设备</th><th>版本</th><th>组件 / 事件</th><th>消息与详情</th></tr>
+                <tr><th>服务端时间（UTC）</th><th>客户端 / 级别</th><th>账号 / 设备</th><th>版本</th><th>组件 / 事件</th><th>消息</th></tr>
             </thead>
             <tbody>
             {% for item in logs %}
@@ -90,10 +90,7 @@
                     <td><code>{{ item.owner_id }}</code><br>{{ item.device_name or item.platform }}<br><span class="fine">session {{ item.session_id[:12] if item.session_id else '-' }}</span></td>
                     <td>{{ item.app_version or '-' }}<br><span class="fine">{{ item.git_sha or '-' }} · {{ item.os_version or item.platform }}</span></td>
                     <td><code>{{ item.component }}</code><br>{{ item.event }}</td>
-                    <td class="details-cell">
-                        <div>{{ item.message or '-' }}</div>
-                        {% if item.details %}<pre class="log-viewer" style="max-height:180px;margin-top:8px">{{ item.details | tojson(indent=2) }}</pre>{% endif %}
-                    </td>
+                    <td>{{ item.message or '-' }}</td>
                 </tr>
             {% endfor %}
             </tbody>
