@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import app.client_log_admin_routes as client_log_admin
 import app.client_runtime_log_routes as client_log_routes
 from app.client_runtime_log_routes import ClientLogBatch, ClientLogEntry
 from app.client_runtime_logs import ClientRuntimeLogStore, redact_text
@@ -110,12 +111,37 @@ def test_redact_text_covers_common_credentials() -> None:
     assert safe.count("[REDACTED]") == 3
 
 
+def test_text_export_handles_details_field_and_keeps_diagnostic_payload() -> None:
+    text = client_log_admin._text_export(
+        [
+            {
+                "received_at": "2026-09-07T12:13:24+00:00",
+                "level": "error",
+                "owner_id": "usr_test",
+                "platform": "web",
+                "device_name": "Web Win32",
+                "app_version": "1.0.0",
+                "component": "web_app",
+                "event": "fetch_error",
+                "client_time": "2026-09-07T20:13:24+08:00",
+                "message": "request failed",
+                "details": {"path": "/account/chat/employee/5", "status": 500},
+            }
+        ]
+    )
+    assert "FDEX Client Runtime Logs" in text
+    assert "message=request failed" in text
+    assert 'details={"path":"/account/chat/employee/5","status":500}' in text
+
+
 def test_client_log_routes_and_admin_navigation_are_wired() -> None:
     root = Path(__file__).resolve().parents[2]
     main = (root / "server/app/main.py").read_text(encoding="utf-8")
     base = (root / "server/app/templates/base.html").read_text(encoding="utf-8")
     user_base = (root / "server/app/templates/user_base.html").read_text(encoding="utf-8")
     page = (root / "server/app/templates/client_logs.html").read_text(encoding="utf-8")
+    server_logs_page = (root / "server/app/templates/logs.html").read_text(encoding="utf-8")
+    admin_routes = (root / "server/app/client_log_admin_routes.py").read_text(encoding="utf-8")
     routes = (root / "server/app/client_runtime_log_routes.py").read_text(encoding="utf-8")
     web_runtime = (root / "server/app/static/user_runtime_log.js").read_text(encoding="utf-8")
     web_chat = (root / "server/app/static/user_chat.js").read_text(encoding="utf-8")
@@ -128,6 +154,13 @@ def test_client_log_routes_and_admin_navigation_are_wired() -> None:
     assert "导出 JSON" in page
     assert 'name="platform"' in page
     assert "Android 与 Web" in page
+    assert "消息与详情" not in page
+    assert "item.details | tojson" not in page
+    assert "详情字段仅保留在导出文件中" in page
+
+    assert "/admin/logs/export" in server_logs_page
+    assert '@router.get("/logs/export"' in admin_routes
+    assert "service_logs(settings, requested_lines)" in admin_routes
 
     assert '<script src="/static/user_runtime_log.js"></script>' in user_base
     assert user_base.index('/static/user_runtime_log.js') < user_base.index('/static/user_chat.js')
