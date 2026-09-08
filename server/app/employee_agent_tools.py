@@ -7,6 +7,7 @@ from typing import Any
 
 from app.agent_projects import agent_project_store
 from app.agent_tasks import agent_task_store
+from app.plugin_runtime import run_plugin_tool
 
 _GITHUB_HINTS = ("github", "git hub", "仓库", "repository", "repo", "代码库", "项目库")
 _INVENTORY_HINTS = (
@@ -185,9 +186,9 @@ def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], promp
 
     Clear capability requests are routed by server-side rules so a model cannot invent tool
     execution or cross the current FDEX user_id boundary. GitHub facts come from the user's GitHub
-    App installation using short-lived credentials. One final AI request is then used only to
-    analyze/summarize those facts; the deterministic fact block is retained even if the model gives
-    a poor or suspiciously short answer.
+    App installation using short-lived credentials. Plugin Runtime now performs the connection,
+    per-agent grant and audit checks before this first migrated GitHub Tool runs. One final AI
+    request is then used only to analyze/summarize those facts.
     """
 
     blocks: list[dict[str, Any]] = []
@@ -196,11 +197,17 @@ def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], promp
 
     if _should_collect_github_inventory(employee, prompt):
         try:
-            payload, event = _collect_repositories(owner_id)
+            payload, event = run_plugin_tool(
+                owner_id,
+                employee,
+                "github",
+                "github.installation.repositories",
+                lambda: _collect_repositories(owner_id),
+            )
             blocks.append({"tool": event["tool"], "result": payload})
             events.append(event)
             answer_prefixes.append(_inventory_fact_summary(payload))
-        except (KeyError, ValueError, RuntimeError) as exc:
+        except (KeyError, ValueError, RuntimeError, PermissionError) as exc:
             events.append(
                 {
                     "tool": "github.installation.repositories",
