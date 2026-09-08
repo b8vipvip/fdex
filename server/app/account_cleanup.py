@@ -17,7 +17,9 @@ from app.github_app import GitHubAppClient, GitHubAppError
 from app.github_app_flow import GitHubAppInstallationFlowStore
 from app.github_web_oauth import GitHubWebOAuthStore
 from app.memory_erasure import erase_account_memory
+from app.plugin_agent_principals import plugin_agent_principal_store
 from app.plugin_code_hosts import code_host_credential_store
+from app.plugin_mcp_gateway import plugin_mcp_lease_store
 from app.remote_mcp_credentials import remote_mcp_credential_store
 from app.remote_mcp_gateway import remote_mcp_lease_store
 from app.remote_mcp_registry import remote_mcp_registry
@@ -116,8 +118,10 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     remote_mcp_lease_count = remote_mcp_lease_store().delete_owner(clean)
     remote_mcp_credential_count = remote_mcp_credential_store().delete_owner(clean)
     remote_mcp_count = remote_mcp_registry().delete_owner(clean)
-    # GitLab/Gitee credentials live outside Web workspace records so account erasure must remove
-    # their encrypted rows explicitly. The shared key file contains no per-user secret by itself.
+    # Native Plugin Runtime has the same lifecycle invariant. Destroy task-scoped loopback leases
+    # and task→智体 principal bindings before deleting encrypted GitLab/Gitee credentials.
+    plugin_mcp_lease_count = plugin_mcp_lease_store().delete_owner(clean)
+    plugin_agent_principal_count = plugin_agent_principal_store().delete_owner(clean)
     plugin_code_host_connection_count = code_host_credential_store().delete_owner(clean)
     # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
     # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
@@ -162,6 +166,8 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "remote_mcp_leases": remote_mcp_lease_count,
         "remote_mcp_credentials": remote_mcp_credential_count,
         "remote_mcp_servers": remote_mcp_count,
+        "plugin_mcp_leases": plugin_mcp_lease_count,
+        "plugin_agent_principals": plugin_agent_principal_count,
         "plugin_code_host_connections": plugin_code_host_connection_count,
         "agent_tasks": retry_task_cleanup["agent_tasks"],
         "codex_retry_attempts": retry_task_cleanup["codex_retry_attempts"],
