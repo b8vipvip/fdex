@@ -37,6 +37,47 @@
 .agent-prompt-status.success{color:#72d6ba}
 .agent-description-hint{color:#777;font-size:11px;margin-top:-1px}
 
+/* List-first management surfaces */
+.management-single-grid{display:block}
+.management-list-card{width:100%;max-width:none;padding:18px}
+.management-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:14px}
+.management-card-head h2{margin:0 0 4px}
+.management-card-head p{margin:0}
+.management-head-actions{display:flex;align-items:center;gap:9px;flex:0 0 auto}
+.agent-list{display:flex;flex-direction:column;gap:8px}
+.agent-list-row{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:12px 13px;border:1px solid var(--line);border-radius:13px;background:#292929;cursor:pointer;outline:none;transition:background .14s ease,border-color .14s ease}
+.agent-list-row:hover,.agent-list-row:focus-visible{background:#303030;border-color:rgba(255,255,255,.16)}
+.agent-list-copy{min-width:0;display:flex;flex-direction:column;gap:4px}
+.agent-list-name{font-size:15px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-list-meta{font-size:12px;color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-list-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.compact-button{min-height:34px;padding:7px 12px;font-size:12px}
+
+.management-modal[hidden]{display:none!important}
+.management-modal{position:fixed;inset:0;z-index:160;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.68);backdrop-filter:blur(3px)}
+.management-modal-panel{width:min(620px,calc(100vw - 32px));max-height:min(86vh,860px);display:flex;flex-direction:column;background:#242424;border:1px solid rgba(255,255,255,.13);border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.45);overflow:hidden}
+.management-modal-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 18px;border-bottom:1px solid rgba(255,255,255,.08)}
+.management-modal-head h2{margin:0;font-size:19px}
+.management-modal-close{width:34px;height:34px;padding:0;border:0;border-radius:9px;background:transparent;color:#aaa;font-size:24px;font-weight:400;line-height:1;cursor:pointer}
+.management-modal-close:hover{background:rgba(255,255,255,.08);color:#fff}
+.management-modal-body{min-height:0;overflow:auto;padding:18px}
+.management-modal-body form{margin:0}
+.management-modal-hint{margin:0 0 14px;color:var(--muted);font-size:13px}
+.management-modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:4px}
+.management-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:4px 0}
+.management-modal-open{overflow:hidden}
+
+.knowledge-list-card>.management-card-head+form{margin-top:2px}
+.knowledge-list-card .repo{margin-top:8px}
+
 @media(max-width:900px){
   .recent-section{max-height:36vh}
+  .management-card-head{align-items:stretch;flex-direction:column}
+  .management-head-actions{justify-content:space-between}
+  .agent-list-row{align-items:flex-start;flex-direction:column}
+  .agent-list-actions{width:100%}
+  .agent-list-actions .button{flex:1}
+  .management-modal{padding:10px}
+  .management-modal-panel{width:100%;max-height:92vh}
+  .management-check-grid{grid-template-columns:1fr}
 }
