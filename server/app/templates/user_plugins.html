@@ -1,0 +1,92 @@
+{% extends "user_base.html" %}
+{% block title %}插件 · FDEX{% endblock %}
+
+{% block content %}
+<section class="hero plugin-hero">
+  <div>
+    <h1>插件</h1>
+    <p>把智体与代码、知识、任务、部署、服务器和可观测性连接起来。每个 FDEX 账号独立连接，每个智体再单独授权。</p>
+  </div>
+  <a class="button button-secondary" href="/account/plugins#plugin-audit">审计日志</a>
+</section>
+
+<nav class="plugin-category-tabs" aria-label="插件分类">
+  <a href="/account/plugins" class="{% if selected_category == 'all' %}active{% endif %}">全部</a>
+  {% for category in categories %}<a href="/account/plugins?category={{ category|urlencode }}" class="{% if selected_category == category %}active{% endif %}">{{ category }}</a>{% endfor %}
+</nav>
+
+<section class="plugin-grid" aria-label="插件目录">
+{% for plugin in plugins %}
+  <article class="plugin-card {% if plugin.connected %}connected{% endif %}" id="plugin-{{ plugin.id }}">
+    <div class="plugin-card-head">
+      <div class="plugin-mark">{{ plugin.name[:2] }}</div>
+      <div class="plugin-title-copy">
+        <div class="row"><h2>{{ plugin.name }}</h2>{% if plugin.connected %}<span class="plugin-state connected">已连接</span>{% elif plugin.connectable %}<span class="plugin-state available">可连接</span>{% else %}<span class="plugin-state roadmap">接入中</span>{% endif %}</div>
+        <span class="plugin-category">{{ plugin.category }}</span>
+      </div>
+    </div>
+    <p class="plugin-description">{{ plugin.description }}</p>
+    {% if plugin.connected %}
+      <div class="plugin-connection-summary">
+        <strong>{{ plugin.connection_count }} 个连接</strong>
+        {% if plugin.account_label %}<span>{{ plugin.account_label }}</span>{% endif %}
+      </div>
+    {% endif %}
+    <div class="plugin-tool-pills">
+      {% for tool in plugin.tools[:4] %}<span class="plugin-tool-pill {{ tool.risk }}" title="{{ tool.description }}">{{ tool.risk }} · {{ tool.name.split('.')[-1] }}</span>{% endfor %}
+    </div>
+    <div class="plugin-card-actions">
+      {% if plugin.id == 'github' %}<a class="button button-secondary" href="/account/github">{% if plugin.connected %}管理连接{% else %}连接 GitHub{% endif %}</a>{% elif plugin.connectable %}<button class="button button-primary" type="button">连接</button>{% else %}<button class="button button-secondary" type="button" disabled>适配器接入中</button>{% endif %}
+    </div>
+  </article>
+{% endfor %}
+</section>
+
+<section class="card plugin-permission-card">
+  <div class="card-head">
+    <div><h2>智体插件权限</h2><p>连接插件只代表当前账号拥有该能力；智体仍需单独授权。高风险动作即使拥有读写权限，也必须在执行当次由用户明确确认。</p></div>
+  </div>
+  {% if employees %}
+  <div class="plugin-permission-table-wrap">
+    <table class="plugin-permission-table">
+      <thead><tr><th>智体</th>{% for plugin in plugin_catalog if plugin.connected %}<th>{{ plugin.name }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for employee in employees %}
+        <tr>
+          <td><strong>{{ employee.name }}</strong><div class="fine">{% if employee.coding_agent %}Coding Agent{% else %}普通智体{% endif %}</div></td>
+          {% for plugin in plugin_catalog if plugin.connected %}
+          <td>
+            <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}" method="post" class="plugin-grant-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <select name="mode" aria-label="{{ employee.name }} 的 {{ plugin.name }} 权限">
+                <option value="none" {% if grants[employee.id|string][plugin.id] == 'none' %}selected{% endif %}>不授权</option>
+                <option value="read" {% if grants[employee.id|string][plugin.id] == 'read' %}selected{% endif %}>只读</option>
+                <option value="write" {% if grants[employee.id|string][plugin.id] == 'write' %}selected{% endif %}>读写</option>
+              </select>
+              <button class="button button-secondary compact-button" type="submit">保存</button>
+            </form>
+          </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="muted">还没有智体。创建智体后可以在这里分配插件权限。</p>{% endif %}
+</section>
+
+<section class="card plugin-audit-card" id="plugin-audit">
+  <div class="card-head"><div><h2>插件审计日志</h2><p>记录智体、插件、Tool、风险等级、执行状态和结果摘要，不记录第三方访问令牌或敏感凭据。</p></div><span class="badge">{{ audit_rows|length }}</span></div>
+  {% if audit_rows %}
+    <div class="plugin-audit-list">
+    {% for item in audit_rows %}
+      <div class="plugin-audit-row">
+        <div><strong>{{ item.plugin_name or item.plugin_id }} · {{ item.tool }}</strong><div class="fine">{{ item.employee_name or '智体' }} · {{ item.created_at }}</div></div>
+        <div class="plugin-audit-meta"><span class="plugin-tool-pill {{ item.risk }}">{{ item.risk }}</span><span class="plugin-audit-status {{ item.status }}">{{ item.status }}</span></div>
+        {% if item.summary %}<div class="plugin-audit-summary">{{ item.summary }}</div>{% endif %}
+      </div>
+    {% endfor %}
+    </div>
+  {% else %}<p class="muted">还没有插件 Tool 执行记录。</p>{% endif %}
+</section>
+{% endblock %}
