@@ -40,6 +40,7 @@ from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_gith
 from app.github_app_portal_routes import router as github_app_portal_router
 from app.mail_admin_routes import router as mail_admin_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
+from app.plugin_portal_routes import router as plugin_portal_router
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
 from app.provider_protocol_runtime import install_provider_protocol_runtime
@@ -177,6 +178,7 @@ app.include_router(user_home_router)
 # The generalized create/update handlers intentionally precede the compatibility router so legacy
 # URLs keep working without exposing the retired company/industry/department/position contract.
 app.include_router(agent_identity_router)
+app.include_router(plugin_portal_router)
 app.include_router(user_app_router)
 app.include_router(user_chat_api_router)
 app.include_router(user_agent_task_router)
