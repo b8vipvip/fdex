@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/static/user_portal.css">
     <link rel="stylesheet" href="/static/user_chatgpt_tuning.css">
     <link rel="stylesheet" href="/static/user_sidebar_recent.css">
+    <link rel="stylesheet" href="/static/user_plugins.css">
 </head>
 <body class="{% if current_path.startswith('/account/chat/') %}is-chat-route{% endif %}" data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
 <div class="user-shell" id="fdex-user-shell">
@@ -34,7 +35,7 @@
             <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
             <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
             <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
-            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
+            <a href="/account/plugins" class="{% if current_path.startswith('/account/plugins') or current_path.startswith('/account/github') %}active{% endif %}">插件</a>
         </nav>
 
         <section class="recent-section" aria-label="最近聊天">
@@ -79,7 +80,8 @@
                         {% elif current_path.startswith('/account/groups') %}工作群
                         {% elif current_path.startswith('/account/agent/inputs') %}Agent 输入
                         {% elif current_path.startswith('/account/agent') %}Coding Agent
-                        {% elif current_path.startswith('/account/github') %}GitHub
+                        {% elif current_path.startswith('/account/plugins') %}插件
+                        {% elif current_path.startswith('/account/github') %}GitHub 插件
                         {% elif current_path.startswith('/account/discover') %}发现
                         {% elif current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') %}我的
                         {% else %}FDEX{% endif %}
