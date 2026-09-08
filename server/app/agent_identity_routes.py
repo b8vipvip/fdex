@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app.agent_identity_runtime import next_agent_name
 from app.config import SERVER_DIR
+from app.provider_protocol_runtime import route_text_protocols
 from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect, _verify_csrf
 from app.web_workspace import web_workspace_store
 
@@ -29,6 +30,61 @@ def _render(request: Request, user: dict[str, object], page: str, **extra: objec
         "user_web_app_general.html",
         _ctx(request, user, page=page, preferences=web_workspace_store().preferences(owner_id), **extra),
     )
+
+
+def _recent_summary(value: object, limit: int = 10) -> str:
+    text = str(value or "")
+    text = re.sub(r"\[附件：[^\]]+\]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "附件消息"
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+@router.get("/sidebar/recent.json", response_model=None)
+def recent_sidebar_chats(request: Request) -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效"}, status_code=401)
+    owner_id = _owner(user)
+    store = web_workspace_store()
+    store.ensure_defaults(owner_id)
+    items: list[dict[str, str]] = []
+
+    for agent in store.list(owner_id, "employee", limit=300):
+        if not bool(agent.get("active", True)):
+            continue
+        messages = store.list(owner_id, "message", parent_id=int(agent["id"]), newest_first=True, limit=1)
+        if not messages:
+            continue
+        latest = messages[0]
+        items.append(
+            {
+                "kind": "employee",
+                "name": str(agent.get("name") or "智体")[:80],
+                "summary": _recent_summary(latest.get("content")),
+                "url": f"/account/chat/employee/{int(agent['id'])}",
+                "updated_at": str(latest.get("created_at") or latest.get("updated_at") or ""),
+            }
+        )
+
+    for group in store.list(owner_id, "group", newest_first=True, limit=300):
+        messages = store.list(owner_id, "group_message", parent_id=int(group["id"]), newest_first=True, limit=12)
+        latest = next((item for item in messages if str(item.get("role") or "") != "system"), None)
+        if latest is None:
+            continue
+        items.append(
+            {
+                "kind": "group",
+                "name": str(group.get("name") or "工作群")[:100],
+                "summary": _recent_summary(latest.get("content")),
+                "url": f"/account/chat/group/{int(group['id'])}",
+                "updated_at": str(latest.get("created_at") or latest.get("updated_at") or ""),
+            }
+        )
+
+    items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    return JSONResponse({"ok": True, "items": items[:20]})
 
 
 @router.get("/messages", response_class=HTMLResponse, response_model=None)
@@ -65,12 +121,66 @@ def general_agents_page(request: Request) -> Response:
     return _render(request, user, "employees", employees=store.list(owner_id, "employee", include_deleted=True))
 
 
+@router.post("/employees/prompt/organize", response_model=None)
+async def organize_agent_prompt(
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(""),
+    description: str = Form(""),
+    role_prompt: str = Form(""),
+) -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效，请重新登录"}, status_code=401)
+    try:
+        _verify_csrf(request, csrf_token)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    clean_name = (name or "").strip()[:80]
+    clean_description = (description or "").strip()[:160]
+    clean_prompt = (role_prompt or "").strip()[:12000]
+    if not clean_name:
+        return JSONResponse({"ok": False, "error": "请输入智体名称"}, status_code=400)
+    if not clean_description:
+        return JSONResponse({"ok": False, "error": "请用一句话描述智体"}, status_code=400)
+
+    source = clean_prompt or "（当前没有手写提示词，请根据名称和一句话描述生成。）"
+    result = await route_text_protocols(
+        system=(
+            "你是 FDEX 的智体身份提示词编辑器。你的任务是把用户提供的智体名称、一句话用途和现有提示词，"
+            "整理成可以直接作为 AI 智体身份定义使用的中文提示词。保留用户原始意图，不虚构用户未提供的业务事实。"
+            "提示词应明确身份、核心职责、工作方式、必要边界、遇到信息不足时的处理方式和输出偏好。"
+            "不要解释你的修改，不要使用 Markdown 代码块，不要输出标题前缀，只输出整理后的提示词正文。"
+        ),
+        prompt=(
+            f"智体名称：{clean_name}\n"
+            f"一句话描述：{clean_description}\n"
+            f"现有身份定义提示词：\n{source}\n\n"
+            "请整理为简洁但完整的身份定义提示词。"
+        ),
+        max_tokens=1200,
+    )
+    if not result.ok or not result.content.strip():
+        error = "；".join(str(item) for item in (result.errors or [])[-3:])[:900] or "当前没有可用的 AI 供应商"
+        return JSONResponse({"ok": False, "error": f"AI整理提示词失败：{error}"}, status_code=502)
+    return JSONResponse(
+        {
+            "ok": True,
+            "prompt": result.content.strip()[:12000],
+            "provider": result.provider or "FDEX AI",
+            "model": result.model or "",
+        }
+    )
+
+
 @router.post("/employees", response_model=None)
 def create_agent(
     request: Request,
     csrf_token: str = Form(...),
     role_prompt: str = Form(""),
     name: str = Form(""),
+    description: str = Form(""),
 ) -> Response:
     user = _current_user(request)
     if user is None:
@@ -79,12 +189,18 @@ def create_agent(
     store = web_workspace_store()
     try:
         _verify_csrf(request, csrf_token)
-        display_name = (name or "").strip()[:80] or next_agent_name(store, owner_id)
+        display_name = (name or "").strip()[:80]
+        clean_description = (description or "").strip()[:160]
+        if not display_name:
+            raise ValueError("请输入智体名称")
+        if not clean_description:
+            raise ValueError("请用一句话描述智体")
         store.create(
             owner_id,
             "employee",
             {
                 "name": display_name,
+                "description": clean_description,
                 "role_prompt": (role_prompt or "").strip()[:12000],
                 "active": True,
                 "knowledge_read": True,
@@ -251,7 +367,7 @@ def general_info_page(slug: str, request: Request) -> Response:
     pages = {
         "guide": (
             "使用说明",
-            "Web 用户端与 Android 使用同一个 FDEX 中心账号。消息、智体、工作群、知识库、工作项目、GitHub 与 Coding Agent、账号安全均可从顶部导航或“我的”进入。",
+            "Web 用户端与 Android 使用同一个 FDEX 中心账号。消息、智体、工作群、知识库、工作项目、GitHub 与 Coding Agent、账号安全均可从侧边导航或底部用户名进入。",
         ),
         "privacy": (
             "隐私说明",

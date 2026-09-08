@@ -1,0 +1,42 @@
+.user-sidebar{padding-bottom:10px}
+.user-nav.user-nav-flat{flex:0 0 auto;overflow:visible;padding:0 2px 8px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid rgba(255,255,255,.07)}
+.user-nav.user-nav-flat a{min-height:38px}
+.user-nav.user-nav-flat a[href="/account/discover"]::before{content:"◎"}
+.user-nav.user-nav-flat a[href="/account/employees"]::before{content:"✦"}
+.user-nav.user-nav-flat a[href="/account/groups"]::before{content:"♧"}
+.user-nav.user-nav-flat a[href="/account/knowledge"]::before{content:"▤"}
+.user-nav.user-nav-flat a[href="/account/work"]::before{content:"□"}
+.user-nav.user-nav-flat a[href="/account/agent"]::before{content:"⌘"}
+.user-nav.user-nav-flat a[href="/account/agent/inputs"]::before{content:"↳"}
+.user-nav.user-nav-flat a[href="/account/github"]::before{content:"GH";font-size:9px;font-weight:800}
+.recent-section{min-height:0;flex:1;display:flex;flex-direction:column;padding:10px 2px 0;overflow:hidden}
+.recent-title{flex:0 0 auto;padding:2px 10px 7px;color:#858585;font-size:12px;font-weight:600}
+.recent-chat-list{min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:2px;scrollbar-width:thin;scrollbar-color:#444 transparent}
+.recent-chat-item{position:relative;display:flex;align-items:flex-start;gap:9px;min-height:51px;padding:7px 9px;border-radius:9px;color:#ddd;text-decoration:none}
+.recent-chat-item:hover,.recent-chat-item.active{background:rgba(255,255,255,.08);color:#fff}
+.recent-chat-kind{flex:0 0 auto;width:24px;height:24px;margin-top:1px;border-radius:7px;display:grid;place-items:center;background:#2a2a2a;color:#bdbdbd;font-size:12px;font-weight:700}
+.recent-chat-item[data-kind="group"] .recent-chat-kind::before{content:"群"}
+.recent-chat-item[data-kind="employee"] .recent-chat-kind::before{content:"智"}
+.recent-chat-copy{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.25}
+.recent-chat-name{font-size:13px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-chat-summary{margin-top:3px;color:#8f8f8f;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-empty{padding:8px 10px;color:#737373;font-size:12px}
+.account-chip{flex:0 0 auto}
+
+.agent-create-card{scroll-margin-top:74px}
+.agent-create-card.agent-new-highlight{outline:1px solid rgba(255,255,255,.2)}
+.agent-editor-field{display:flex;flex-direction:column;gap:5px}
+.agent-editor-field>label{margin:0}
+.agent-prompt-wrap{position:relative}
+.agent-prompt-wrap textarea{padding-bottom:46px;min-height:190px}
+.agent-prompt-ai{position:absolute;right:9px;bottom:9px;height:30px;padding:0 10px;border:1px solid rgba(255,255,255,.16);border-radius:9px;background:#373737;color:#ececec;font-size:12px;font-weight:600;cursor:pointer}
+.agent-prompt-ai:hover{background:#424242}
+.agent-prompt-ai:disabled{opacity:.55;cursor:wait}
+.agent-prompt-status{min-height:18px;color:#8f8f8f;font-size:11px}
+.agent-prompt-status.error{color:#ff9292}
+.agent-prompt-status.success{color:#72d6ba}
+.agent-description-hint{color:#777;font-size:11px;margin-top:-1px}
+
+@media(max-width:900px){
+  .recent-section{max-height:36vh}
+}
