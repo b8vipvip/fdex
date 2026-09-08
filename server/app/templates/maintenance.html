@@ -94,10 +94,10 @@
         <div class="panel-header"><div><h2>从 GitHub 更新服务端</h2><p>执行仓库内固定的 update_server.sh</p></div></div>
         <p>更新任务会拉取 <code>origin/main</code>、更新依赖、重新安装 systemd 配置并进行健康检查。</p>
         {% if local_git.dirty %}<div class="inline-note error-note">仓库有未提交修改，网页更新已被安全锁定。</div>{% endif %}
-        <form id="server-update-form" method="post" action="/admin/update" data-confirm="确定从 GitHub main 更新服务端吗？当前服务会在更新过程中重启。">
+        <form id="server-update-form" method="post" action="/admin/update">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label class="checkbox-field"><input id="server-update-confirm" type="checkbox" name="confirm" value="update" required><span>我确认要拉取 main 并更新服务端</span></label>
-            <button id="server-update-button" class="button danger full" type="submit" {% if local_git.dirty %}disabled{% endif %}>启动后台更新任务</button>
+            <input type="hidden" name="confirm" value="update">
+            <button id="server-update-button" class="button full" style="background:#16a34a;color:#fff;border-color:#16a34a" type="submit" {% if local_git.dirty %}disabled{% endif %}>更新</button>
         </form>
     </section>
 </div>
@@ -131,7 +131,6 @@
     const logs = document.getElementById('update-progress-logs');
     const reconnect = document.getElementById('update-progress-reconnect');
     const updateButton = document.getElementById('server-update-button');
-    const updateConfirm = document.getElementById('server-update-confirm');
     let lastStatus = '';
 
     const statusText = {
@@ -174,9 +173,8 @@
         const running = state === 'running';
         if (updateButton && !updateButton.dataset.serverLocked) {
             updateButton.disabled = running;
-            updateButton.textContent = running ? '服务端正在更新…' : '启动后台更新任务';
+            updateButton.textContent = running ? '服务端正在更新…' : '更新';
         }
-        if (updateConfirm) updateConfirm.disabled = running;
 
         if (lastStatus === 'running' && (state === 'succeeded' || state === 'failed')) {
             panel.scrollIntoView({behavior: 'smooth', block: 'center'});
