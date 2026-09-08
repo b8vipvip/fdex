@@ -240,10 +240,11 @@ def authorize_plugin_tool(
     tool_name: str,
     *,
     confirmed: bool = False,
+    connection_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     definition = plugin_definition(plugin_id)
     tool = _tool(definition.id, tool_name)
-    status = plugin_connection_status(owner_id, definition.id)
+    status = dict(connection_status) if connection_status is not None else plugin_connection_status(owner_id, definition.id)
     if not status.get("connected"):
         raise PermissionError(f"{definition.name} 插件尚未连接")
     grant = effective_agent_grant(owner_id, employee, definition.id)
@@ -291,6 +292,24 @@ def audit_plugin_action(
     )
 
 
+def _best_effort_audit(
+    owner_id: str,
+    employee: dict[str, Any],
+    plugin_id: str,
+    tool_name: str,
+    *,
+    status: str,
+    summary: str,
+    risk: str,
+) -> None:
+    # Audit failure must never turn a successful external read into a false user-facing Tool failure.
+    # The action itself still remains governed by the authorization decision made before execution.
+    try:
+        audit_plugin_action(owner_id, employee, plugin_id, tool_name, status=status, summary=summary, risk=risk)
+    except (KeyError, ValueError, RuntimeError, OSError):
+        return
+
+
 def run_plugin_tool(
     owner_id: str,
     employee: dict[str, Any],
@@ -299,17 +318,25 @@ def run_plugin_tool(
     executor: Callable[[], Any],
     *,
     confirmed: bool = False,
+    connection_status: dict[str, Any] | None = None,
 ) -> Any:
-    decision = authorize_plugin_tool(owner_id, employee, plugin_id, tool_name, confirmed=confirmed)
+    decision = authorize_plugin_tool(
+        owner_id,
+        employee,
+        plugin_id,
+        tool_name,
+        confirmed=confirmed,
+        connection_status=connection_status,
+    )
     try:
         result = executor()
     except Exception as exc:
-        audit_plugin_action(
+        _best_effort_audit(
             owner_id, employee, plugin_id, tool_name,
             status="failed", summary=f"{type(exc).__name__}: {str(exc)[:700]}", risk=decision["tool"].risk,
         )
         raise
-    audit_plugin_action(
+    _best_effort_audit(
         owner_id, employee, plugin_id, tool_name,
         status="completed", summary="Tool 执行完成", risk=decision["tool"].risk,
     )
