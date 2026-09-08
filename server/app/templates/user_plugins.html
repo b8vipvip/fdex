@@ -30,14 +30,46 @@
       <div class="plugin-connection-summary">
         <strong>{{ plugin.connection_count }} 个连接</strong>
         {% if plugin.account_label %}<span>{{ plugin.account_label }}</span>{% endif %}
+        {% if plugin.repository_count is defined %}<span>{{ plugin.repository_count }} 个仓库/项目</span>{% endif %}
       </div>
     {% endif %}
     <div class="plugin-tool-pills">
       {% for tool in plugin.tools[:4] %}<span class="plugin-tool-pill {{ tool.risk }}" title="{{ tool.description }}">{{ tool.risk }} · {{ tool.name.split('.')[-1] }}</span>{% endfor %}
     </div>
-    <div class="plugin-card-actions">
-      {% if plugin.id == 'github' %}<a class="button button-secondary" href="/account/github">{% if plugin.connected %}管理连接{% else %}连接 GitHub{% endif %}</a>{% elif plugin.connectable %}<button class="button button-primary" type="button">连接</button>{% else %}<button class="button button-secondary" type="button" disabled>适配器接入中</button>{% endif %}
-    </div>
+
+    {% if plugin.id == 'github' %}
+      <div class="plugin-card-actions"><a class="button button-secondary" href="/account/github">{% if plugin.connected %}管理连接{% else %}连接 GitHub{% endif %}</a></div>
+    {% elif plugin.id in ['gitlab', 'gitee'] %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/{{ plugin.id }}/repositories.json" target="_blank" rel="noopener">检查仓库</a>
+        <form action="/account/plugins/{{ plugin.id }}/disconnect" method="post" onsubmit="return confirm('确定断开 {{ plugin.name }}？智体将立即失去该插件能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% else %}
+      <details class="plugin-connect-panel">
+        <summary class="button button-primary">连接 {{ plugin.name }}</summary>
+        <form action="/account/plugins/{{ plugin.id }}/connect" method="post" class="stack plugin-connect-form" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if plugin.id == 'gitlab' %}
+          <input type="hidden" name="base_url" value="https://gitlab.com">
+          <div class="fine">当前首版安全适配器仅开放 GitLab.com。建议只读智体使用 read_api/read_repository；需要通过 API 修改文件或创建 MR 时使用 api scope。</div>
+          {% else %}
+          <input type="hidden" name="base_url" value="https://gitee.com">
+          <div class="fine">使用 Gitee OAuth2 访问令牌。令牌只在提交时发送一次，验证成功后以 Fernet 加密写入独立插件凭据库。</div>
+          {% endif %}
+          <label>{{ plugin.name }} 访问令牌<input type="password" name="access_token" required minlength="8" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="仅用于验证并加密保存"></label>
+          <button class="button button-primary" type="submit">验证并连接</button>
+        </form>
+      </details>
+      {% endif %}
+    {% elif plugin.connectable %}
+      <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
+    {% else %}
+      <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>适配器接入中</button></div>
+    {% endif %}
   </article>
 {% endfor %}
 </section>
