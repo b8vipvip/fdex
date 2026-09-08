@@ -4,46 +4,157 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#212121">
     <title>{% block title %}FDEX 用户中心{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/user_portal.css">
+    <link rel="stylesheet" href="/static/user_chatgpt_tuning.css">
 </head>
-<body data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
-<div class="user-shell">
-    <header class="user-topbar">
-        <a class="user-brand" href="/account/messages">
-            <span class="user-brand-mark">F</span>
-            <span>FDEX 用户中心</span>
-        </a>
+<body class="{% if current_path.startswith('/account/chat/') %}is-chat-route{% endif %}" data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
+<div class="user-shell" id="fdex-user-shell">
+    <aside class="user-sidebar" id="fdex-user-sidebar" aria-label="FDEX 用户中心侧边栏">
+        <div class="sidebar-head">
+            <a class="user-brand" href="/account/messages" aria-label="FDEX 首页">
+                <span class="user-brand-mark">F</span>
+                <span class="user-brand-copy"><strong>FDEX</strong><small>用户中心</small></span>
+            </a>
+            <button class="sidebar-toggle sidebar-toggle-inside" type="button" data-sidebar-toggle aria-label="收起侧边栏" title="收起侧边栏">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4z"></path><path d="M9 5.5v13"></path></svg>
+            </button>
+        </div>
+
+        <a class="new-chat-link" href="/account/messages"><span class="new-chat-plus">＋</span><span>新建对话</span></a>
+
         <nav class="user-nav" aria-label="用户中心导航">
-            <a href="/account/messages" class="{% if current_path.startswith('/account/messages') or current_path.startswith('/account/chat/') %}active{% endif %}">消息</a>
-            <a href="/account/employees" class="{% if current_path.startswith('/account/employees') %}active{% endif %}">智体</a>
-            <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
-            <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
-            <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
-            <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
-            <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
-            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
-            <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
-            <a href="/account/me" class="{% if current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') or current_path.startswith('/account/deleted') or current_path.startswith('/account/info/') %}active{% endif %}">我的</a>
+            <div class="nav-group">
+                <span class="nav-group-title">聊天</span>
+                <a href="/account/messages" class="{% if current_path.startswith('/account/messages') or current_path.startswith('/account/chat/') %}active{% endif %}">消息</a>
+                <a href="/account/employees" class="{% if current_path.startswith('/account/employees') %}active{% endif %}">智体</a>
+                <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
+            </div>
+            <div class="nav-group">
+                <span class="nav-group-title">工作区</span>
+                <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
+                <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
+                <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
+                <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
+                <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
+            </div>
+            <div class="nav-group nav-group-last">
+                <span class="nav-group-title">更多</span>
+                <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
+                <a href="/account/me" class="{% if current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') or current_path.startswith('/account/deleted') or current_path.startswith('/account/info/') %}active{% endif %}">我的</a>
+            </div>
         </nav>
+
         {% if user %}
         <div class="account-chip">
-            <div><strong>{{ user.name }}</strong><small>{{ user.email }}</small></div>
+            <a class="account-profile" href="/account/me" title="账户设置">
+                <span class="account-avatar">{{ (user.name or user.email or 'F')[:1] }}</span>
+                <span class="account-copy"><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span>
+            </a>
             <form action="/account/logout" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit" class="secondary">退出</button>
+                <button type="submit" class="sidebar-logout" title="退出登录" aria-label="退出登录">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path></svg>
+                </button>
             </form>
         </div>
         {% endif %}
-    </header>
-    {% if flash %}
-    <div class="alert alert-{{ flash.category }}">{{ flash.message }}</div>
-    {% endif %}
-    <main class="page">
-        {% block content %}{% endblock %}
-    </main>
+    </aside>
+
+    <div class="sidebar-backdrop" data-sidebar-backdrop></div>
+
+    <div class="user-workspace">
+        <header class="user-topbar">
+            <div class="topbar-left">
+                <button class="sidebar-toggle sidebar-toggle-top" type="button" data-sidebar-toggle aria-label="切换侧边栏" title="切换侧边栏">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4z"></path><path d="M9 5.5v13"></path></svg>
+                </button>
+                <div class="workspace-title">
+                    <strong>
+                        {% if current_path.startswith('/account/chat/employee/') and employee is defined %}{{ employee.name }}
+                        {% elif current_path.startswith('/account/chat/group/') and group is defined %}{{ group.name }}
+                        {% elif current_path.startswith('/account/messages') %}消息
+                        {% elif current_path.startswith('/account/employees') %}智体
+                        {% elif current_path.startswith('/account/knowledge') %}知识库
+                        {% elif current_path.startswith('/account/work') %}工作
+                        {% elif current_path.startswith('/account/groups') %}工作群
+                        {% elif current_path.startswith('/account/agent/inputs') %}Agent 输入
+                        {% elif current_path.startswith('/account/agent') %}Coding Agent
+                        {% elif current_path.startswith('/account/github') %}GitHub
+                        {% elif current_path.startswith('/account/discover') %}发现
+                        {% elif current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') %}我的
+                        {% else %}FDEX{% endif %}
+                    </strong>
+                    {% if current_path.startswith('/account/chat/employee/') and employee is defined %}
+                    <span>{% if employee.coding_agent %}Coding Agent 智体{% elif employee.role_prompt %}已定义身份{% else %}通用智体{% endif %}</span>
+                    {% elif current_path.startswith('/account/chat/group/') and group is defined %}<span>工作群</span>{% endif %}
+                </div>
+            </div>
+
+            <div class="topbar-actions">
+                {% if current_path.startswith('/account/chat/employee/') and employee is defined %}
+                <a class="topbar-action" href="/account/employees" title="智体设置">智体设置</a>
+                {% if employee.coding_agent %}<a class="topbar-action" href="/account/agent" title="Coding Agent 项目任务">Coding Agent</a>{% endif %}
+                <form action="/account/chat/employee/{{ employee.id }}/clear" method="post" onsubmit="return confirm('确认把当前聊天记录移入最近删除？')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="topbar-icon danger-icon" type="submit" title="清空聊天" aria-label="清空聊天">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M9 7V4h6v3"></path><path d="M7 7l1 13h8l1-13"></path></svg>
+                    </button>
+                </form>
+                {% elif current_path.startswith('/account/chat/group/') and group is defined %}
+                <a class="topbar-action" href="/account/groups">群管理</a>
+                {% endif %}
+                {% if user %}
+                <a class="topbar-avatar" href="/account/me" title="{{ user.name }} · {{ user.email }}">{{ (user.name or user.email or 'F')[:1] }}</a>
+                {% endif %}
+            </div>
+        </header>
+
+        {% if flash %}
+        <div class="alert alert-{{ flash.category }}">{{ flash.message }}</div>
+        {% endif %}
+
+        <main class="page">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 </div>
+<script>
+(() => {
+    const shell = document.getElementById('fdex-user-shell');
+    if (!shell) return;
+    const mobile = window.matchMedia('(max-width: 900px)');
+    const storageKey = 'fdex-user-sidebar-closed';
+    const syncDesktopPreference = () => {
+        if (mobile.matches) {
+            shell.classList.remove('sidebar-closed');
+            shell.classList.remove('sidebar-open');
+            return;
+        }
+        shell.classList.remove('sidebar-open');
+        let closed = false;
+        try { closed = localStorage.getItem(storageKey) === '1'; } catch (_) {}
+        shell.classList.toggle('sidebar-closed', closed);
+    };
+    const toggleSidebar = () => {
+        if (mobile.matches) {
+            shell.classList.toggle('sidebar-open');
+            return;
+        }
+        const closed = shell.classList.toggle('sidebar-closed');
+        try { localStorage.setItem(storageKey, closed ? '1' : '0'); } catch (_) {}
+    };
+    document.querySelectorAll('[data-sidebar-toggle]').forEach((button) => button.addEventListener('click', toggleSidebar));
+    document.querySelector('[data-sidebar-backdrop]')?.addEventListener('click', () => shell.classList.remove('sidebar-open'));
+    document.querySelectorAll('.user-nav a,.new-chat-link').forEach((link) => link.addEventListener('click', () => {
+        if (mobile.matches) shell.classList.remove('sidebar-open');
+    }));
+    if (typeof mobile.addEventListener === 'function') mobile.addEventListener('change', syncDesktopPreference);
+    syncDesktopPreference();
+})();
+</script>
 <script src="/static/user_runtime_log.js"></script>
 <script src="/static/user_chat.js" defer></script>
 {% block scripts %}{% endblock %}

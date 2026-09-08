@@ -1,0 +1,6 @@
+.is-chat-route .page>.chat-shell,
+.is-chat-route .page>section.card{position:relative}
+.is-chat-route .chat-bubble.user{margin-right:0}
+.is-chat-route .fdex-paste-preview{left:58px;right:58px;bottom:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.is-chat-route .composer.fdex-paste-ready{outline:1px solid rgba(255,255,255,.14)!important;outline-offset:0!important}
+@media(max-width:900px){.is-chat-route .chat-bubble.user{margin-right:0}}
