@@ -30,10 +30,13 @@ def test_user_shell_uses_chatgpt_style_sidebar_navigation() -> None:
         "/account/work",
         "/account/agent",
         "/account/agent/inputs",
-        "/account/github",
+        "/account/plugins",
         "/account/discover",
     ):
         assert f'href="{href}"' in base
+    assert '>插件</a>' in base
+    # GitHub is now managed as the first native plugin instead of occupying a standalone sidebar row.
+    assert '<a href="/account/github"' not in base
     # “我的” no longer occupies a navigation row; the profile at the bottom remains the settings entry.
     assert 'class="account-profile" href="/account/me"' in base
 
