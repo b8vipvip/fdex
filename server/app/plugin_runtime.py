@@ -179,14 +179,15 @@ def explicit_agent_grant(owner_id: str, employee_id: int, plugin_id: str) -> dic
 
 def effective_agent_grant(owner_id: str, employee: dict[str, Any], plugin_id: str) -> dict[str, Any]:
     definition = plugin_definition(plugin_id)
-    explicit = explicit_agent_grant(owner_id, int(employee["id"]), definition.id)
+    employee_id = int(employee.get("id") or 0)
+    # Some deterministic compatibility callers pass a transient employee projection without its
+    # persisted row id. They predate Plugin Runtime and cannot have an explicit per-agent grant, so
+    # preserve the historical GitHub default instead of turning the existing Tool path off.
+    explicit = explicit_agent_grant(owner_id, employee_id, definition.id) if employee_id > 0 else None
     if explicit is not None:
         mode = str(explicit.get("mode") or "none")
         source = "explicit"
     elif definition.id == "github":
-        # Backward compatibility: before the Plugin Runtime existed, every active 智体 could use
-        # deterministic GitHub reads and Coding Agent 智体 could reach existing project write paths.
-        # Keep that behavior until the user explicitly changes this 智体's plugin grant.
         mode = "write" if bool(employee.get("coding_agent")) else "read"
         source = "legacy-default"
     else:
@@ -273,11 +274,12 @@ def audit_plugin_action(
 ) -> dict[str, Any]:
     definition = plugin_definition(plugin_id)
     tool = _tool(definition.id, tool_name)
+    employee_id = int(employee.get("id") or 0)
     return web_workspace_store().create(
         owner_id,
         "plugin_audit",
         {
-            "employee_id": int(employee.get("id") or 0),
+            "employee_id": employee_id,
             "employee_name": str(employee.get("name") or "")[:80],
             "plugin_id": definition.id,
             "plugin_name": definition.name,
@@ -287,7 +289,7 @@ def audit_plugin_action(
             "summary": (summary or "")[:1000],
             "created_at": _now(),
         },
-        parent_id=int(employee.get("id") or 0) or None,
+        parent_id=employee_id or None,
         sort_key=_now(),
     )
 
