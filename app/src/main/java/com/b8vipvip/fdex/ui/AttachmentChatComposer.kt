@@ -1,5 +1,7 @@
 package com.b8vipvip.fdex.ui
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,10 +17,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
@@ -39,8 +44,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.network.ChatAttachment
 import com.b8vipvip.fdex.network.ChatAttachmentKind
@@ -67,12 +79,42 @@ internal fun AttachmentChatComposer(
     var menuOpen by remember { mutableStateOf(false) }
     var pendingKind by remember { mutableStateOf(ChatAttachmentKind.FILE) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && pending.size < MAX_CHAT_ATTACHMENTS) {
-            persistChatAttachmentPermission(context, uri)
-            val item = chatAttachmentFromUri(context, uri, pendingKind)
-            if (pending.none { it.uri == item.uri }) pending = pending + item
+    fun addAttachment(uri: Uri, requestedKind: ChatAttachmentKind? = null) {
+        if (pending.size >= MAX_CHAT_ATTACHMENTS) return
+        runCatching { persistChatAttachmentPermission(context, uri) }
+        val mime = runCatching { context.contentResolver.getType(uri).orEmpty().lowercase() }.getOrDefault("")
+        val kind = requestedKind ?: when {
+            mime.startsWith("image/") -> ChatAttachmentKind.IMAGE
+            mime.startsWith("video/") -> ChatAttachmentKind.VIDEO
+            mime.startsWith("audio/") -> ChatAttachmentKind.AUDIO
+            else -> ChatAttachmentKind.FILE
         }
+        val item = chatAttachmentFromUri(context, uri, kind)
+        if (pending.none { it.uri == item.uri }) pending = pending + item
+    }
+
+    fun pasteClipboardAttachment() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val clip = clipboard.primaryClip ?: return
+        for (index in 0 until clip.itemCount) {
+            val item = clip.getItemAt(index)
+            val uri = item.uri ?: item.intent?.data ?: continue
+            addAttachment(uri)
+            if (pending.size >= MAX_CHAT_ATTACHMENTS) break
+        }
+    }
+
+    fun sendPending() {
+        if (busy) return
+        val encoded = encodeChatContent(value, pending)
+        if (encoded.isNotBlank()) {
+            onSend(encoded)
+            pending = emptyList()
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) addAttachment(uri, pendingKind)
     }
 
     Column(Modifier.fillMaxWidth().background(androidx.compose.ui.graphics.Color.White)) {
@@ -136,14 +178,31 @@ internal fun AttachmentChatComposer(
                     }
                 }
             }
+            IconButton(
+                enabled = !busy && pending.size < MAX_CHAT_ATTACHMENTS,
+                onClick = { pasteClipboardAttachment() },
+            ) {
+                Icon(Icons.Default.ContentPaste, contentDescription = "粘贴剪贴板图片或文件")
+            }
 
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
                 placeholder = { Text(placeholder) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed) {
+                            sendPending()
+                            true
+                        } else {
+                            false
+                        }
+                    },
                 maxLines = 4,
                 shape = RoundedCornerShape(22.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { sendPending() }),
             )
             if (onRealtimeVoice != null && !realtimeVoiceActive) {
                 IconButton(
@@ -156,13 +215,7 @@ internal fun AttachmentChatComposer(
             Spacer(Modifier.width(4.dp))
             Button(
                 enabled = !busy && (value.isNotBlank() || pending.isNotEmpty()),
-                onClick = {
-                    val encoded = encodeChatContent(value, pending)
-                    if (encoded.isNotBlank()) {
-                        onSend(encoded)
-                        pending = emptyList()
-                    }
-                },
+                onClick = { sendPending() },
                 shape = RoundedCornerShape(22.dp),
             ) { Text("发送") }
         }
