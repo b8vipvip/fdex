@@ -38,9 +38,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,6 +63,7 @@ import com.b8vipvip.fdex.network.encodeChatContent
 import com.b8vipvip.fdex.network.formatAttachmentSize
 import com.b8vipvip.fdex.network.parseChatContent
 import com.b8vipvip.fdex.network.persistChatAttachmentPermission
+import kotlinx.coroutines.flow.collect
 
 private const val MAX_CHAT_ATTACHMENTS = 6
 
@@ -78,6 +81,14 @@ internal fun AttachmentChatComposer(
     var pending by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
     var menuOpen by remember { mutableStateOf(false) }
     var pendingKind by remember { mutableStateOf(ChatAttachmentKind.FILE) }
+    val latestBusy by rememberUpdatedState(busy)
+    val latestOnSend by rememberUpdatedState(onSend)
+
+    LaunchedEffect(Unit) {
+        ChatRegenerateBus.requests.collect { content ->
+            if (!latestBusy && content.isNotBlank()) latestOnSend(content)
+        }
+    }
 
     fun addAttachment(uri: Uri, requestedKind: ChatAttachmentKind? = null) {
         if (pending.size >= MAX_CHAT_ATTACHMENTS) return
@@ -100,7 +111,7 @@ internal fun AttachmentChatComposer(
             val item = clip.getItemAt(index)
             val uri = item.uri ?: item.intent?.data ?: continue
             addAttachment(uri)
-            if (pending.size >= MAX_CHAT_ATTACHMENTS) break
+            break
         }
     }
 
@@ -140,48 +151,31 @@ internal fun AttachmentChatComposer(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                IconButton(
-                    enabled = !busy,
-                    onClick = { menuOpen = true },
-                ) {
+                IconButton(enabled = !busy, onClick = { menuOpen = true }) {
                     Icon(Icons.Default.Add, contentDescription = "添加附件")
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     if (onRealtimeVoice != null) {
-                        AttachmentMenuItem(
-                            if (realtimeVoiceActive) "实时语音进行中" else "实时语音通话",
-                            Icons.Default.Mic,
-                        ) {
+                        AttachmentMenuItem(if (realtimeVoiceActive) "实时语音进行中" else "实时语音通话", Icons.Default.Mic) {
                             menuOpen = false
                             if (!realtimeVoiceActive) onRealtimeVoice()
                         }
                     }
                     AttachmentMenuItem("图片", Icons.Default.Image) {
-                        pendingKind = ChatAttachmentKind.IMAGE
-                        menuOpen = false
-                        picker.launch(arrayOf("image/*"))
+                        pendingKind = ChatAttachmentKind.IMAGE; menuOpen = false; picker.launch(arrayOf("image/*"))
                     }
                     AttachmentMenuItem("视频", Icons.Default.VideoFile) {
-                        pendingKind = ChatAttachmentKind.VIDEO
-                        menuOpen = false
-                        picker.launch(arrayOf("video/*"))
+                        pendingKind = ChatAttachmentKind.VIDEO; menuOpen = false; picker.launch(arrayOf("video/*"))
                     }
                     AttachmentMenuItem("语音", Icons.Default.AudioFile) {
-                        pendingKind = ChatAttachmentKind.AUDIO
-                        menuOpen = false
-                        picker.launch(arrayOf("audio/*"))
+                        pendingKind = ChatAttachmentKind.AUDIO; menuOpen = false; picker.launch(arrayOf("audio/*"))
                     }
                     AttachmentMenuItem("文件", Icons.Default.Description) {
-                        pendingKind = ChatAttachmentKind.FILE
-                        menuOpen = false
-                        picker.launch(arrayOf("*/*"))
+                        pendingKind = ChatAttachmentKind.FILE; menuOpen = false; picker.launch(arrayOf("*/*"))
                     }
                 }
             }
-            IconButton(
-                enabled = !busy && pending.size < MAX_CHAT_ATTACHMENTS,
-                onClick = { pasteClipboardAttachment() },
-            ) {
+            IconButton(enabled = !busy && pending.size < MAX_CHAT_ATTACHMENTS, onClick = { pasteClipboardAttachment() }) {
                 Icon(Icons.Default.ContentPaste, contentDescription = "粘贴剪贴板图片或文件")
             }
 
@@ -189,26 +183,18 @@ internal fun AttachmentChatComposer(
                 value = value,
                 onValueChange = onValueChange,
                 placeholder = { Text(placeholder) },
-                modifier = Modifier
-                    .weight(1f)
-                    .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed) {
-                            sendPending()
-                            true
-                        } else {
-                            false
-                        }
-                    },
+                modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed) {
+                        sendPending(); true
+                    } else false
+                },
                 maxLines = 4,
                 shape = RoundedCornerShape(22.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { sendPending() }),
             )
             if (onRealtimeVoice != null && !realtimeVoiceActive) {
-                IconButton(
-                    enabled = !busy,
-                    onClick = onRealtimeVoice,
-                ) {
+                IconButton(enabled = !busy, onClick = onRealtimeVoice) {
                     Icon(Icons.Default.Mic, contentDescription = "实时语音对话")
                 }
             }
@@ -223,24 +209,13 @@ internal fun AttachmentChatComposer(
 }
 
 @Composable
-private fun AttachmentMenuItem(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit,
-) {
-    DropdownMenuItem(
-        text = { Text(label) },
-        leadingIcon = { Icon(icon, contentDescription = null) },
-        onClick = onClick,
-    )
+private fun AttachmentMenuItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    DropdownMenuItem(text = { Text(label) }, leadingIcon = { Icon(icon, contentDescription = null) }, onClick = onClick)
 }
 
 @Composable
 private fun PendingAttachmentChip(attachment: ChatAttachment, onRemove: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 1.dp,
-    ) {
+    Surface(shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp) {
         Row(
             modifier = Modifier.padding(start = 10.dp, top = 6.dp, bottom = 6.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -250,9 +225,7 @@ private fun PendingAttachmentChip(attachment: ChatAttachment, onRemove: () -> Un
                 Text(attachment.name.take(28), style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 Text(formatAttachmentSize(attachment.size), color = Muted, style = MaterialTheme.typography.labelSmall)
             }
-            IconButton(onClick = onRemove) {
-                Icon(Icons.Default.Close, contentDescription = "移除附件")
-            }
+            IconButton(onClick = onRemove) { Icon(Icons.Default.Close, contentDescription = "移除附件") }
         }
     }
 }
@@ -269,11 +242,7 @@ internal fun AttachmentUserMessage(content: String) {
         ) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 if (parsed.text.isNotBlank()) {
-                    Text(
-                        parsed.text,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    Text(parsed.text, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
                 }
                 if (parsed.attachments.isNotEmpty()) {
                     if (parsed.text.isNotBlank()) Spacer(Modifier.width(6.dp))
@@ -292,18 +261,11 @@ internal fun AttachmentUserMessage(content: String) {
                             shape = RoundedCornerShape(12.dp),
                             color = androidx.compose.ui.graphics.Color.White.copy(alpha = .72f),
                         ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                            Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(attachmentIcon(attachment.kind), contentDescription = null)
                                 Column(Modifier.padding(start = 8.dp).weight(1f)) {
                                     Text(attachment.name, fontWeight = FontWeight.Medium, maxLines = 1)
-                                    Text(
-                                        "${attachmentLabel(attachment.kind)} · ${formatAttachmentSize(attachment.size)}",
-                                        color = Muted,
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
+                                    Text("${attachmentLabel(attachment.kind)} · ${formatAttachmentSize(attachment.size)}", color = Muted, style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
