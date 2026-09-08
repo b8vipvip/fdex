@@ -9,12 +9,13 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/user_portal.css">
     <link rel="stylesheet" href="/static/user_chatgpt_tuning.css">
+    <link rel="stylesheet" href="/static/user_sidebar_recent.css">
 </head>
 <body class="{% if current_path.startswith('/account/chat/') %}is-chat-route{% endif %}" data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
 <div class="user-shell" id="fdex-user-shell">
     <aside class="user-sidebar" id="fdex-user-sidebar" aria-label="FDEX 用户中心侧边栏">
         <div class="sidebar-head">
-            <a class="user-brand" href="/account/messages" aria-label="FDEX 首页">
+            <a class="user-brand" href="/account/discover" aria-label="FDEX 首页">
                 <span class="user-brand-mark">F</span>
                 <span class="user-brand-copy"><strong>FDEX</strong><small>用户中心</small></span>
             </a>
@@ -23,29 +24,25 @@
             </button>
         </div>
 
-        <a class="new-chat-link" href="/account/messages"><span class="new-chat-plus">＋</span><span>新建对话</span></a>
+        <a class="new-chat-link" href="/account/employees?new=1#new-agent"><span class="new-chat-plus">＋</span><span>新建智体</span></a>
 
-        <nav class="user-nav" aria-label="用户中心导航">
-            <div class="nav-group">
-                <span class="nav-group-title">聊天</span>
-                <a href="/account/messages" class="{% if current_path.startswith('/account/messages') or current_path.startswith('/account/chat/') %}active{% endif %}">消息</a>
-                <a href="/account/employees" class="{% if current_path.startswith('/account/employees') %}active{% endif %}">智体</a>
-                <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
-            </div>
-            <div class="nav-group">
-                <span class="nav-group-title">工作区</span>
-                <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
-                <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
-                <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
-                <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
-                <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
-            </div>
-            <div class="nav-group nav-group-last">
-                <span class="nav-group-title">更多</span>
-                <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
-                <a href="/account/me" class="{% if current_path.startswith('/account/me') or current_path.startswith('/account/settings') or current_path.startswith('/account/security') or current_path.startswith('/account/deleted') or current_path.startswith('/account/info/') %}active{% endif %}">我的</a>
-            </div>
+        <nav class="user-nav user-nav-flat" aria-label="用户中心导航">
+            <a href="/account/discover" class="{% if current_path.startswith('/account/discover') %}active{% endif %}">发现</a>
+            <a href="/account/employees" class="{% if current_path.startswith('/account/employees') %}active{% endif %}">智体</a>
+            <a href="/account/groups" class="{% if current_path.startswith('/account/groups') %}active{% endif %}">工作群</a>
+            <a href="/account/knowledge" class="{% if current_path.startswith('/account/knowledge') %}active{% endif %}">知识库</a>
+            <a href="/account/work" class="{% if current_path.startswith('/account/work') %}active{% endif %}">工作</a>
+            <a href="/account/agent" class="{% if current_path.startswith('/account/agent') and not current_path.startswith('/account/agent/inputs') %}active{% endif %}">Coding Agent</a>
+            <a href="/account/agent/inputs" class="{% if current_path.startswith('/account/agent/inputs') %}active{% endif %}">Agent 输入</a>
+            <a href="/account/github" class="{% if current_path.startswith('/account/github') %}active{% endif %}">GitHub</a>
         </nav>
+
+        <section class="recent-section" aria-label="最近聊天">
+            <div class="recent-title">最近</div>
+            <div class="recent-chat-list" id="fdex-recent-chat-list" aria-live="polite">
+                <div class="recent-empty">暂无最近聊天</div>
+            </div>
+        </section>
 
         {% if user %}
         <div class="account-chip">
@@ -88,7 +85,7 @@
                         {% else %}FDEX{% endif %}
                     </strong>
                     {% if current_path.startswith('/account/chat/employee/') and employee is defined %}
-                    <span>{% if employee.coding_agent %}Coding Agent 智体{% elif employee.role_prompt %}已定义身份{% else %}通用智体{% endif %}</span>
+                    <span>{% if employee.coding_agent %}Coding Agent 智体{% elif employee.description %}{{ employee.description }}{% elif employee.role_prompt %}已定义身份{% else %}通用智体{% endif %}</span>
                     {% elif current_path.startswith('/account/chat/group/') and group is defined %}<span>工作群</span>{% endif %}
                 </div>
             </div>
@@ -148,7 +145,7 @@
     };
     document.querySelectorAll('[data-sidebar-toggle]').forEach((button) => button.addEventListener('click', toggleSidebar));
     document.querySelector('[data-sidebar-backdrop]')?.addEventListener('click', () => shell.classList.remove('sidebar-open'));
-    document.querySelectorAll('.user-nav a,.new-chat-link').forEach((link) => link.addEventListener('click', () => {
+    document.querySelectorAll('.user-nav a,.new-chat-link,.recent-chat-list a').forEach((link) => link.addEventListener('click', () => {
         if (mobile.matches) shell.classList.remove('sidebar-open');
     }));
     if (typeof mobile.addEventListener === 'function') mobile.addEventListener('change', syncDesktopPreference);
@@ -157,6 +154,8 @@
 </script>
 <script src="/static/user_runtime_log.js"></script>
 <script src="/static/user_chat.js" defer></script>
+<script src="/static/user_sidebar_recent.js" defer></script>
+<script src="/static/user_agent_editor.js" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
