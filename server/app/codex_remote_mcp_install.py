@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Iterator
 
+from app.plugin_mcp_gateway import build_codex_plugin_mcp_config, revoke_codex_plugin_mcp_task
 from app.remote_mcp_gateway import build_codex_remote_mcp_config, remote_mcp_lease_store
 
 _current_servers: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
@@ -21,6 +22,10 @@ def install_codex_remote_mcp_runtime() -> None:
     imported `_codex_thread_config` avoids duplicating the durable Thread/Turn runner. The ContextVar
     is task-local, so concurrent tasks owned by the same or different Center users never share
     leases or MCP configuration.
+
+    Phase 7.43 also merges the native Plugin Runtime MCP surface. Codex still sees only loopback
+    capability URLs: GitLab/Gitee credentials stay in FDEX, and the plugin server dynamically
+    re-checks the initiating 智体's current connection/grant before every tools/list and tools/call.
     """
     global _installed
     if _installed:
@@ -35,7 +40,7 @@ def install_codex_remote_mcp_runtime() -> None:
         servers = _current_servers.get()
         if servers:
             # Codex sees only loopback capability URLs. The original user URL, DNS answer and any
-            # future credential material stay owned by the FDEX gateway/control plane.
+            # credential material stay owned by the FDEX gateway/control plane.
             payload["mcp_servers"] = servers
         else:
             payload.pop("mcp_servers", None)
@@ -50,12 +55,18 @@ def install_codex_remote_mcp_runtime() -> None:
 def codex_remote_mcp_scope(owner_id: str, task_id: str) -> Iterator[dict[str, dict[str, Any]]]:
     install_codex_remote_mcp_runtime()
     servers = build_codex_remote_mcp_config(owner_id, task_id)
+    plugin_servers = build_codex_plugin_mcp_config(owner_id, task_id)
+    collision = set(servers).intersection(plugin_servers)
+    if collision:
+        raise RuntimeError(f"FDEX MCP server name collision: {sorted(collision)}")
+    servers.update(plugin_servers)
     token = _current_servers.set(servers)
     try:
         yield servers
     finally:
         _current_servers.reset(token)
-        # The localhost capability dies with this FDEX task even if the official Codex Thread is
+        # Localhost capabilities die with this FDEX task even if the official Codex Thread is
         # durable and later resumed. A continuation receives fresh capabilities bound to its own
-        # task id, while a crashed worker's old leases also have a fixed six-hour expiry.
+        # task id. Crashed-worker leases also have fixed six-hour expiries and startup cleanup.
         remote_mcp_lease_store().revoke_task(owner_id, task_id)
+        revoke_codex_plugin_mcp_task(owner_id, task_id)
