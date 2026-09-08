@@ -98,6 +98,7 @@ def _general_ensure_defaults(self: WebWorkspaceStore, owner_id: str) -> None:
         if not str(item.get("name") or "").strip():
             item["name"] = f"智体 {record_id}"
             changed = True
+        item.setdefault("description", "")
         item.setdefault("role_prompt", "")
         item.setdefault("active", True)
         item.setdefault("knowledge_read", True)
@@ -190,12 +191,15 @@ def _install_employee_system_prompt() -> None:
             for item in knowledge
         )
         name = str(agent.get("name") or "智体").strip() or "智体"
+        description = str(agent.get("description") or "").strip()
         identity_prompt = str(agent.get("role_prompt") or "").strip()
         base = (
             f"你是 FDEX 智体 {name}。"
             "智体是用户自定义的通用 AI 身份，可以是老师、学习伙伴、生活助手、创作伙伴、Coding Agent 或其他角色。"
             "只处理用户当前请求；未知事实不要编造。输出自然、清楚、可执行。"
         )
+        if description:
+            base += "\n\n用户对这个智体的一句话描述：\n" + description[:500]
         if identity_prompt:
             base += "\n\n用户为你设置的身份定义提示词：\n" + identity_prompt[:8000]
         if knowledge_text:
