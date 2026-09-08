@@ -197,12 +197,24 @@ def collect_employee_tool_context(owner_id: str, employee: dict[str, Any], promp
 
     if _should_collect_github_inventory(employee, prompt):
         try:
+            native_store = agent_project_store()
+            native_connections = [
+                item
+                for item in native_store.list_connections(owner_id)
+                if str(item.get("auth_type") or "") == "github_app" and not bool(item.get("needs_reconnect"))
+            ]
+            native_status = {
+                "connected": bool(native_connections),
+                "connection_count": len(native_connections),
+                "state": "connected" if native_connections else "available",
+            }
             payload, event = run_plugin_tool(
                 owner_id,
                 employee,
                 "github",
                 "github.installation.repositories",
                 lambda: _collect_repositories(owner_id),
+                connection_status=native_status,
             )
             blocks.append({"tool": event["tool"], "result": payload})
             events.append(event)
