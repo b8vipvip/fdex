@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.agent_projects import agent_project_store
+from app.plugin_code_hosts import code_host_connection_status
 from app.web_workspace import web_workspace_store
 
 
@@ -42,16 +43,26 @@ CATALOG: tuple[PluginDefinition, ...] = (
             PluginTool("github.repository.delete", "dangerous", "删除或执行高风险仓库操作"),
         ),
     ),
-    PluginDefinition("gitlab", "GitLab", "代码仓库", "项目、代码、Issue、Merge Request 与 CI/CD。", "", "roadmap", (
-        PluginTool("gitlab.repository.read", "read", "读取项目与代码"),
-        PluginTool("gitlab.repository.write", "write", "写入项目代码"),
-        PluginTool("gitlab.merge_request.write", "write", "创建或更新 Merge Request"),
-    )),
-    PluginDefinition("gitee", "Gitee", "代码仓库", "国内代码仓库、Issue、Pull Request 与流水线。", "", "roadmap", (
-        PluginTool("gitee.repository.read", "read", "读取仓库与代码"),
-        PluginTool("gitee.repository.write", "write", "写入仓库代码"),
-        PluginTool("gitee.pull_request.write", "write", "创建或更新 Pull Request"),
-    )),
+    PluginDefinition(
+        "gitlab", "GitLab", "代码仓库", "GitLab.com 项目、代码与 Merge Request。访问令牌加密保存在独立插件凭据库。",
+        "/account/plugins#plugin-gitlab", "native",
+        (
+            PluginTool("gitlab.repositories.list", "read", "列出当前 GitLab 账号可访问的项目"),
+            PluginTool("gitlab.repository.read", "read", "读取项目文件和提交信息"),
+            PluginTool("gitlab.repository.write", "write", "新建或更新项目文件"),
+            PluginTool("gitlab.merge_request.write", "write", "创建 Merge Request"),
+        ),
+    ),
+    PluginDefinition(
+        "gitee", "Gitee", "代码仓库", "Gitee 仓库、代码与 Pull Request。OAuth2 访问令牌加密保存在独立插件凭据库。",
+        "/account/plugins#plugin-gitee", "native",
+        (
+            PluginTool("gitee.repositories.list", "read", "列出当前 Gitee 账号可访问的仓库"),
+            PluginTool("gitee.repository.read", "read", "读取仓库文件和提交信息"),
+            PluginTool("gitee.repository.write", "write", "新建或更新仓库文件"),
+            PluginTool("gitee.pull_request.write", "write", "创建 Pull Request"),
+        ),
+    ),
     PluginDefinition("feishu", "飞书", "沟通与知识", "群消息、文档、多维表格与任务回写。", "", "roadmap", (
         PluginTool("feishu.message.read", "read", "读取授权范围内消息"),
         PluginTool("feishu.document.read", "read", "读取文档"),
@@ -150,9 +161,10 @@ def plugin_connection_status(owner_id: str, plugin_id: str) -> dict[str, Any]:
     if definition.id == "github":
         status = _github_connection_status(owner_id)
         return {**status, "connectable": True, "state": "connected" if status["connected"] else "available"}
-    # Connection credentials for later adapters must live in their dedicated encrypted connector stores,
-    # not in the generic Web workspace records. The catalog is intentionally visible before those adapters
-    # arrive so UI, grants, audit and Tool Router contracts stay stable.
+    if definition.id in {"gitlab", "gitee"}:
+        return code_host_connection_status(owner_id, definition.id)
+    # Credentials for later adapters must live in dedicated encrypted connector stores, not in
+    # generic Web workspace rows. Catalog visibility is intentionally separate from availability.
     return {"connected": False, "connection_count": 0, "account_label": "", "connectable": False, "state": "roadmap"}
 
 
