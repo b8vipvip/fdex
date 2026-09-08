@@ -40,6 +40,7 @@ from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_gith
 from app.github_app_portal_routes import router as github_app_portal_router
 from app.mail_admin_routes import router as mail_admin_router
 from app.memory_middleware_streamsafe import StreamSafeFdexMemoryMiddleware
+from app.plugin_mcp_gateway import plugin_mcp_lease_store, router as plugin_mcp_gateway_router
 from app.plugin_portal_routes import router as plugin_portal_router
 from app.provider_admin import router as provider_admin_router
 from app.provider_manager import provider_store
@@ -171,6 +172,7 @@ app.mount("/generated", StaticFiles(directory=generated_dir), name="generated")
 # require an actual loopback TCP peer and an unguessable task/smoke capability before touching state.
 # Mount them before broad user routers so no compatibility route can shadow them.
 app.include_router(remote_mcp_gateway_router)
+app.include_router(plugin_mcp_gateway_router)
 app.include_router(codex_provider_smoke_mcp_router)
 app.include_router(user_login_router)
 app.include_router(user_account_auth_router)
@@ -215,6 +217,7 @@ async def start_security_cleanup_tasks() -> None:
     # Leases are short-lived and raw tokens are never stored, but reconcile expired rows on each
     # process start so a worker crash cannot leave durable state that still looks active.
     remote_mcp_lease_store().purge_expired()
+    plugin_mcp_lease_store().purge_expired()
 
 
 @app.on_event("shutdown")
