@@ -5,6 +5,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 
 from app.config import SERVER_DIR
+from app.plugin_code_hosts import (
+    CodeHostPluginError,
+    connect_code_host,
+    disconnect_code_host,
+    list_code_host_repositories,
+)
 from app.plugin_runtime import (
     catalog_snapshot,
     effective_agent_grant,
@@ -22,6 +28,13 @@ templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
 
 def _owner(user: dict[str, object]) -> str:
     return str(user["id"])
+
+
+def _code_host(plugin_id: str) -> str:
+    clean = (plugin_id or "").strip().lower()
+    if clean not in {"gitlab", "gitee"}:
+        raise ValueError("当前连接入口仅支持 GitLab / Gitee")
+    return clean
 
 
 @router.get("", response_class=HTMLResponse, response_model=None)
@@ -67,6 +80,63 @@ def plugin_catalog_json(request: Request) -> JSONResponse:
     if user is None:
         return JSONResponse({"ok": False, "error": "登录状态已失效"}, status_code=401)
     return JSONResponse({"ok": True, "plugins": catalog_snapshot(_owner(user))})
+
+
+@router.post("/{plugin_id}/connect", response_model=None)
+def connect_plugin_code_host(
+    plugin_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    access_token: str = Form(...),
+    base_url: str = Form(""),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        clean_plugin = _code_host(plugin_id)
+        definition = plugin_definition(clean_plugin)
+        saved = connect_code_host(_owner(user), clean_plugin, access_token, base_url=base_url)
+        count = int(saved.get("repository_count") or 0)
+        login = str(saved.get("account_login") or saved.get("account_name") or "")
+        _flash(request, f"{definition.name} 已连接：{login}，已验证 {count} 个可访问仓库/项目。", "success")
+    except (CodeHostPluginError, KeyError, ValueError) as exc:
+        _flash(request, str(exc), "error")
+    return RedirectResponse(f"/account/plugins#plugin-{(plugin_id or '').strip().lower()}", status_code=303)
+
+
+@router.post("/{plugin_id}/disconnect", response_model=None)
+def disconnect_plugin_code_host(
+    plugin_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        clean_plugin = _code_host(plugin_id)
+        definition = plugin_definition(clean_plugin)
+        removed = disconnect_code_host(_owner(user), clean_plugin)
+        _flash(request, f"{definition.name} 已断开。" if removed else f"{definition.name} 当前没有连接。", "success")
+    except (CodeHostPluginError, KeyError, ValueError) as exc:
+        _flash(request, str(exc), "error")
+    return RedirectResponse(f"/account/plugins#plugin-{(plugin_id or '').strip().lower()}", status_code=303)
+
+
+@router.get("/{plugin_id}/repositories.json", response_model=None)
+def plugin_code_host_repositories(plugin_id: str, request: Request) -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效"}, status_code=401)
+    try:
+        clean_plugin = _code_host(plugin_id)
+        repositories = list_code_host_repositories(_owner(user), clean_plugin)
+        return JSONResponse({"ok": True, "plugin_id": clean_plugin, "count": len(repositories), "repositories": repositories})
+    except (CodeHostPluginError, KeyError, PermissionError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @router.post("/{plugin_id}/agents/{employee_id}", response_model=None)
