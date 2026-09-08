@@ -14,6 +14,7 @@ from app.codex_host_runtime import create_codex_continuation
 from app.codex_host_store import codex_host_store
 from app.codex_task_inputs import codex_task_input_store
 from app.employee_agent_tools import EmployeeToolContext, collect_employee_tool_context
+from app.plugin_agent_principals import plugin_agent_principal_store
 
 _OWNER_REPO_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}(?![A-Za-z0-9_.-])"
@@ -212,8 +213,8 @@ def _agent_turn_prompt(
         "This message is already inside the Coding Agent. Decide within the Codex Agent Turn whether "
         "repository inspection, commands, edits, tests, or no tool use at all are needed. A direct "
         "tool-free answer is valid. Any real operation must be performed by the Codex/FDEX runtime in "
-        "the bound project worktree; never delegate execution to provider-side plugins, connectors, "
-        "apps, or invented tool envelopes."
+        "the bound project worktree or through FDEX-owned MCP plugin tools explicitly granted to this "
+        "智体; never delegate execution to provider-side plugins, connectors, apps, or invented tool envelopes."
     )
     return "\n\n".join(sections)[:32000]
 
@@ -343,6 +344,29 @@ async def _run_coding_agent(
         )
     except AgentRuntimeError as exc:
         raise ValueError(f"Coding Agent 无法创建 Agent Turn：{exc}") from exc
+
+    # Bind the durable task to the exact owner-scoped 智体 before the Codex Host starts. The
+    # Plugin MCP gateway refuses all task/API callers without this binding and dynamically rechecks
+    # current plugin grants on every call. Automatic retry descendants inherit this immutable
+    # principal through their AgentTask parent lineage.
+    try:
+        principal = await asyncio.to_thread(plugin_agent_principal_store().bind, owner_id, task.id, employee)
+    except (KeyError, RuntimeError, ValueError, OSError) as exc:
+        try:
+            await runtime.fail_task(task.id, f"插件主体绑定失败：{exc}")
+        except Exception:
+            pass
+        raise ValueError(f"Coding Agent 插件主体绑定失败：{exc}") from exc
+    events.append(
+        {
+            "tool": "plugin.runtime.principal",
+            "status": "completed",
+            "summary": f"已将 Agent Turn 绑定到智体 {principal.get('employee_name') or employee.get('name') or ''}",
+            "task_id": task.id,
+            "employee_id": int(principal.get("employee_id") or 0),
+        }
+    )
+    _set_tool_events(request, events)
 
     try:
         media_event = await _attach_codex_media(owner_id, task.id, upload)
