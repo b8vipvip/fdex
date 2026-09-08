@@ -8,6 +8,7 @@
     <title>{% block title %}FDEX 用户中心{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/user_portal.css">
+    <link rel="stylesheet" href="/static/user_chatgpt_tuning.css">
 </head>
 <body class="{% if current_path.startswith('/account/chat/') %}is-chat-route{% endif %}" data-fdex-log-scope="{{ user.id if user else '' }}" data-fdex-app-version="{{ settings.app_version }}">
 <div class="user-shell" id="fdex-user-shell">
