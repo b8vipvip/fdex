@@ -10,6 +10,7 @@ from app.config import fresh_settings
 from app.fdex_memory import MemoryScope
 from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
+from app.plugin_code_hosts import code_host_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
 
@@ -134,6 +135,37 @@ def _safe_projects(items: list[dict[str, object]]) -> list[dict[str, object]]:
     return [{key: item.get(key) for key in allowed if key in item} for item in items]
 
 
+def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
+    """Export only code-host connection metadata; encrypted access tokens never leave the vault."""
+    store = code_host_credential_store()
+    rows: list[dict[str, object]] = []
+    for plugin_id in ("gitlab", "gitee"):
+        try:
+            item = store.get(user_id, plugin_id)
+        except (ValueError, RuntimeError):
+            item = None
+        if item is None:
+            continue
+        rows.append(
+            {
+                key: item.get(key)
+                for key in (
+                    "plugin_id",
+                    "base_url",
+                    "account_id",
+                    "account_login",
+                    "account_name",
+                    "repository_count",
+                    "last_checked_at",
+                    "created_at",
+                    "updated_at",
+                    "token_configured",
+                )
+            }
+        )
+    return rows
+
+
 def build_account_export(
     user_id: str,
     *,
@@ -153,6 +185,7 @@ def build_account_export(
         "sessions": _public_sessions(store, user_id),
         "security_events": store.security_events(user_id, limit=100),
         "github_connections": _safe_connections(projects.list_connections(user_id)),
+        "native_plugin_connections": _native_plugin_connections(user_id),
         "coding_agent_projects": _safe_projects(projects.list_projects(user_id, enabled_only=False)),
         "remote_mcp_servers": remote_mcp_registry().export_owner(user_id),
         # Export only non-secret OAuth client configuration. client_secret, state/PKCE material,
@@ -180,6 +213,10 @@ def build_account_export(
             "github_refresh_token_cipher",
             "github_device_code",
             "github_device_code_cipher",
+            "gitlab_access_token",
+            "gitee_access_token",
+            "plugin_code_host_token_cipher",
+            "plugin_mcp_capability_tokens",
             "provider_api_keys",
             "remote_mcp_bearer_tokens",
             "remote_mcp_oauth_client_secrets",
