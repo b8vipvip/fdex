@@ -29,6 +29,10 @@ class WebWorkspaceStore:
     The Web client cannot reuse that device-local database, so the browser-facing product stores
     equivalent records in the center service. Every query is owner-scoped at SQL level; a caller
     never supplies another account's owner id through a form field.
+
+    Plugin grant and audit records intentionally live here because they are non-secret policy and
+    execution metadata. Third-party credentials must live in each plugin adapter's encrypted/native
+    connection store and must never be written into this generic workspace database.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -328,6 +332,8 @@ class WebWorkspaceStore:
             "project_asset",
             "report",
             "preferences",
+            "plugin_grant",
+            "plugin_audit",
         }
         if clean not in allowed:
             raise ValueError("不支持的 Web 工作区记录类型")
