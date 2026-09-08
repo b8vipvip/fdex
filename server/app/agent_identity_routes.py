@@ -142,20 +142,18 @@ async def organize_agent_prompt(
     clean_prompt = (role_prompt or "").strip()[:12000]
     if not clean_name:
         return JSONResponse({"ok": False, "error": "请输入智体名称"}, status_code=400)
-    if not clean_description:
-        return JSONResponse({"ok": False, "error": "请用一句话描述智体"}, status_code=400)
 
-    source = clean_prompt or "（当前没有手写提示词，请根据名称和一句话描述生成。）"
+    source = clean_prompt or "（当前没有手写提示词，请根据已有信息生成。）"
     result = await route_text_protocols(
         system=(
-            "你是 FDEX 的智体身份提示词编辑器。你的任务是把用户提供的智体名称、一句话用途和现有提示词，"
+            "你是 FDEX 的智体身份提示词编辑器。你的任务是把用户提供的智体名称、可选的一句话用途和现有提示词，"
             "整理成可以直接作为 AI 智体身份定义使用的中文提示词。保留用户原始意图，不虚构用户未提供的业务事实。"
             "提示词应明确身份、核心职责、工作方式、必要边界、遇到信息不足时的处理方式和输出偏好。"
             "不要解释你的修改，不要使用 Markdown 代码块，不要输出标题前缀，只输出整理后的提示词正文。"
         ),
         prompt=(
             f"智体名称：{clean_name}\n"
-            f"一句话描述：{clean_description}\n"
+            f"一句话描述：{clean_description or '（未填写）'}\n"
             f"现有身份定义提示词：\n{source}\n\n"
             "请整理为简洁但完整的身份定义提示词。"
         ),
@@ -193,8 +191,6 @@ def create_agent(
         clean_description = (description or "").strip()[:160]
         if not display_name:
             raise ValueError("请输入智体名称")
-        if not clean_description:
-            raise ValueError("请用一句话描述智体")
         store.create(
             owner_id,
             "employee",
@@ -215,12 +211,40 @@ def create_agent(
     return RedirectResponse("/account/employees", status_code=303)
 
 
+@router.get("/employees/{employee_id}.json", response_model=None)
+def agent_details(employee_id: int, request: Request) -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效，请重新登录"}, status_code=401)
+    try:
+        item = web_workspace_store().get(_owner(user), "employee", employee_id, include_deleted=True)
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "智体不存在"}, status_code=404)
+    return JSONResponse(
+        {
+            "ok": True,
+            "employee": {
+                "id": int(item["id"]),
+                "name": str(item.get("name") or ""),
+                "description": str(item.get("description") or ""),
+                "role_prompt": str(item.get("role_prompt") or ""),
+                "active": bool(item.get("active", True)),
+                "knowledge_read": bool(item.get("knowledge_read", True)),
+                "knowledge_write": bool(item.get("knowledge_write", True)),
+                "coding_agent": bool(item.get("coding_agent", False)),
+                "deleted": bool(item.get("_deleted", False)),
+            },
+        }
+    )
+
+
 @router.post("/employees/{employee_id}", response_model=None)
 def update_agent(
     employee_id: int,
     request: Request,
     csrf_token: str = Form(...),
     name: str = Form(""),
+    description: str = Form(""),
     role_prompt: str = Form(""),
     active: bool = Form(False),
     knowledge_read: bool = Form(False),
@@ -243,6 +267,7 @@ def update_agent(
         current.update(
             {
                 "name": display_name,
+                "description": (description or "").strip()[:160],
                 "role_prompt": (role_prompt or "").strip()[:12000],
                 "active": active,
                 "knowledge_read": knowledge_read,
