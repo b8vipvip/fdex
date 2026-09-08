@@ -3,6 +3,7 @@ package com.b8vipvip.fdex.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -22,6 +26,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -30,10 +38,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.b8vipvip.fdex.data.ChatMessage
 import com.b8vipvip.fdex.data.GroupMessage
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 private val CopyActionColor = Color(0xFF64748B)
+private val LikeActionColor = Color(0xFF16A34A)
+private val ShareActionColor = Color(0xFF64748B)
+private val RetryActionColor = Color(0xFF64748B)
 private val QuoteActionColor = Color(0xFF2563EB)
 private val DeleteActionColor = Color(0xFFDC2626)
+
+internal object ChatRegenerateBus {
+    val requests = MutableSharedFlow<String>(extraBufferCapacity = 4)
+
+    fun request(content: String) {
+        val clean = visibleMessageText(content).trim()
+        if (clean.isNotBlank()) requests.tryEmit(clean)
+    }
+}
 
 @Composable
 internal fun ActionableEmployeeChatMessage(
@@ -52,6 +73,7 @@ internal fun ActionableEmployeeChatMessage(
             }
         }
         MessageActionBar(
+            messageKey = "employee:${message.id}",
             content = message.content,
             alignEnd = user,
             onDelete = onDelete,
@@ -105,6 +127,7 @@ internal fun ActionableGroupChatMessage(
             }
         }
         MessageActionBar(
+            messageKey = "group:${message.id}",
             content = message.content,
             alignEnd = user,
             onDelete = onDelete,
@@ -127,12 +150,17 @@ internal fun SelectableMessageBody(content: @Composable () -> Unit) {
 
 @Composable
 private fun MessageActionBar(
+    messageKey: String,
     content: String,
     alignEnd: Boolean,
     onDelete: () -> Unit,
     onQuote: () -> Unit,
 ) {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("fdex_chat_feedback", Context.MODE_PRIVATE) }
+    var liked by remember(messageKey) { mutableStateOf(prefs.getBoolean(messageKey, false)) }
+    val visible = visibleMessageText(content)
+
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
@@ -143,8 +171,35 @@ private fun MessageActionBar(
             tint = CopyActionColor,
             onClick = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                clipboard?.setPrimaryClip(ClipData.newPlainText("FDEX 聊天消息", visibleMessageText(content)))
+                clipboard?.setPrimaryClip(ClipData.newPlainText("FDEX 聊天消息", visible))
             },
+        )
+        MessageActionIcon(
+            imageVector = Icons.Default.ThumbUp,
+            contentDescription = if (liked) "取消点赞" else "点赞",
+            tint = if (liked) LikeActionColor else CopyActionColor,
+            onClick = {
+                liked = !liked
+                prefs.edit().putBoolean(messageKey, liked).apply()
+            },
+        )
+        MessageActionIcon(
+            imageVector = Icons.Default.Share,
+            contentDescription = "分享消息",
+            tint = ShareActionColor,
+            onClick = {
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, visible)
+                }
+                runCatching { context.startActivity(Intent.createChooser(intent, "分享 FDEX 消息")) }
+            },
+        )
+        MessageActionIcon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "重新生成",
+            tint = RetryActionColor,
+            onClick = { ChatRegenerateBus.request(content) },
         )
         MessageActionIcon(
             imageVector = Icons.Default.FormatQuote,
