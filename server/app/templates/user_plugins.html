@@ -97,6 +97,12 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
+            {% if plugin.id in ['gitlab', 'gitee'] and grants[employee.id|string][plugin.id] != 'none' %}
+            <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-secondary compact-button" type="submit">验证 MCP</button>
+            </form>
+            {% endif %}
           </td>
           {% endfor %}
         </tr>
