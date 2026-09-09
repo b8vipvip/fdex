@@ -31,6 +31,8 @@ def test_verification_is_read_only_and_limited_to_native_plugins() -> None:
     assert 'tool_name = "feishu_list_chats"' in routes
     assert 'elif clean_plugin == "notion":' in routes
     assert 'tool_name = "notion_search"' in routes
+    assert 'elif clean_plugin == "google-drive":' in routes
+    assert 'tool_name = "drive_search_files"' in routes
     assert 'tool_name = f"{clean_plugin}_list_repositories"' in routes
     assert "clean_plugin = _native_plugin(clean_plugin)" in routes
     assert "write_code_host_file" not in routes
@@ -41,6 +43,9 @@ def test_verification_is_read_only_and_limited_to_native_plugins() -> None:
     assert "create_notion_page" not in routes
     assert "append_notion_page_text" not in routes
     assert "update_notion_page_title" not in routes
+    assert "create_google_document" not in routes
+    assert "append_google_document_text" not in routes
+    assert "rename_google_drive_file" not in routes
 
 
 def test_mcp_error_text_never_requires_provider_specific_shape() -> None:
