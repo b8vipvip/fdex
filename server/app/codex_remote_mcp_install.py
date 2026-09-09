@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Iterator
 
+from app.plugin_cloudflare_runtime import install_cloudflare_runtime
 from app.plugin_feishu_runtime import install_feishu_runtime
 from app.plugin_google_drive_runtime import install_google_drive_runtime
 from app.plugin_jira_runtime import install_jira_runtime
@@ -20,7 +21,9 @@ install_google_drive_runtime()
 install_linear_runtime()
 install_jira_runtime()
 install_vercel_runtime()
+install_cloudflare_runtime()
 
+from app.plugin_cloudflare_mcp import install_cloudflare_mcp_tools
 from app.plugin_code_host_workflow import install_code_host_workflow_tools
 from app.plugin_feishu_mcp import install_feishu_mcp_tools
 from app.plugin_google_drive_mcp import install_google_drive_mcp_tools
@@ -37,12 +40,10 @@ install_google_drive_mcp_tools()
 install_linear_mcp_tools()
 install_jira_mcp_tools()
 install_vercel_mcp_tools()
+install_cloudflare_mcp_tools()
 install_code_host_workflow_tools()
 
-_current_servers: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
-    "fdex_codex_remote_mcp_servers",
-    default=None,
-)
+_current_servers: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar("fdex_codex_remote_mcp_servers", default=None)
 _installed = False
 
 
@@ -66,15 +67,16 @@ def install_codex_remote_mcp_runtime() -> None:
     Phase 7.50 adds owner-scoped Atlassian OAuth 2.0 (3LO), multi-site Jira Cloud discovery, JQL
     reads and approved Issue/create/update/transition/comment writes. Phase 7.51 adds owner-scoped
     encrypted Vercel access tokens, project/deployment inspection, approved Preview redeployments,
-    and explicitly approved production promote/rollback operations. Codex still sees only loopback
-    capability URLs: third-party credentials stay in FDEX, and the plugin server dynamically
-    re-checks the initiating 智体's current connection/grant before every tools/list and tools/call.
+    and explicitly approved production promote/rollback operations. Phase 7.52 adds encrypted
+    Cloudflare API Tokens, Pages project/deployment/log reads, approved deployment retry, and an
+    explicitly approved production rollback. Codex still sees only loopback capability URLs:
+    third-party credentials stay in FDEX, and the plugin server dynamically re-checks the initiating
+    智体's current connection/grant before every tools/list and tools/call.
     """
     global _installed
     if _installed:
         return
     import app.codex_host_runtime as host
-
     original = host._codex_thread_config
 
     @wraps(original)
