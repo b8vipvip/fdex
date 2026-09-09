@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -16,6 +18,7 @@ from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, veri
 
 router = APIRouter(prefix="/admin/agent/codex-providers", include_in_schema=False)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
+logger = logging.getLogger("fdex.codex_provider_smoke")
 
 
 def _login_redirect() -> RedirectResponse:
@@ -34,14 +37,13 @@ def _ctx(request: Request, **extra: object) -> dict[str, object]:
 
 
 async def _background_smoke(provider_id: int) -> None:
-    # The result is durably written to codex-provider-compatibility.db by the runner. Exceptions
-    # before a record can be created are intentionally swallowed here because the admin POST has
-    # already preflighted Provider/Runtime/cgroup requirements; a later refresh still shows no
-    # fresh compatibility proof rather than falsely unlocking rollout.
+    # The result is durably written to codex-provider-compatibility.db by the runner.
+    # Keep unexpected pre-record failures visible in exported service logs: swallowing
+    # them made a real Codex/tool failure look indistinguishable from "never run".
     try:
         await run_codex_provider_smoke(int(provider_id))
     except Exception:
-        return
+        logger.exception("Codex Provider smoke crashed before a compatibility record was written provider_id=%s", provider_id)
 
 
 @router.get("", response_class=HTMLResponse, response_model=None)
@@ -80,6 +82,12 @@ def start_codex_provider_smoke(
         spec = select_codex_provider_from([provider])
         if spec is None:
             raise ValueError("该供应商未完整配置 Responses 协议、API Key、Base URL 或文本模型")
+        if spec.model.strip().lower().startswith("gpt-5.6") and runtime.version.strip() == "0.147.0":
+            raise ValueError(
+                "当前 Codex Runtime=0.147.0；该版本存在 GPT-5.6 Code Mode/exec host 回归，"
+                "会在 chat2api 已返回 custom_tool_call 后阻断本地工具执行和 continuation。"
+                "请先在 Codex Runtime 管理页升级到当前官方稳定版，再执行 full smoke。"
+            )
         background_tasks.add_task(_background_smoke, int(provider_id))
         write_audit(
             request,
@@ -92,7 +100,7 @@ def start_codex_provider_smoke(
         )
         set_flash(
             request,
-            f"已启动 {spec.name} / {spec.model} 的真实 Codex full smoke。测试在隔离 scratch workspace 中执行，刷新本页查看最终兼容等级。",
+            f"已启动 {spec.name} / {spec.model} 的真实 Codex full smoke（Runtime {runtime.version} / {runtime.source}）。测试在隔离 scratch workspace 中后台执行；当前显示 none 仅表示旧结果尚未被新结果替换，请稍后刷新查看最终兼容等级。",
             "success",
         )
     except (KeyError, ValueError, RuntimeError) as exc:
