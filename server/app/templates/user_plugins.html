@@ -65,6 +65,27 @@
         </form>
       </details>
       {% endif %}
+    {% elif plugin.id == 'feishu' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/feishu/chats.json" target="_blank" rel="noopener">检查群聊</a>
+        <form action="/account/plugins/feishu/disconnect" method="post" onsubmit="return confirm('确定断开飞书？智体将立即失去飞书能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% else %}
+      <details class="plugin-connect-panel">
+        <summary class="button button-primary">连接飞书</summary>
+        <form action="/account/plugins/feishu/connect" method="post" class="stack plugin-connect-form" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="fine">使用飞书开放平台「企业自建应用」的 App ID / App Secret。FDEX 只把凭据保存在当前账号独立的加密凭据库中，并自动获取/续期 tenant_access_token。请在飞书开放平台为应用按需开启机器人、群消息和新版云文档权限。</div>
+          <label>App ID<input type="text" name="app_id" required minlength="6" maxlength="200" autocomplete="off" spellcheck="false" placeholder="cli_xxxxxxxxx"></label>
+          <label>App Secret<input type="password" name="app_secret" required minlength="8" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="仅用于验证并加密保存"></label>
+          <button class="button button-primary" type="submit">验证并连接</button>
+        </form>
+      </details>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -97,7 +118,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>
