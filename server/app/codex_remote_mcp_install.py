@@ -7,6 +7,7 @@ from typing import Any, Iterator
 
 from app.plugin_feishu_runtime import install_feishu_runtime
 from app.plugin_google_drive_runtime import install_google_drive_runtime
+from app.plugin_jira_runtime import install_jira_runtime
 from app.plugin_linear_runtime import install_linear_runtime
 from app.plugin_notion_runtime import install_notion_runtime
 
@@ -16,10 +17,12 @@ install_feishu_runtime()
 install_notion_runtime()
 install_google_drive_runtime()
 install_linear_runtime()
+install_jira_runtime()
 
 from app.plugin_code_host_workflow import install_code_host_workflow_tools
 from app.plugin_feishu_mcp import install_feishu_mcp_tools
 from app.plugin_google_drive_mcp import install_google_drive_mcp_tools
+from app.plugin_jira_mcp import install_jira_mcp_tools
 from app.plugin_linear_mcp import install_linear_mcp_tools
 from app.plugin_notion_mcp import install_notion_mcp_tools
 from app.plugin_mcp_gateway import build_codex_plugin_mcp_config, revoke_codex_plugin_mcp_task
@@ -29,6 +32,7 @@ install_feishu_mcp_tools()
 install_notion_mcp_tools()
 install_google_drive_mcp_tools()
 install_linear_mcp_tools()
+install_jira_mcp_tools()
 install_code_host_workflow_tools()
 
 _current_servers: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
@@ -55,9 +59,10 @@ def install_codex_remote_mcp_runtime() -> None:
     Docs/Sheets/Slides/text projection and approved Google Docs create/append/file-rename writes.
     Phase 7.49 adds owner-scoped Linear OAuth, Issue/team/workflow reads and approved Issue/comment
     writes so Coding Agent can close the loop from a tracked task to implementation progress.
-    Codex still sees only loopback capability URLs: third-party credentials stay in FDEX, and the
-    plugin server dynamically re-checks the initiating 智体's current connection/grant before every
-    tools/list and tools/call.
+    Phase 7.50 adds owner-scoped Atlassian OAuth 2.0 (3LO), multi-site Jira Cloud discovery, JQL
+    reads and approved Issue/create/update/transition/comment writes. Codex still sees only loopback
+    capability URLs: third-party credentials stay in FDEX, and the plugin server dynamically
+    re-checks the initiating 智体's current connection/grant before every tools/list and tools/call.
     """
     global _installed
     if _installed:
