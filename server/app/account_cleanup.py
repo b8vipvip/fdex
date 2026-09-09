@@ -21,6 +21,7 @@ from app.plugin_agent_principals import plugin_agent_principal_store
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
 from app.plugin_google_drive import google_drive_store
+from app.plugin_jira import jira_store
 from app.plugin_linear import linear_store
 from app.plugin_notion import notion_credential_store
 from app.plugin_mcp_gateway import plugin_mcp_lease_store
@@ -121,6 +122,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     plugin_notion_connection_count = notion_credential_store().delete_owner(clean)
     plugin_google_drive_cleanup = google_drive_store().delete_owner(clean)
     plugin_linear_cleanup = linear_store().delete_owner(clean)
+    plugin_jira_cleanup = jira_store().delete_owner(clean)
     codex_interaction_cleanup = codex_interaction_store().delete_owner(clean)
     codex_item_cleanup = codex_item_store().delete_owner(clean)
     codex_cleanup = codex_host_store().delete_owner(clean)
@@ -163,6 +165,9 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "plugin_google_drive_oauth_flows": plugin_google_drive_cleanup["oauth_flows"],
         "plugin_linear_connections": plugin_linear_cleanup["connections"],
         "plugin_linear_oauth_flows": plugin_linear_cleanup["oauth_flows"],
+        "plugin_jira_connections": plugin_jira_cleanup["connections"],
+        "plugin_jira_sites": plugin_jira_cleanup["sites"],
+        "plugin_jira_oauth_flows": plugin_jira_cleanup["oauth_flows"],
         "agent_tasks": retry_task_cleanup["agent_tasks"],
         "codex_retry_attempts": retry_task_cleanup["codex_retry_attempts"],
         "codex_retry_transitions": retry_task_cleanup["codex_retry_transitions"],
