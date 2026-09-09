@@ -3,7 +3,8 @@ from __future__ import annotations
 from functools import wraps
 from typing import Any, Callable
 
-from app import plugin_feishu, plugin_mcp_gateway
+from app import plugin_feishu, plugin_mcp_gateway, plugin_runtime
+from app.plugin_feishu_runtime import install_feishu_runtime
 
 
 _installed = False
@@ -124,6 +125,10 @@ def install_feishu_mcp_tools() -> None:
     global _installed
     if _installed:
         return
+    install_feishu_runtime()
+    # plugin_mcp_gateway imports this function by value. Refresh the alias after the runtime
+    # promotion so callers are correct regardless of module import order.
+    plugin_mcp_gateway.plugin_connection_status = plugin_runtime.plugin_connection_status
     plugin_mcp_gateway._TOOL_DEFINITIONS.update(_tool_definitions())
     original_executor = plugin_mcp_gateway._tool_executor
     original_safe_result = plugin_mcp_gateway._safe_result
