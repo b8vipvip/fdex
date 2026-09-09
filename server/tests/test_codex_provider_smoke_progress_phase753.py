@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.codex_provider_admin_routes import _admin_time
 from app.codex_provider_smoke_runs import CodexProviderSmokeRunStore
 
 
@@ -66,13 +67,22 @@ def test_duplicate_active_smoke_is_rejected(tmp_path: Path) -> None:
         raise AssertionError("duplicate active smoke must be rejected")
 
 
+def test_smoke_timestamp_display_converts_persisted_utc_to_beijing_time() -> None:
+    assert _admin_time("2026-09-09T11:48:30+00:00") == "2026-09-09 19:48:30"
+    assert _admin_time("2026-09-09T11:44:49+00:00") == "2026-09-09 19:44:49"
+
+
 def test_rollout_page_surfaces_current_run_and_auto_refreshes() -> None:
     route = (ROOT / "app" / "codex_provider_admin_routes.py").read_text(encoding="utf-8")
     template = (ROOT / "app" / "templates" / "codex_provider_rollout.html").read_text(encoding="utf-8")
     assert "codex_provider_smoke_run_store().begin" in route
     assert "_smoke_heartbeat" in route
-    assert 'rollout["smoke_active"] = active' in route
-    assert "本次测试 / 最后完成" in template
+    assert 'templates.env.filters["admin_time"] = _admin_time' in route
+    assert 'ZoneInfo("Asia/Shanghai")' in route
+    assert '本次测试 / 最后完成（北京时间）' in template
+    assert "run.started_at|admin_time" in template
+    assert "run.finished_at|admin_time" in template
+    assert "record.checked_at|admin_time" in template
     assert "已用时 {{ run.elapsed_seconds }} 秒" in template
     assert "window.location.reload()" in template
     assert "run.active" in template
