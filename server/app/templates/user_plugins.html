@@ -31,6 +31,7 @@
         <strong>{{ plugin.connection_count }} 个连接</strong>
         {% if plugin.account_label %}<span>{{ plugin.account_label }}</span>{% endif %}
         {% if plugin.repository_count is defined %}<span>{{ plugin.repository_count }} 个仓库/项目</span>{% endif %}
+        {% if plugin.site_count is defined %}<span>{{ plugin.site_count }} 个 Jira 站点</span>{% endif %}
       </div>
     {% endif %}
     <div class="plugin-tool-pills">
@@ -152,6 +153,29 @@
         <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Linear OAuth</button></div>
       </div>
       {% endif %}
+    {% elif plugin.id == 'jira' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/jira/sites.json" target="_blank" rel="noopener">检查站点</a>
+        <form action="/account/plugins/jira/disconnect" method="post" onsubmit="return confirm('确定断开 Jira？智体将立即失去 Jira 能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% elif plugin.connectable %}
+      <div class="plugin-connect-panel">
+        <div class="fine">Jira Cloud 使用 Atlassian OAuth 2.0 (3LO)。默认申请 read:jira-work、write:jira-work 与 offline_access；访问/旋转 refresh token 只保存在当前 FDEX 账号独立加密凭据库。一个 Atlassian 授权可能包含多个 Jira Cloud Site，站点内写操作在多站点场景必须明确指定 cloud_id。</div>
+        <form action="/account/plugins/jira/oauth/start" method="post" class="stack plugin-connect-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-primary" type="submit">使用 Atlassian 授权连接</button>
+        </form>
+      </div>
+      {% else %}
+      <div class="plugin-connect-panel">
+        <div class="fine">适配器已完成，但服务端尚未配置 Atlassian OAuth 2.0 (3LO) 应用。请配置 FDEX_JIRA_OAUTH_CLIENT_ID / FDEX_JIRA_OAUTH_CLIENT_SECRET，并把回调地址加入 Atlassian Developer Console：{{ request.base_url|string|trim('/') }}/account/plugins/jira/oauth/callback。</div>
+        <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Jira OAuth</button></div>
+      </div>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -184,7 +208,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive', 'linear'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive', 'linear', 'jira'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>
