@@ -6,17 +6,21 @@ from functools import wraps
 from typing import Any, Iterator
 
 from app.plugin_feishu_runtime import install_feishu_runtime
+from app.plugin_notion_runtime import install_notion_runtime
 
-# Feishu must be promoted from roadmap to native before Plugin MCP imports its connection-status
+# Native plugins must be promoted from roadmap entries before Plugin MCP imports the connection-status
 # function by value. This keeps catalog, authorization and MCP availability on one runtime truth.
 install_feishu_runtime()
+install_notion_runtime()
 
 from app.plugin_code_host_workflow import install_code_host_workflow_tools
 from app.plugin_feishu_mcp import install_feishu_mcp_tools
+from app.plugin_notion_mcp import install_notion_mcp_tools
 from app.plugin_mcp_gateway import build_codex_plugin_mcp_config, revoke_codex_plugin_mcp_task
 from app.remote_mcp_gateway import build_codex_remote_mcp_config, remote_mcp_lease_store
 
 install_feishu_mcp_tools()
+install_notion_mcp_tools()
 install_code_host_workflow_tools()
 
 _current_servers: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
@@ -37,10 +41,11 @@ def install_codex_remote_mcp_runtime() -> None:
     Phase 7.43 also merges the native Plugin Runtime MCP surface. Phase 7.45 extends that same
     capability path with bounded repository-tree reads plus an enforced fdex/* work-branch flow for
     GitLab/Gitee writes and MR/PR creation. Phase 7.46 adds the native Feishu adapter for bounded
-    chat/message/document reads plus approved message/document writes. Codex still sees only
-    loopback capability URLs: third-party credentials stay in FDEX, and the plugin server
-    dynamically re-checks the initiating 智体's current connection/grant before every tools/list and
-    tools/call.
+    chat/message/document reads plus approved message/document writes. Phase 7.47 adds Notion page
+    search/read/Data Source query plus approved page create/append/title-update tools using API
+    version 2026-03-11. Codex still sees only loopback capability URLs: third-party credentials stay
+    in FDEX, and the plugin server dynamically re-checks the initiating 智体's current
+    connection/grant before every tools/list and tools/call.
     """
     global _installed
     if _installed:

@@ -86,6 +86,26 @@
         </form>
       </details>
       {% endif %}
+    {% elif plugin.id == 'notion' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/notion/search.json" target="_blank" rel="noopener">检查页面</a>
+        <form action="/account/plugins/notion/disconnect" method="post" onsubmit="return confirm('确定断开 Notion？智体将立即失去 Notion 能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% else %}
+      <details class="plugin-connect-panel">
+        <summary class="button button-primary">连接 Notion</summary>
+        <form action="/account/plugins/notion/connect" method="post" class="stack plugin-connect-form" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="fine">当前使用 Notion Internal Integration Token。请在 Notion 的 Integration 配置中按需开启读取/更新内容能力，并把需要访问的页面或 Data Source 明确共享给该 Integration。Token 只在提交时发送一次，验证成功后以 Fernet 加密保存在当前 FDEX 账号独立凭据库。</div>
+          <label>Integration Token<input type="password" name="access_token" required minlength="16" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="secret_… / ntn_…"></label>
+          <button class="button button-primary" type="submit">验证并连接</button>
+        </form>
+      </details>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -118,7 +138,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee', 'feishu'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>

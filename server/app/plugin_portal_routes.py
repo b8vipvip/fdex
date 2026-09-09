@@ -19,12 +19,21 @@ from app.plugin_feishu import (
     disconnect_feishu,
     list_feishu_chats,
 )
+from app.plugin_notion import (
+    NotionPluginError,
+    connect_notion,
+    disconnect_notion,
+    search_notion,
+)
 from app.plugin_feishu_runtime import install_feishu_runtime
+from app.plugin_notion_runtime import install_notion_runtime
 
-# Promote Feishu before Plugin MCP imports plugin_connection_status by value.
+# Promote native adapters before Plugin MCP imports plugin_connection_status by value.
 install_feishu_runtime()
+install_notion_runtime()
 
 from app.plugin_feishu_mcp import install_feishu_mcp_tools
+from app.plugin_notion_mcp import install_notion_mcp_tools
 from app.plugin_mcp_gateway import _tool_call, _tool_catalog
 from app.plugin_runtime import (
     catalog_snapshot,
@@ -38,6 +47,7 @@ from app.user_portal_routes import _ctx, _current_user, _flash, _login_redirect,
 from app.web_workspace import web_workspace_store
 
 install_feishu_mcp_tools()
+install_notion_mcp_tools()
 
 router = APIRouter(prefix="/account/plugins", include_in_schema=False)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
@@ -56,7 +66,7 @@ def _code_host(plugin_id: str) -> str:
 
 def _native_plugin(plugin_id: str) -> str:
     clean = (plugin_id or "").strip().lower()
-    if clean not in {"gitlab", "gitee", "feishu"}:
+    if clean not in {"gitlab", "gitee", "feishu", "notion"}:
         raise ValueError("当前插件尚未提供原生连接入口")
     return clean
 
@@ -138,12 +148,16 @@ def connect_native_plugin(
             saved = connect_feishu(_owner(user), app_id, app_secret)
             label = str(saved.get("app_id") or "")
             _flash(request, f"{definition.name} 已连接：{label}。App Secret 已加密保存，tenant_access_token 将自动续期。", "success")
+        elif clean_plugin == "notion":
+            saved = connect_notion(_owner(user), access_token)
+            label = str(saved.get("workspace_name") or saved.get("bot_name") or "Notion")
+            _flash(request, f"Notion 已连接：{label}。Integration Token 已加密保存，仅能访问你在 Notion 中明确共享给该 Integration 的内容。", "success")
         else:
             saved = connect_code_host(_owner(user), clean_plugin, access_token, base_url=base_url)
             count = int(saved.get("repository_count") or 0)
             login = str(saved.get("account_login") or saved.get("account_name") or "")
             _flash(request, f"{definition.name} 已连接：{login}，已验证 {count} 个可访问仓库/项目。", "success")
-    except (CodeHostPluginError, FeishuPluginError, KeyError, ValueError) as exc:
+    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, KeyError, ValueError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 
@@ -162,9 +176,14 @@ def disconnect_native_plugin(
         _verify_csrf(request, csrf_token)
         clean_plugin = _native_plugin(clean_plugin)
         definition = plugin_definition(clean_plugin)
-        removed = disconnect_feishu(_owner(user)) if clean_plugin == "feishu" else disconnect_code_host(_owner(user), clean_plugin)
+        if clean_plugin == "feishu":
+            removed = disconnect_feishu(_owner(user))
+        elif clean_plugin == "notion":
+            removed = disconnect_notion(_owner(user))
+        else:
+            removed = disconnect_code_host(_owner(user), clean_plugin)
         _flash(request, f"{definition.name} 已断开。" if removed else f"{definition.name} 当前没有连接。", "success")
-    except (CodeHostPluginError, FeishuPluginError, KeyError, ValueError) as exc:
+    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, KeyError, ValueError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 
@@ -191,6 +210,18 @@ def plugin_feishu_chats(request: Request) -> JSONResponse:
         payload = list_feishu_chats(_owner(user), page_size=50)
         return JSONResponse({"ok": True, **payload})
     except (FeishuPluginError, KeyError, PermissionError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@router.get("/notion/search.json", response_model=None)
+def plugin_notion_search(request: Request, q: str = "") -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效"}, status_code=401)
+    try:
+        payload = search_notion(_owner(user), q, page_size=50)
+        return JSONResponse({"ok": True, **payload})
+    except (NotionPluginError, KeyError, PermissionError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
@@ -227,7 +258,12 @@ def verify_plugin_agent_mcp(
         if str(grant.get("mode") or "none") == "none":
             raise ValueError(f"请先给智体授权 {definition.name} 的只读或读写权限")
 
-        tool_name = "feishu_list_chats" if clean_plugin == "feishu" else f"{clean_plugin}_list_repositories"
+        if clean_plugin == "feishu":
+            tool_name = "feishu_list_chats"
+        elif clean_plugin == "notion":
+            tool_name = "notion_search"
+        else:
+            tool_name = f"{clean_plugin}_list_repositories"
         catalog_names = {str(item.get("name") or "") for item in _tool_catalog(owner_id, employee)}
         if tool_name not in catalog_names:
             raise ValueError(f"{definition.name} MCP Tool 当前未向该智体开放")
@@ -248,6 +284,9 @@ def verify_plugin_agent_mcp(
         if clean_plugin == "feishu":
             count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
             unit = "个群聊"
+        elif clean_plugin == "notion":
+            count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
+            unit = "个页面/Data Source"
         else:
             count = len(payload) if isinstance(payload, list) else 0
             unit = "个仓库/项目"
@@ -257,7 +296,7 @@ def verify_plugin_agent_mcp(
             f"{definition.name} MCP 验证通过：智体「{str(employee.get('name') or employee_id)}」当前为{mode_label}权限，实时读取到 {count} {unit}。",
             "success",
         )
-    except (CodeHostPluginError, FeishuPluginError, KeyError, PermissionError, RuntimeError, ValueError) as exc:
+    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, KeyError, PermissionError, RuntimeError, ValueError) as exc:
         _flash(request, f"Plugin MCP 验证失败：{exc}", "error")
     return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 

@@ -27,13 +27,20 @@ def test_plugin_center_exposes_per_agent_mcp_verification() -> None:
 def test_verification_is_read_only_and_limited_to_native_plugins() -> None:
     routes = _read("server/app/plugin_portal_routes.py")
 
-    assert 'tool_name = "feishu_list_chats" if clean_plugin == "feishu" else f"{clean_plugin}_list_repositories"' in routes
+    assert 'if clean_plugin == "feishu":' in routes
+    assert 'tool_name = "feishu_list_chats"' in routes
+    assert 'elif clean_plugin == "notion":' in routes
+    assert 'tool_name = "notion_search"' in routes
+    assert 'tool_name = f"{clean_plugin}_list_repositories"' in routes
     assert "clean_plugin = _native_plugin(clean_plugin)" in routes
     assert "write_code_host_file" not in routes
     assert "create_code_host_pull_request" not in routes
     assert "send_feishu_text" not in routes
     assert "create_feishu_document" not in routes
     assert "append_feishu_document_text" not in routes
+    assert "create_notion_page" not in routes
+    assert "append_notion_page_text" not in routes
+    assert "update_notion_page_title" not in routes
 
 
 def test_mcp_error_text_never_requires_provider_specific_shape() -> None:
