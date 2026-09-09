@@ -27,7 +27,9 @@ def _settings() -> SimpleNamespace:
 
 
 def _store(tmp_path: Path) -> plugin_linear.LinearStore:
-    return plugin_linear.LinearStore(tmp_path / "linear.db", tmp_path / "linear.key")
+    store = plugin_linear.LinearStore(tmp_path / "linear.db", tmp_path / "linear.key")
+    store.init()
+    return store
 
 
 def _identity() -> dict:
