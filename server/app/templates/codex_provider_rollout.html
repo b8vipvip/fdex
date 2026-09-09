@@ -54,13 +54,14 @@
     {% if rollout.rows %}
     <div class="table-wrap">
         <table class="data-table provider-table">
-            <thead><tr><th>优先级</th><th>供应商 / 模型</th><th>当前结论</th><th>真实证据</th><th>最后记录</th><th>操作</th></tr></thead>
+            <thead><tr><th>优先级</th><th>供应商 / 模型</th><th>当前结论</th><th>真实证据</th><th>本次测试 / 最后完成</th><th>操作</th></tr></thead>
             <tbody>
             {% for row in rollout.rows %}
             {% set p = row.provider %}
             {% set c = row.compatibility %}
             {% set record = c.record or {} %}
             {% set evidence = record.evidence or {} %}
+            {% set run = row.smoke_run or {} %}
             <tr>
                 <td><strong>#{{ p.priority }}</strong><br><span class="badge {{ 'success' if p.enabled else 'warning' }}">{{ '启用' if p.enabled else '停用' }}</span></td>
                 <td>
@@ -70,8 +71,18 @@
                     <div class="tiny-line">Responses={{ '已声明' if 'responses' in p.protocol_order else '未声明' }} · Key={{ p.api_key_masked or '未配置' }}</div>
                 </td>
                 <td>
+                    {% if run.active %}
+                    <span class="badge warning">测试中</span>
+                    <div class="tiny-line">正在执行真实 full smoke · 已用时 {{ run.elapsed_seconds }} 秒</div>
+                    <div class="tiny-line">{{ run.detail }}</div>
+                    {% elif run.status == 'failed' and run.finished_at %}
+                    <span class="badge error">本次失败</span>
+                    <div class="tiny-line">{{ run.error or run.detail }}</div>
+                    <div class="tiny-line">兼容结论仍按最新完成记录：{{ c.level or 'none' }}</div>
+                    {% else %}
                     <span class="badge {% if c.valid %}success{% elif c.level in ['wire','tools'] %}warning{% else %}error{% endif %}">{{ c.level or 'none' }}</span>
                     <div class="tiny-line">{{ '可参与 Codex 生产执行' if c.valid else c.reason }}</div>
+                    {% endif %}
                     {% if c.age_hours is defined %}<div class="tiny-line">age={{ '%.1f'|format(c.age_hours) }}h / {{ rollout.max_age_hours }}h</div>{% endif %}
                 </td>
                 <td>
@@ -81,15 +92,24 @@
                     {% if record.error %}<div class="tiny-line">error={{ record.error }}</div>{% endif %}
                 </td>
                 <td>
+                    {% if run.active %}
+                    <strong>本次开始</strong><br>
+                    {{ run.started_at[:19].replace('T',' ') }}<br>
+                    <span class="muted">{{ run.runtime_version }} · 已用时 {{ run.elapsed_seconds }} 秒</span>
+                    {% elif run.finished_at %}
+                    <strong>本次结束</strong><br>
+                    {{ run.finished_at[:19].replace('T',' ') }} · {{ '通过' if run.status == 'passed' else '失败' }}<br>
+                    <span class="muted">{{ run.runtime_version }}</span>
+                    {% endif %}
                     {% if record.checked_at %}
-                    {{ record.checked_at[:19].replace('T',' ') }}<br>
+                    <div class="tiny-line" style="margin-top:8px">最后完成：{{ record.checked_at[:19].replace('T',' ') }}</div>
                     <span class="muted">{{ record.runtime_version }} · {{ record.latency_ms }} ms</span>
-                    {% else %}<span class="muted">未执行真实 Codex smoke</span>{% endif %}
+                    {% elif not run.started_at %}<span class="muted">未执行真实 Codex smoke</span>{% endif %}
                 </td>
                 <td>
                     <form method="post" action="/admin/agent/codex-providers/{{ p.id }}/smoke" data-confirm="这会真实启动官方 Codex app-server，并对该供应商执行多轮 Responses、工具、MCP 和 Sub-Agent smoke，可能产生模型费用。确定继续吗？">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <button class="button primary small" type="submit" {% if not p.enabled or not row.spec or not rollout.runtime or not isolation.enforced %}disabled{% endif %}>执行 full smoke</button>
+                        <button class="button primary small" type="submit" {% if run.active or not p.enabled or not row.spec or not rollout.runtime or not isolation.enforced %}disabled{% endif %}>{{ '测试中…' if run.active else '执行 full smoke' }}</button>
                     </form>
                 </td>
             </tr>
@@ -111,4 +131,12 @@
         <div><strong>Codex-only</strong><p class="muted">没有可用的 fresh full-compatible Provider 或 Runtime 时直接失败；不会转交 Legacy Agent、通用 AI 或其他执行核心。</p></div>
     </div>
 </section>
+
+{% if rollout.smoke_active %}
+<script>
+window.setTimeout(function () {
+    window.location.reload();
+}, 3000);
+</script>
+{% endif %}
 {% endblock %}
