@@ -20,6 +20,7 @@ from app.memory_erasure import erase_account_memory
 from app.plugin_agent_principals import plugin_agent_principal_store
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
+from app.plugin_notion import notion_credential_store
 from app.plugin_mcp_gateway import plugin_mcp_lease_store
 from app.remote_mcp_credentials import remote_mcp_credential_store
 from app.remote_mcp_gateway import remote_mcp_lease_store
@@ -125,6 +126,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     plugin_agent_principal_count = plugin_agent_principal_store().delete_owner(clean)
     plugin_code_host_connection_count = code_host_credential_store().delete_owner(clean)
     plugin_feishu_connection_count = feishu_credential_store().delete_owner(clean)
+    plugin_notion_connection_count = notion_credential_store().delete_owner(clean)
     # Interactive answers may contain secrets. Remove their encrypted short-lived bridge rows
     # before Item/Thread metadata so no orphaned approval or requestUserInput material survives
     # account deletion. Item/Event rows then erase transcript/command-output projections.
@@ -172,6 +174,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "plugin_agent_principals": plugin_agent_principal_count,
         "plugin_code_host_connections": plugin_code_host_connection_count,
         "plugin_feishu_connections": plugin_feishu_connection_count,
+        "plugin_notion_connections": plugin_notion_connection_count,
         "agent_tasks": retry_task_cleanup["agent_tasks"],
         "codex_retry_attempts": retry_task_cleanup["codex_retry_attempts"],
         "codex_retry_transitions": retry_task_cleanup["codex_retry_transitions"],
