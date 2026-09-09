@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
 
@@ -27,6 +28,8 @@ def _patch_loaded_portal() -> None:
     original_connect = portal.connect_code_host
     original_disconnect = portal.disconnect_code_host
     original_list = portal.list_code_host_repositories
+    original_tool_catalog = portal._tool_catalog
+    original_tool_call = portal._tool_call
 
     def native_plugin(plugin_id: str) -> str:
         clean = str(plugin_id or "").strip().lower()
@@ -40,7 +43,12 @@ def _patch_loaded_portal() -> None:
         if str(plugin_id or "").strip().lower() != "vercel":
             return original_connect(owner_id, plugin_id, access_token, base_url=base_url)
         try:
-            return connect_vercel(owner_id, access_token, team_id=base_url)
+            saved = connect_vercel(owner_id, access_token, team_id=base_url)
+            return {
+                **saved,
+                "repository_count": int(saved.get("project_count") or 0),
+                "account_login": str(saved.get("team_name") or saved.get("team_slug") or saved.get("username") or saved.get("email") or "Vercel"),
+            }
         except VercelPluginError as exc:
             raise portal.CodeHostPluginError(str(exc)) from exc
 
@@ -62,11 +70,44 @@ def _patch_loaded_portal() -> None:
         except VercelPluginError as exc:
             raise portal.CodeHostPluginError(str(exc)) from exc
 
+    def tool_catalog(owner_id: str, employee: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = original_tool_catalog(owner_id, employee)
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            if str(row.get("name") or "") == "vercel_list_projects":
+                result.append({**row, "name": "vercel_list_repositories"})
+            else:
+                result.append(row)
+        return result
+
+    def tool_call(lease: dict[str, Any], name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name != "vercel_list_repositories":
+            return original_tool_call(lease, name, arguments)
+        result = original_tool_call(lease, "vercel_list_projects", arguments)
+        if bool(result.get("isError")):
+            return result
+        content = result.get("content")
+        if not isinstance(content, list):
+            return result
+        for item in content:
+            if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+                continue
+            try:
+                payload = json.loads(str(item["text"]))
+            except json.JSONDecodeError:
+                return result
+            projects = payload.get("projects") if isinstance(payload, dict) and isinstance(payload.get("projects"), list) else []
+            item["text"] = json.dumps(projects, ensure_ascii=False, separators=(",", ":"))
+            break
+        return result
+
     portal._native_plugin = native_plugin
     portal._code_host = code_host
     portal.connect_code_host = connect
     portal.disconnect_code_host = disconnect
     portal.list_code_host_repositories = list_projects
+    portal._tool_catalog = tool_catalog
+    portal._tool_call = tool_call
     # plugin_portal_routes imported this function by value before Phase 7.51 installs; refresh that
     # local binding so grant save and MCP verification see Vercel's live connection state.
     portal.plugin_connection_status = plugin_runtime.plugin_connection_status
