@@ -129,6 +129,29 @@
         <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Google OAuth</button></div>
       </div>
       {% endif %}
+    {% elif plugin.id == 'linear' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/linear/issues.json" target="_blank" rel="noopener">检查 Issue</a>
+        <form action="/account/plugins/linear/disconnect" method="post" onsubmit="return confirm('确定断开 Linear？智体将立即失去 Linear 能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% elif plugin.connectable %}
+      <div class="plugin-connect-panel">
+        <div class="fine">Linear 使用 OAuth 2.0 + PKCE。默认申请 read,write，以支持 Issue/团队/工作流读取，以及经用户审批后的 Issue 创建、状态更新和评论回写。访问令牌与旋转 refresh_token 只存放在当前 FDEX 账号独立的加密凭据库中。</div>
+        <form action="/account/plugins/linear/oauth/start" method="post" class="stack plugin-connect-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-primary" type="submit">使用 Linear 授权连接</button>
+        </form>
+      </div>
+      {% else %}
+      <div class="plugin-connect-panel">
+        <div class="fine">适配器已完成，但服务端尚未配置 Linear OAuth Application。请配置 FDEX_LINEAR_OAUTH_CLIENT_ID / FDEX_LINEAR_OAUTH_CLIENT_SECRET，并在 Linear OAuth Application 中加入回调地址：{{ request.base_url|string|trim('/') }}/account/plugins/linear/oauth/callback。</div>
+        <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Linear OAuth</button></div>
+      </div>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -161,7 +184,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive', 'linear'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>
