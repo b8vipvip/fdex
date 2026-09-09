@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from app import plugin_runtime
@@ -42,4 +43,10 @@ def install_feishu_runtime() -> None:
         return original_status(owner_id, definition.id)
 
     plugin_runtime.plugin_connection_status = connection_status
+    # main.py can import Plugin MCP before the portal installs native adapters. Rebind the gateway's
+    # compatibility import if it is already loaded so live tools/list never keeps a stale roadmap
+    # connection-status function.
+    gateway = sys.modules.get("app.plugin_mcp_gateway")
+    if gateway is not None:
+        setattr(gateway, "plugin_connection_status", connection_status)
     _installed = True
