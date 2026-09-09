@@ -12,6 +12,7 @@ from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
+from app.plugin_google_drive import google_drive_store
 from app.plugin_notion import notion_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
@@ -198,6 +199,26 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
                 "token_configured": notion.get("token_configured"),
             }
         )
+    try:
+        drive = google_drive_store().get(user_id)
+    except (ValueError, RuntimeError):
+        drive = None
+    if drive is not None:
+        rows.append(
+            {
+                "plugin_id": "google-drive",
+                "account_email": drive.get("account_email"),
+                "display_name": drive.get("display_name"),
+                "permission_id": drive.get("permission_id"),
+                "scope": drive.get("scope"),
+                "token_expires_at": drive.get("token_expires_at"),
+                "last_checked_at": drive.get("last_checked_at"),
+                "created_at": drive.get("created_at"),
+                "updated_at": drive.get("updated_at"),
+                "access_token_configured": drive.get("access_token_configured"),
+                "refresh_token_configured": drive.get("refresh_token_configured"),
+            }
+        )
     return rows
 
 
@@ -254,6 +275,9 @@ def build_account_export(
             "feishu_app_secret",
             "feishu_tenant_access_token",
             "notion_integration_token",
+            "google_drive_access_token",
+            "google_drive_refresh_token",
+            "google_drive_oauth_pkce_verifier",
             "plugin_mcp_capability_tokens",
             "provider_api_keys",
             "remote_mcp_bearer_tokens",
