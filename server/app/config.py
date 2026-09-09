@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     fdex_linear_oauth_scope: str = "read,write"
     fdex_linear_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
 
+    # Phase 7.50 Jira Cloud: Atlassian OAuth 2.0 (3LO) can authorize multiple Cloud sites.
+    # offline_access is included so FDEX can keep an owner-scoped rotating refresh grant.
+    fdex_jira_oauth_client_id: str = ""
+    fdex_jira_oauth_client_secret: str = ""
+    fdex_jira_oauth_scope: str = "read:jira-work write:jira-work offline_access"
+    fdex_jira_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
+
     fdex_github_app_id: str = ""
     fdex_github_app_slug: str = ""
     fdex_github_app_client_id: str = ""
@@ -190,6 +197,10 @@ class Settings(BaseSettings):
     @property
     def linear_oauth_ready(self) -> bool:
         return bool(self.fdex_linear_oauth_client_id.strip() and self.fdex_linear_oauth_client_secret.strip())
+
+    @property
+    def jira_oauth_ready(self) -> bool:
+        return bool(self.fdex_jira_oauth_client_id.strip() and self.fdex_jira_oauth_client_secret.strip())
 
     @property
     def github_app_ready(self) -> bool:
