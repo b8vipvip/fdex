@@ -113,6 +113,12 @@ def test_plugin_mcp_config_contains_only_connected_granted_tools(monkeypatch: py
     assert "gitee_read_file" in server["enabled_tools"]
     assert "gitee_write_file" not in server["enabled_tools"]
     assert "gitee_create_pull_request" not in server["enabled_tools"]
+    # Phase 7.45 adds workflow tools through the same grant/risk filter when the extension is loaded.
+    if "gitlab_create_branch" in plugin_mcp_gateway._TOOL_DEFINITIONS:
+        assert "gitlab_create_branch" in server["enabled_tools"]
+        assert "gitlab_list_tree" in server["enabled_tools"]
+        assert "gitee_list_tree" in server["enabled_tools"]
+        assert "gitee_create_branch" not in server["enabled_tools"]
     # The capability is an opaque localhost header, never a third-party credential.
     assert set(server["http_headers"]) == {"X-FDEX-Plugin-Capability"}
 
@@ -126,7 +132,14 @@ def test_tools_list_dynamically_rechecks_grants(monkeypatch: pytest.MonkeyPatch)
         lambda owner_id, employee, plugin_id: {"mode": modes[plugin_id]},
     )
     names = {row["name"] for row in plugin_mcp_gateway._tool_catalog(OWNER, EMPLOYEE)}
-    assert names == {"gitlab_list_repositories", "gitlab_read_file"}
+    assert {"gitlab_list_repositories", "gitlab_read_file"}.issubset(names)
+    assert "gitlab_write_file" not in names
+    assert "gitlab_create_merge_request" not in names
+    assert not any(name.startswith("gitee_") for name in names)
+    if "gitlab_list_tree" in plugin_mcp_gateway._TOOL_DEFINITIONS:
+        assert "gitlab_list_tree" in names
+        assert "gitlab_create_branch" not in names
+
     modes["gitlab"] = "write"
     modes["gitee"] = "read"
     names = {row["name"] for row in plugin_mcp_gateway._tool_catalog(OWNER, EMPLOYEE)}
@@ -134,6 +147,10 @@ def test_tools_list_dynamically_rechecks_grants(monkeypatch: pytest.MonkeyPatch)
     assert "gitlab_create_merge_request" in names
     assert "gitee_read_file" in names
     assert "gitee_write_file" not in names
+    if "gitlab_create_branch" in plugin_mcp_gateway._TOOL_DEFINITIONS:
+        assert "gitlab_create_branch" in names
+        assert "gitee_list_tree" in names
+        assert "gitee_create_branch" not in names
 
 
 def test_tool_call_passes_through_plugin_runtime_authorization_and_audit(monkeypatch: pytest.MonkeyPatch) -> None:
