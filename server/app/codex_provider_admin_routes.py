@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,6 +23,24 @@ from app.security import ensure_csrf_token, is_admin, pop_flash, set_flash, veri
 router = APIRouter(prefix="/admin/agent/codex-providers", include_in_schema=False)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
 logger = logging.getLogger("fdex.codex_provider_smoke")
+_ADMIN_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _admin_time(value: object) -> str:
+    """Render persisted UTC timestamps in the console's Beijing-time convention."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(_ADMIN_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+templates.env.filters["admin_time"] = _admin_time
 
 
 def _login_redirect() -> RedirectResponse:
