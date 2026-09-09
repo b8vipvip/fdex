@@ -129,9 +129,7 @@ def _integer(arguments: dict[str, Any], name: str, default: int, maximum: int) -
         value = int(raw)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"参数 {name} 必须是整数") from exc
-    if value < 0 if name == "priority" else value < 1:
-        raise ValueError(f"参数 {name} 超出允许范围")
-    if value > maximum:
+    if value < 1 or value > maximum:
         raise ValueError(f"参数 {name} 超出允许范围")
     return value
 
