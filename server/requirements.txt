@@ -17,4 +17,7 @@ anyio>=4.8,<5
 letta-client==1.12.1
 # Official OpenAI Codex binary used as the CI-verified fallback Runtime. Phase 7.20
 # speaks app-server JSON-RPC directly and no longer requires the high-level Python SDK.
-openai-codex-cli-bin==0.147.0
+# 0.147.0 has a known GPT-5.6 Code Mode host regression on Linux/WSL-class hosts;
+# keep the bundled fallback on the newer published binary while the managed Runtime
+# manager remains the preferred path for installing current official releases.
+openai-codex-cli-bin==0.149.0
