@@ -55,7 +55,16 @@ def install_codex_remote_mcp_runtime() -> None:
 def codex_remote_mcp_scope(owner_id: str, task_id: str) -> Iterator[dict[str, dict[str, Any]]]:
     install_codex_remote_mcp_runtime()
     servers = build_codex_remote_mcp_config(owner_id, task_id)
-    plugin_servers = build_codex_plugin_mcp_config(owner_id, task_id)
+    try:
+        plugin_servers = build_codex_plugin_mcp_config(owner_id, task_id)
+    except ValueError as exc:
+        # Phase 7.26 predates AgentTask's production 32-hex id contract and some callers/tests use
+        # opaque task labels solely to exercise Remote MCP. Plugin MCP is an optional augmentation:
+        # an id that cannot possibly resolve to a plugin principal must mean "no plugin capability",
+        # not break an otherwise valid Remote MCP scope. Preserve every other configuration error.
+        if str(exc) != "Agent task id is invalid":
+            raise
+        plugin_servers = {}
     collision = set(servers).intersection(plugin_servers)
     if collision:
         raise RuntimeError(f"FDEX MCP server name collision: {sorted(collision)}")
