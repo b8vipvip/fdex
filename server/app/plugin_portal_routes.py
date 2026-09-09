@@ -26,6 +26,13 @@ from app.plugin_google_drive import (
     search_google_drive_files,
     start_google_drive_oauth,
 )
+from app.plugin_linear import (
+    LinearPluginError,
+    complete_linear_oauth,
+    disconnect_linear,
+    search_linear_issues,
+    start_linear_oauth,
+)
 from app.plugin_notion import (
     NotionPluginError,
     connect_notion,
@@ -34,15 +41,18 @@ from app.plugin_notion import (
 )
 from app.plugin_feishu_runtime import install_feishu_runtime
 from app.plugin_google_drive_runtime import install_google_drive_runtime
+from app.plugin_linear_runtime import install_linear_runtime
 from app.plugin_notion_runtime import install_notion_runtime
 
 # Promote native adapters before Plugin MCP imports plugin_connection_status by value.
 install_feishu_runtime()
 install_notion_runtime()
 install_google_drive_runtime()
+install_linear_runtime()
 
 from app.plugin_feishu_mcp import install_feishu_mcp_tools
 from app.plugin_google_drive_mcp import install_google_drive_mcp_tools
+from app.plugin_linear_mcp import install_linear_mcp_tools
 from app.plugin_notion_mcp import install_notion_mcp_tools
 from app.plugin_mcp_gateway import _tool_call, _tool_catalog
 from app.plugin_runtime import (
@@ -59,6 +69,7 @@ from app.web_workspace import web_workspace_store
 install_feishu_mcp_tools()
 install_notion_mcp_tools()
 install_google_drive_mcp_tools()
+install_linear_mcp_tools()
 
 router = APIRouter(prefix="/account/plugins", include_in_schema=False)
 templates = Jinja2Templates(directory=str(SERVER_DIR / "app" / "templates"))
@@ -77,7 +88,7 @@ def _code_host(plugin_id: str) -> str:
 
 def _native_plugin(plugin_id: str) -> str:
     clean = (plugin_id or "").strip().lower()
-    if clean not in {"gitlab", "gitee", "feishu", "notion", "google-drive"}:
+    if clean not in {"gitlab", "gitee", "feishu", "notion", "google-drive", "linear"}:
         raise ValueError("当前插件尚未提供原生连接入口")
     return clean
 
@@ -163,14 +174,14 @@ def connect_native_plugin(
             saved = connect_notion(_owner(user), access_token)
             label = str(saved.get("workspace_name") or saved.get("bot_name") or "Notion")
             _flash(request, f"Notion 已连接：{label}。Integration Token 已加密保存，仅能访问你在 Notion 中明确共享给该 Integration 的内容。", "success")
-        elif clean_plugin == "google-drive":
-            raise ValueError("Google Drive 使用 OAuth 授权入口连接，不接受手工访问令牌")
+        elif clean_plugin in {"google-drive", "linear"}:
+            raise ValueError(f"{definition.name} 使用 OAuth 授权入口连接，不接受手工访问令牌")
         else:
             saved = connect_code_host(_owner(user), clean_plugin, access_token, base_url=base_url)
             count = int(saved.get("repository_count") or 0)
             login = str(saved.get("account_login") or saved.get("account_name") or "")
             _flash(request, f"{definition.name} 已连接：{login}，已验证 {count} 个可访问仓库/项目。", "success")
-    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, GoogleDrivePluginError, KeyError, ValueError) as exc:
+    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, GoogleDrivePluginError, LinearPluginError, KeyError, ValueError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 
@@ -199,22 +210,44 @@ def google_drive_oauth_callback(request: Request, state: str = "", code: str = "
             raise GoogleDrivePluginError(f"Google 拒绝授权：{str(error)[:300]}")
         saved = complete_google_drive_oauth(_owner(user), state=state, code=code)
         label = str(saved.get("account_email") or saved.get("display_name") or "Google Drive")
-        _flash(
-            request,
-            f"Google Drive 已连接：{label}。访问令牌和 refresh_token 已加密保存，FDEX 将按需自动续期。",
-            "success",
-        )
+        _flash(request, f"Google Drive 已连接：{label}。访问令牌和 refresh_token 已加密保存，FDEX 将按需自动续期。", "success")
     except (GoogleDrivePluginError, KeyError, ValueError) as exc:
         _flash(request, f"Google Drive OAuth 连接失败：{exc}", "error")
     return RedirectResponse("/account/plugins#plugin-google-drive", status_code=303)
 
 
+@router.post("/linear/oauth/start", response_model=None)
+def linear_oauth_start(request: Request, csrf_token: str = Form(...)) -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        _verify_csrf(request, csrf_token)
+        flow = start_linear_oauth(_owner(user))
+        return RedirectResponse(str(flow["authorize_url"]), status_code=303)
+    except (LinearPluginError, KeyError, ValueError) as exc:
+        _flash(request, f"Linear 授权启动失败：{exc}", "error")
+        return RedirectResponse("/account/plugins#plugin-linear", status_code=303)
+
+
+@router.get("/linear/oauth/callback", response_model=None)
+def linear_oauth_callback(request: Request, state: str = "", code: str = "", error: str = "") -> Response:
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    try:
+        if error:
+            raise LinearPluginError(f"Linear 拒绝授权：{str(error)[:300]}")
+        saved = complete_linear_oauth(_owner(user), state=state, code=code)
+        label = str(saved.get("organization_name") or saved.get("viewer_name") or "Linear")
+        _flash(request, f"Linear 已连接：{label}。访问/刷新令牌已加密保存，FDEX 将自动处理 24 小时 access token 和旋转 refresh token。", "success")
+    except (LinearPluginError, KeyError, ValueError) as exc:
+        _flash(request, f"Linear OAuth 连接失败：{exc}", "error")
+    return RedirectResponse("/account/plugins#plugin-linear", status_code=303)
+
+
 @router.post("/{plugin_id}/disconnect", response_model=None)
-def disconnect_native_plugin(
-    plugin_id: str,
-    request: Request,
-    csrf_token: str = Form(...),
-) -> Response:
+def disconnect_native_plugin(plugin_id: str, request: Request, csrf_token: str = Form(...)) -> Response:
     user = _current_user(request)
     if user is None:
         return _login_redirect(request)
@@ -229,10 +262,12 @@ def disconnect_native_plugin(
             removed = disconnect_notion(_owner(user))
         elif clean_plugin == "google-drive":
             removed = disconnect_google_drive(_owner(user))
+        elif clean_plugin == "linear":
+            removed = disconnect_linear(_owner(user))
         else:
             removed = disconnect_code_host(_owner(user), clean_plugin)
         _flash(request, f"{definition.name} 已断开。" if removed else f"{definition.name} 当前没有连接。", "success")
-    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, GoogleDrivePluginError, KeyError, ValueError) as exc:
+    except (CodeHostPluginError, FeishuPluginError, NotionPluginError, GoogleDrivePluginError, LinearPluginError, KeyError, ValueError) as exc:
         _flash(request, str(exc), "error")
     return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 
@@ -286,20 +321,21 @@ def plugin_google_drive_files(request: Request, q: str = "") -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
-@router.post("/{plugin_id}/agents/{employee_id}/verify", response_model=None)
-def verify_plugin_agent_mcp(
-    plugin_id: str,
-    employee_id: int,
-    request: Request,
-    csrf_token: str = Form(...),
-) -> Response:
-    """Run a real read-only request through the same Plugin MCP dispatcher used by Codex.
+@router.get("/linear/issues.json", response_model=None)
+def plugin_linear_issues(request: Request, q: str = "") -> JSONResponse:
+    user = _current_user(request)
+    if user is None:
+        return JSONResponse({"ok": False, "error": "登录状态已失效"}, status_code=401)
+    try:
+        payload = search_linear_issues(_owner(user), q, page_size=50)
+        return JSONResponse({"ok": True, **payload})
+    except (LinearPluginError, KeyError, PermissionError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
-    This is intentionally not a synthetic connection check: the selected 智体's current grant is
-    evaluated, the MCP catalog is generated, `_tool_call` enters Plugin Runtime authorization/audit,
-    and the native provider adapter performs a live read. No write tool is invoked and no
-    third-party credential is returned to the browser.
-    """
+
+@router.post("/{plugin_id}/agents/{employee_id}/verify", response_model=None)
+def verify_plugin_agent_mcp(plugin_id: str, employee_id: int, request: Request, csrf_token: str = Form(...)) -> Response:
+    """Run one real read-only request through the same Plugin MCP dispatcher used by Codex."""
     user = _current_user(request)
     if user is None:
         return _login_redirect(request)
@@ -325,6 +361,8 @@ def verify_plugin_agent_mcp(
             tool_name = "notion_search"
         elif clean_plugin == "google-drive":
             tool_name = "drive_search_files"
+        elif clean_plugin == "linear":
+            tool_name = "linear_search_issues"
         else:
             tool_name = f"{clean_plugin}_list_repositories"
         catalog_names = {str(item.get("name") or "") for item in _tool_catalog(owner_id, employee)}
@@ -353,20 +391,20 @@ def verify_plugin_agent_mcp(
         elif clean_plugin == "google-drive":
             count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
             unit = "个 Drive 文件"
+        elif clean_plugin == "linear":
+            count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
+            unit = "个 Issue"
         else:
             count = len(payload) if isinstance(payload, list) else 0
             unit = "个仓库/项目"
         mode_label = "读写" if str(grant.get("mode")) == "write" else "只读"
-        _flash(
-            request,
-            f"{definition.name} MCP 验证通过：智体「{str(employee.get('name') or employee_id)}」当前为{mode_label}权限，实时读取到 {count} {unit}。",
-            "success",
-        )
+        _flash(request, f"{definition.name} MCP 验证通过：智体「{str(employee.get('name') or employee_id)}」当前为{mode_label}权限，实时读取到 {count} {unit}。", "success")
     except (
         CodeHostPluginError,
         FeishuPluginError,
         NotionPluginError,
         GoogleDrivePluginError,
+        LinearPluginError,
         KeyError,
         PermissionError,
         RuntimeError,
