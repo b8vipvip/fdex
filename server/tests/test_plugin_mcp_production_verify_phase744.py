@@ -19,7 +19,7 @@ def test_plugin_center_exposes_per_agent_mcp_verification() -> None:
     assert '@router.post("/{plugin_id}/agents/{employee_id}/verify"' in routes
     assert "_tool_catalog(owner_id, employee)" in routes
     assert '_tool_call({"owner_id": owner_id, "employee": employee}, tool_name, {})' in routes
-    assert "Plugin MCP 验证通过" in routes
+    assert "MCP 验证通过" in routes
     assert "/agents/{{ employee.id }}/verify" in page
     assert "验证 MCP" in page
 
