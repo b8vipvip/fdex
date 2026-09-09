@@ -13,6 +13,7 @@ from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
 from app.plugin_google_drive import google_drive_store
+from app.plugin_jira import jira_store
 from app.plugin_linear import linear_store
 from app.plugin_notion import notion_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
@@ -157,6 +158,25 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
             "last_checked_at": linear.get("last_checked_at"), "created_at": linear.get("created_at"), "updated_at": linear.get("updated_at"),
             "access_token_configured": linear.get("access_token_configured"), "refresh_token_configured": linear.get("refresh_token_configured"),
         })
+
+    try:
+        jira = jira_store().get(user_id)
+    except (ValueError, RuntimeError):
+        jira = None
+    if jira is not None:
+        try:
+            sites = jira_store().list_sites(user_id)
+        except (ValueError, RuntimeError):
+            sites = []
+        rows.append({
+            "plugin_id": "jira", "scope": jira.get("scope"), "token_expires_at": jira.get("token_expires_at"),
+            "site_count": jira.get("site_count"), "sites": [
+                {key: site.get(key) for key in ("cloud_id", "name", "url", "scopes", "updated_at")}
+                for site in sites
+            ],
+            "last_checked_at": jira.get("last_checked_at"), "created_at": jira.get("created_at"), "updated_at": jira.get("updated_at"),
+            "access_token_configured": jira.get("access_token_configured"), "refresh_token_configured": jira.get("refresh_token_configured"),
+        })
     return rows
 
 
@@ -199,6 +219,7 @@ def build_account_export(
             "plugin_code_host_token_cipher", "feishu_app_secret", "feishu_tenant_access_token", "notion_integration_token",
             "google_drive_access_token", "google_drive_refresh_token", "google_drive_oauth_pkce_verifier",
             "linear_access_token", "linear_refresh_token", "linear_oauth_pkce_verifier",
+            "jira_access_token", "jira_refresh_token", "jira_oauth_state",
             "plugin_mcp_capability_tokens", "provider_api_keys", "remote_mcp_bearer_tokens",
             "remote_mcp_oauth_client_secrets", "remote_mcp_oauth_state_pkce", "remote_mcp_oauth_access_tokens",
             "remote_mcp_oauth_refresh_tokens", "embeddings", "sandbox_cache_files",
