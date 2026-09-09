@@ -16,6 +16,7 @@ from app.plugin_google_drive import google_drive_store
 from app.plugin_jira import jira_store
 from app.plugin_linear import linear_store
 from app.plugin_notion import notion_credential_store
+from app.plugin_vercel import vercel_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
 
@@ -177,6 +178,19 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
             "last_checked_at": jira.get("last_checked_at"), "created_at": jira.get("created_at"), "updated_at": jira.get("updated_at"),
             "access_token_configured": jira.get("access_token_configured"), "refresh_token_configured": jira.get("refresh_token_configured"),
         })
+
+    try:
+        vercel = vercel_credential_store().get(user_id)
+    except (ValueError, RuntimeError):
+        vercel = None
+    if vercel is not None:
+        rows.append({
+            "plugin_id": "vercel", "user_id": vercel.get("user_id"), "username": vercel.get("username"),
+            "email": vercel.get("email"), "team_id": vercel.get("team_id"), "team_slug": vercel.get("team_slug"),
+            "team_name": vercel.get("team_name"), "project_count": vercel.get("project_count"),
+            "last_checked_at": vercel.get("last_checked_at"), "created_at": vercel.get("created_at"),
+            "updated_at": vercel.get("updated_at"), "token_configured": vercel.get("token_configured"),
+        })
     return rows
 
 
@@ -219,7 +233,7 @@ def build_account_export(
             "plugin_code_host_token_cipher", "feishu_app_secret", "feishu_tenant_access_token", "notion_integration_token",
             "google_drive_access_token", "google_drive_refresh_token", "google_drive_oauth_pkce_verifier",
             "linear_access_token", "linear_refresh_token", "linear_oauth_pkce_verifier",
-            "jira_access_token", "jira_refresh_token", "jira_oauth_state",
+            "jira_access_token", "jira_refresh_token", "jira_oauth_state", "vercel_access_token", "vercel_token_cipher",
             "plugin_mcp_capability_tokens", "provider_api_keys", "remote_mcp_bearer_tokens",
             "remote_mcp_oauth_client_secrets", "remote_mcp_oauth_state_pkce", "remote_mcp_oauth_access_tokens",
             "remote_mcp_oauth_refresh_tokens", "embeddings", "sandbox_cache_files",
