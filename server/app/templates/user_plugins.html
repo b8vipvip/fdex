@@ -21,7 +21,7 @@
     <div class="plugin-card-head">
       <div class="plugin-mark">{{ plugin.name[:2] }}</div>
       <div class="plugin-title-copy">
-        <div class="row"><h2>{{ plugin.name }}</h2>{% if plugin.connected %}<span class="plugin-state connected">已连接</span>{% elif plugin.connectable %}<span class="plugin-state available">可连接</span>{% else %}<span class="plugin-state roadmap">接入中</span>{% endif %}</div>
+        <div class="row"><h2>{{ plugin.name }}</h2>{% if plugin.connected %}<span class="plugin-state connected">已连接</span>{% elif plugin.state == 'configuration_required' %}<span class="plugin-state roadmap">待配置</span>{% elif plugin.connectable %}<span class="plugin-state available">可连接</span>{% else %}<span class="plugin-state roadmap">接入中</span>{% endif %}</div>
         <span class="plugin-category">{{ plugin.category }}</span>
       </div>
     </div>
@@ -106,6 +106,29 @@
         </form>
       </details>
       {% endif %}
+    {% elif plugin.id == 'google-drive' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/google-drive/files.json" target="_blank" rel="noopener">检查文件</a>
+        <form action="/account/plugins/google-drive/disconnect" method="post" onsubmit="return confirm('确定断开 Google Drive？智体将立即失去 Drive 能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% elif plugin.connectable %}
+      <div class="plugin-connect-panel">
+        <div class="fine">Google Drive 使用标准 OAuth 2.0 授权。FDEX 不要求你粘贴 Google 令牌；浏览器完成授权后，access_token / refresh_token 只会以 Fernet 加密保存在当前 FDEX 账号独立凭据库。当前默认申请完整 Drive scope，以支持跨 Drive 搜索、读取和经审批后的文档写入。</div>
+        <form action="/account/plugins/google-drive/oauth/start" method="post" class="stack plugin-connect-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-primary" type="submit">使用 Google 授权连接</button>
+        </form>
+      </div>
+      {% else %}
+      <div class="plugin-connect-panel">
+        <div class="fine">适配器已完成，但服务端尚未配置 Google OAuth Web 应用。请配置 FDEX_GOOGLE_OAUTH_CLIENT_ID / FDEX_GOOGLE_OAUTH_CLIENT_SECRET，并在 Google Cloud OAuth Client 中加入回调地址：{{ request.base_url|string|trim('/') }}/account/plugins/google-drive/oauth/callback。</div>
+        <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Google OAuth</button></div>
+      </div>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -138,7 +161,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>

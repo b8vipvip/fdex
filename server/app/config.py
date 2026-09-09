@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     fdex_github_web_oauth_scope: str = "repo read:user"
     fdex_github_web_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
 
+    # Phase 7.48 Google Drive uses one operator-owned OAuth Web application and stores each
+    # FDEX user's access/refresh tokens only in the dedicated encrypted Drive credential vault.
+    # The default full Drive scope enables the promised cross-Drive search/read/write workflow;
+    # public deployments may need Google's verification for this restricted scope.
+    fdex_google_oauth_client_id: str = ""
+    fdex_google_oauth_client_secret: str = ""
+    fdex_google_oauth_scope: str = "https://www.googleapis.com/auth/drive"
+    fdex_google_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
+
     # GitHub App service identity. These values identify the FDEX integration itself and are
     # configured once by the operator. Per-user access is represented only by installation_id.
     # Keep the private key outside the repository; either path or base64 may be supplied.
@@ -193,6 +202,10 @@ class Settings(BaseSettings):
     @property
     def github_web_oauth_ready(self) -> bool:
         return bool(self.fdex_github_web_oauth_client_id.strip() and self.fdex_github_web_oauth_client_secret.strip())
+
+    @property
+    def google_drive_oauth_ready(self) -> bool:
+        return bool(self.fdex_google_oauth_client_id.strip() and self.fdex_google_oauth_client_secret.strip())
 
     @property
     def github_app_ready(self) -> bool:
