@@ -23,11 +23,11 @@ def _connection(plugin_id: str) -> dict[str, str]:
 
 def test_workflow_branch_namespace_fails_closed_against_direct_main_writes() -> None:
     assert plugin_code_host_workflow._workflow_branch("fdex/task-123") == "fdex/task-123"
-    with pytest.raises(ValueError, match="fdex/"):
+    with pytest.raises(ValueError, match="工作分支"):
         plugin_code_host_workflow._workflow_branch("main")
-    with pytest.raises(ValueError, match="无效"):
+    with pytest.raises(ValueError, match="工作分支"):
         plugin_code_host_workflow._workflow_branch("fdex/../main")
-    with pytest.raises(ValueError, match="无效"):
+    with pytest.raises(ValueError, match="工作分支"):
         plugin_code_host_workflow._workflow_branch("fdex/a//b")
 
 
