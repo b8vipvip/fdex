@@ -86,8 +86,23 @@ class PluginAgentPrincipalStore:
         employee_id = int(employee.get("id") or 0)
         if employee_id <= 0:
             raise ValueError("智体 id 无效，不能建立插件主体绑定")
+
+        # The task/principal pair is immutable. Check the durable binding before dereferencing the
+        # caller-supplied employee id so an attempted rebind can never be disguised as a missing or
+        # deleted employee lookup. This also keeps the security error deterministic across workers.
+        with sqlite3.connect(self.path) as conn:
+            existing = conn.execute(
+                "SELECT employee_id FROM plugin_agent_principals WHERE owner_id=? AND task_id=?",
+                (clean_owner, clean_task),
+            ).fetchone()
+        if existing is not None and int(existing[0]) != employee_id:
+            raise ValueError("Agent task 已绑定其它智体，拒绝变更插件主体")
+
         # Re-read the owner-scoped row so a caller cannot bind a forged employee projection.
-        persisted = web_workspace_store().get(clean_owner, "employee", employee_id)
+        try:
+            persisted = web_workspace_store().get(clean_owner, "employee", employee_id)
+        except (KeyError, ValueError) as exc:
+            raise ValueError("智体不存在，不能建立插件主体绑定") from exc
         if bool(persisted.get("_deleted")) or not bool(persisted.get("active", True)):
             raise ValueError("智体已停用，不能建立插件主体绑定")
         task_row = agent_task_store().get(clean_owner, clean_task)
@@ -95,6 +110,9 @@ class PluginAgentPrincipalStore:
             raise ValueError("Agent task 不存在，不能建立插件主体绑定")
         name = str(persisted.get("name") or employee.get("name") or "")[:80]
         with sqlite3.connect(self.path) as conn:
+            # Re-check inside the write transaction to close the race between the initial immutable
+            # check and INSERT when multiple workers try to bind the same task concurrently.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT employee_id FROM plugin_agent_principals WHERE owner_id=? AND task_id=?",
                 (clean_owner, clean_task),
