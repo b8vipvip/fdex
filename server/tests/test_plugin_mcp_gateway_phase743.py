@@ -119,6 +119,8 @@ def test_plugin_mcp_config_contains_only_connected_granted_tools(monkeypatch: py
         assert "gitlab_list_tree" in server["enabled_tools"]
         assert "gitee_list_tree" in server["enabled_tools"]
         assert "gitee_create_branch" not in server["enabled_tools"]
+    # Later native plugins may also register tools, but disconnected plugins must not leak into a task.
+    assert not any(name.startswith("feishu_") for name in server["enabled_tools"])
     # The capability is an opaque localhost header, never a third-party credential.
     assert set(server["http_headers"]) == {"X-FDEX-Plugin-Capability"}
 
@@ -129,13 +131,14 @@ def test_tools_list_dynamically_rechecks_grants(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         plugin_mcp_gateway,
         "effective_agent_grant",
-        lambda owner_id, employee, plugin_id: {"mode": modes[plugin_id]},
+        lambda owner_id, employee, plugin_id: {"mode": modes.get(plugin_id, "none")},
     )
     names = {row["name"] for row in plugin_mcp_gateway._tool_catalog(OWNER, EMPLOYEE)}
     assert {"gitlab_list_repositories", "gitlab_read_file"}.issubset(names)
     assert "gitlab_write_file" not in names
     assert "gitlab_create_merge_request" not in names
     assert not any(name.startswith("gitee_") for name in names)
+    assert not any(name.startswith("feishu_") for name in names)
     if "gitlab_list_tree" in plugin_mcp_gateway._TOOL_DEFINITIONS:
         assert "gitlab_list_tree" in names
         assert "gitlab_create_branch" not in names
@@ -147,6 +150,7 @@ def test_tools_list_dynamically_rechecks_grants(monkeypatch: pytest.MonkeyPatch)
     assert "gitlab_create_merge_request" in names
     assert "gitee_read_file" in names
     assert "gitee_write_file" not in names
+    assert not any(name.startswith("feishu_") for name in names)
     if "gitlab_create_branch" in plugin_mcp_gateway._TOOL_DEFINITIONS:
         assert "gitlab_create_branch" in names
         assert "gitee_list_tree" in names

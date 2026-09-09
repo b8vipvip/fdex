@@ -11,6 +11,7 @@ from app.fdex_memory import MemoryScope
 from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
 from app.plugin_code_hosts import code_host_credential_store
+from app.plugin_feishu import feishu_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
 
@@ -136,12 +137,12 @@ def _safe_projects(items: list[dict[str, object]]) -> list[dict[str, object]]:
 
 
 def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
-    """Export only code-host connection metadata; encrypted access tokens never leave the vault."""
-    store = code_host_credential_store()
+    """Export native-plugin connection metadata only; encrypted credentials never leave their vaults."""
     rows: list[dict[str, object]] = []
+    code_hosts = code_host_credential_store()
     for plugin_id in ("gitlab", "gitee"):
         try:
-            item = store.get(user_id, plugin_id)
+            item = code_hosts.get(user_id, plugin_id)
         except (ValueError, RuntimeError):
             item = None
         if item is None:
@@ -161,6 +162,21 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
                     "updated_at",
                     "token_configured",
                 )
+            }
+        )
+    try:
+        feishu = feishu_credential_store().get(user_id)
+    except (ValueError, RuntimeError):
+        feishu = None
+    if feishu is not None:
+        rows.append(
+            {
+                "plugin_id": "feishu",
+                "app_id": feishu.get("app_id"),
+                "last_checked_at": feishu.get("last_checked_at"),
+                "created_at": feishu.get("created_at"),
+                "updated_at": feishu.get("updated_at"),
+                "secret_configured": feishu.get("secret_configured"),
             }
         )
     return rows
@@ -216,6 +232,8 @@ def build_account_export(
             "gitlab_access_token",
             "gitee_access_token",
             "plugin_code_host_token_cipher",
+            "feishu_app_secret",
+            "feishu_tenant_access_token",
             "plugin_mcp_capability_tokens",
             "provider_api_keys",
             "remote_mcp_bearer_tokens",
