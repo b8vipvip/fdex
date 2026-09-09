@@ -13,6 +13,7 @@ from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
 from app.plugin_google_drive import google_drive_store
+from app.plugin_linear import linear_store
 from app.plugin_notion import notion_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
@@ -37,34 +38,20 @@ def _remote_history(user_id: str, scopes: MemoryScopeRegistry, *, limit: int = 5
     conn = sqlite3.connect(memory_db, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
-        table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'"
-        ).fetchone()
+        table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mempalace_drawers'").fetchone()
         if table is None:
             return []
         placeholders = ",".join("?" for _ in account_ids)
         rows = conn.execute(
-            f"""
-            SELECT account_id,vault_id,wing,room,role,conversation_id,employee_id,
-                   source,content,created_at
-            FROM mempalace_drawers
-            WHERE account_id IN ({placeholders})
-            ORDER BY created_at,rowid
-            LIMIT ?
-            """,
+            f"""SELECT account_id,vault_id,wing,room,role,conversation_id,employee_id,source,content,created_at
+                FROM mempalace_drawers WHERE account_id IN ({placeholders}) ORDER BY created_at,rowid LIMIT ?""",
             (*account_ids, max(1, min(int(limit), 50000))),
         ).fetchall()
         return [
             {
-                "memory_scope": str(row["account_id"]),
-                "vault": str(row["vault_id"]),
-                "wing": str(row["wing"]),
-                "room": str(row["room"]),
-                "role": str(row["role"]),
-                "conversation_id": str(row["conversation_id"]),
-                "employee_id": str(row["employee_id"] or ""),
-                "source": str(row["source"]),
-                "content": str(row["content"]),
+                "memory_scope": str(row["account_id"]), "vault": str(row["vault_id"]), "wing": str(row["wing"]),
+                "room": str(row["room"]), "role": str(row["role"]), "conversation_id": str(row["conversation_id"]),
+                "employee_id": str(row["employee_id"] or ""), "source": str(row["source"]), "content": str(row["content"]),
                 "created_at": str(row["created_at"]),
             }
             for row in rows
@@ -78,25 +65,17 @@ def _public_sessions(store: CentralAuthStore, user_id: str) -> list[dict[str, ob
     now = _now()
     with store.db() as conn:
         rows = conn.execute(
-            """
-            SELECT id,device_name,client_ip,user_agent,created_at,updated_at,last_seen_at,
-                   access_expires_at,refresh_expires_at,revoked_at
-            FROM user_sessions WHERE user_id=? ORDER BY created_at,id
-            """,
+            """SELECT id,device_name,client_ip,user_agent,created_at,updated_at,last_seen_at,
+                      access_expires_at,refresh_expires_at,revoked_at
+               FROM user_sessions WHERE user_id=? ORDER BY created_at,id""",
             (user_id,),
         ).fetchall()
     return [
         {
-            "id": str(row["id"]),
-            "device_name": str(row["device_name"] or ""),
-            "client_ip": str(row["client_ip"] or ""),
-            "user_agent": str(row["user_agent"] or ""),
-            "created_at": str(row["created_at"]),
-            "updated_at": str(row["updated_at"]),
-            "last_seen_at": str(row["last_seen_at"] or ""),
-            "access_expires_at": str(row["access_expires_at"]),
-            "refresh_expires_at": str(row["refresh_expires_at"]),
-            "revoked_at": str(row["revoked_at"] or ""),
+            "id": str(row["id"]), "device_name": str(row["device_name"] or ""), "client_ip": str(row["client_ip"] or ""),
+            "user_agent": str(row["user_agent"] or ""), "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
+            "last_seen_at": str(row["last_seen_at"] or ""), "access_expires_at": str(row["access_expires_at"]),
+            "refresh_expires_at": str(row["refresh_expires_at"]), "revoked_at": str(row["revoked_at"] or ""),
             "active_at_export": not bool(row["revoked_at"]) and str(row["refresh_expires_at"]) > now,
         }
         for row in rows
@@ -104,36 +83,14 @@ def _public_sessions(store: CentralAuthStore, user_id: str) -> list[dict[str, ob
 
 
 def _safe_connections(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    allowed = (
-        "id",
-        "name",
-        "login",
-        "auth_type",
-        "scope",
-        "token_expires_at",
-        "needs_reconnect",
-        "created_at",
-        "updated_at",
-        "token_configured",
-    )
+    allowed = ("id", "name", "login", "auth_type", "scope", "token_expires_at", "needs_reconnect", "created_at", "updated_at", "token_configured")
     return [{key: item.get(key) for key in allowed if key in item} for item in items]
 
 
 def _safe_projects(items: list[dict[str, object]]) -> list[dict[str, object]]:
     allowed = (
-        "id",
-        "name",
-        "repo_full_name",
-        "base_branch",
-        "connection_id",
-        "allow_push",
-        "allow_pr",
-        "allow_network",
-        "sandbox_memory_mb",
-        "sandbox_cpu_percent",
-        "enabled",
-        "created_at",
-        "updated_at",
+        "id", "name", "repo_full_name", "base_branch", "connection_id", "allow_push", "allow_pr", "allow_network",
+        "sandbox_memory_mb", "sandbox_cpu_percent", "enabled", "created_at", "updated_at",
     )
     return [{key: item.get(key) for key in allowed if key in item} for item in items]
 
@@ -147,78 +104,59 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
             item = code_hosts.get(user_id, plugin_id)
         except (ValueError, RuntimeError):
             item = None
-        if item is None:
-            continue
-        rows.append(
-            {
-                key: item.get(key)
-                for key in (
-                    "plugin_id",
-                    "base_url",
-                    "account_id",
-                    "account_login",
-                    "account_name",
-                    "repository_count",
-                    "last_checked_at",
-                    "created_at",
-                    "updated_at",
-                    "token_configured",
-                )
-            }
-        )
+        if item is not None:
+            rows.append({key: item.get(key) for key in (
+                "plugin_id", "base_url", "account_id", "account_login", "account_name", "repository_count",
+                "last_checked_at", "created_at", "updated_at", "token_configured",
+            )})
+
     try:
         feishu = feishu_credential_store().get(user_id)
     except (ValueError, RuntimeError):
         feishu = None
     if feishu is not None:
-        rows.append(
-            {
-                "plugin_id": "feishu",
-                "app_id": feishu.get("app_id"),
-                "last_checked_at": feishu.get("last_checked_at"),
-                "created_at": feishu.get("created_at"),
-                "updated_at": feishu.get("updated_at"),
-                "secret_configured": feishu.get("secret_configured"),
-            }
-        )
+        rows.append({
+            "plugin_id": "feishu", "app_id": feishu.get("app_id"), "last_checked_at": feishu.get("last_checked_at"),
+            "created_at": feishu.get("created_at"), "updated_at": feishu.get("updated_at"), "secret_configured": feishu.get("secret_configured"),
+        })
+
     try:
         notion = notion_credential_store().get(user_id)
     except (ValueError, RuntimeError):
         notion = None
     if notion is not None:
-        rows.append(
-            {
-                "plugin_id": "notion",
-                "bot_id": notion.get("bot_id"),
-                "bot_name": notion.get("bot_name"),
-                "workspace_id": notion.get("workspace_id"),
-                "workspace_name": notion.get("workspace_name"),
-                "last_checked_at": notion.get("last_checked_at"),
-                "created_at": notion.get("created_at"),
-                "updated_at": notion.get("updated_at"),
-                "token_configured": notion.get("token_configured"),
-            }
-        )
+        rows.append({
+            "plugin_id": "notion", "bot_id": notion.get("bot_id"), "bot_name": notion.get("bot_name"),
+            "workspace_id": notion.get("workspace_id"), "workspace_name": notion.get("workspace_name"),
+            "last_checked_at": notion.get("last_checked_at"), "created_at": notion.get("created_at"),
+            "updated_at": notion.get("updated_at"), "token_configured": notion.get("token_configured"),
+        })
+
     try:
         drive = google_drive_store().get(user_id)
     except (ValueError, RuntimeError):
         drive = None
     if drive is not None:
-        rows.append(
-            {
-                "plugin_id": "google-drive",
-                "account_email": drive.get("account_email"),
-                "display_name": drive.get("display_name"),
-                "permission_id": drive.get("permission_id"),
-                "scope": drive.get("scope"),
-                "token_expires_at": drive.get("token_expires_at"),
-                "last_checked_at": drive.get("last_checked_at"),
-                "created_at": drive.get("created_at"),
-                "updated_at": drive.get("updated_at"),
-                "access_token_configured": drive.get("access_token_configured"),
-                "refresh_token_configured": drive.get("refresh_token_configured"),
-            }
-        )
+        rows.append({
+            "plugin_id": "google-drive", "account_email": drive.get("account_email"), "display_name": drive.get("display_name"),
+            "permission_id": drive.get("permission_id"), "scope": drive.get("scope"), "token_expires_at": drive.get("token_expires_at"),
+            "last_checked_at": drive.get("last_checked_at"), "created_at": drive.get("created_at"), "updated_at": drive.get("updated_at"),
+            "access_token_configured": drive.get("access_token_configured"), "refresh_token_configured": drive.get("refresh_token_configured"),
+        })
+
+    try:
+        linear = linear_store().get(user_id)
+    except (ValueError, RuntimeError):
+        linear = None
+    if linear is not None:
+        rows.append({
+            "plugin_id": "linear", "viewer_id": linear.get("viewer_id"), "viewer_name": linear.get("viewer_name"),
+            "viewer_email": linear.get("viewer_email"), "organization_id": linear.get("organization_id"),
+            "organization_name": linear.get("organization_name"), "organization_key": linear.get("organization_key"),
+            "scope": linear.get("scope"), "token_expires_at": linear.get("token_expires_at"),
+            "last_checked_at": linear.get("last_checked_at"), "created_at": linear.get("created_at"), "updated_at": linear.get("updated_at"),
+            "access_token_configured": linear.get("access_token_configured"), "refresh_token_configured": linear.get("refresh_token_configured"),
+        })
     return rows
 
 
@@ -244,8 +182,6 @@ def build_account_export(
         "native_plugin_connections": _native_plugin_connections(user_id),
         "coding_agent_projects": _safe_projects(projects.list_projects(user_id, enabled_only=False)),
         "remote_mcp_servers": remote_mcp_registry().export_owner(user_id),
-        # Export only non-secret OAuth client configuration. client_secret, state/PKCE material,
-        # access/refresh tokens and encrypted credential rows remain deliberately excluded.
         "remote_mcp_oauth_configs": [oauth_configs[key] for key in sorted(oauth_configs)],
         "long_term_memory": {
             "status": memory_erasure_status(user_id),
@@ -257,35 +193,14 @@ def build_account_export(
             },
         },
         "excluded_secrets": [
-            "password_hash",
-            "access_token",
-            "refresh_token",
-            "access_hash",
-            "refresh_hash",
-            "password_reset_code",
-            "github_token",
-            "github_token_cipher",
-            "github_refresh_token",
-            "github_refresh_token_cipher",
-            "github_device_code",
-            "github_device_code_cipher",
-            "gitlab_access_token",
-            "gitee_access_token",
-            "plugin_code_host_token_cipher",
-            "feishu_app_secret",
-            "feishu_tenant_access_token",
-            "notion_integration_token",
-            "google_drive_access_token",
-            "google_drive_refresh_token",
-            "google_drive_oauth_pkce_verifier",
-            "plugin_mcp_capability_tokens",
-            "provider_api_keys",
-            "remote_mcp_bearer_tokens",
-            "remote_mcp_oauth_client_secrets",
-            "remote_mcp_oauth_state_pkce",
-            "remote_mcp_oauth_access_tokens",
-            "remote_mcp_oauth_refresh_tokens",
-            "embeddings",
-            "sandbox_cache_files",
+            "password_hash", "access_token", "refresh_token", "access_hash", "refresh_hash", "password_reset_code",
+            "github_token", "github_token_cipher", "github_refresh_token", "github_refresh_token_cipher",
+            "github_device_code", "github_device_code_cipher", "gitlab_access_token", "gitee_access_token",
+            "plugin_code_host_token_cipher", "feishu_app_secret", "feishu_tenant_access_token", "notion_integration_token",
+            "google_drive_access_token", "google_drive_refresh_token", "google_drive_oauth_pkce_verifier",
+            "linear_access_token", "linear_refresh_token", "linear_oauth_pkce_verifier",
+            "plugin_mcp_capability_tokens", "provider_api_keys", "remote_mcp_bearer_tokens",
+            "remote_mcp_oauth_client_secrets", "remote_mcp_oauth_state_pkce", "remote_mcp_oauth_access_tokens",
+            "remote_mcp_oauth_refresh_tokens", "embeddings", "sandbox_cache_files",
         ],
     }
