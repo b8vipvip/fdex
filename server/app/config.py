@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     fdex_port: int = Field(default=18080, ge=1, le=65535)
     fdex_workers: int = Field(default=2, ge=1, le=16)
 
-    # Central FDEX account/session service. Opaque access + rotating refresh tokens are
-    # hashed server-side; account user_id becomes the canonical owner scope.
     fdex_auth_registration_enabled: bool = True
     fdex_auth_access_minutes: int = Field(default=60, ge=5, le=1440)
     fdex_auth_refresh_days: int = Field(default=30, ge=1, le=365)
@@ -31,7 +29,6 @@ class Settings(BaseSettings):
     fdex_auth_reset_code_minutes: int = Field(default=10, ge=2, le=60)
     fdex_auth_reset_max_attempts: int = Field(default=5, ge=1, le=20)
 
-    # Outbound account-security mail. Password-reset codes fail closed when SMTP is absent.
     fdex_smtp_host: str = ""
     fdex_smtp_port: int = Field(default=587, ge=1, le=65535)
     fdex_smtp_username: str = ""
@@ -42,8 +39,6 @@ class Settings(BaseSettings):
     fdex_smtp_ssl: bool = False
     fdex_smtp_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
-    # Optional inbound mailbox configuration for the FDEX center. Password-reset does not
-    # depend on IMAP, but the admin console can verify the receive side of the mailbox too.
     fdex_imap_host: str = ""
     fdex_imap_port: int = Field(default=993, ge=1, le=65535)
     fdex_imap_username: str = ""
@@ -53,22 +48,15 @@ class Settings(BaseSettings):
     fdex_imap_starttls: bool = False
     fdex_imap_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
 
-    # Legacy one-provider fields are retained only for migration. Runtime AI traffic is routed
-    # through the encrypted provider pool. Coding Agent execution itself is Codex-only.
     ai_provider: str = "openai_compatible"
     ai_base_url: str = ""
     ai_api_key: str = ""
     ai_model: str = ""
     ai_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
 
-    # Coding Agent is an enable/disable capability only. There is no engine selector: when
-    # enabled, every Coding Agent task executes through the official Codex native Host.
     fdex_agent_enabled: bool = True
-    # Optional operator pin for an official Codex binary. When empty, FDEX tries PATH and
-    # then the official bundled openai-codex-cli-bin fallback.
     fdex_agent_codex_bin: str = ""
     fdex_agent_codex_home_root: str = str(SERVER_DIR / "data" / "codex")
-    # Bootstrap/enrollment secret retained only for migration from pre-central-auth clients.
     fdex_agent_access_token: str = ""
     fdex_agent_workspace: str = "/opt/fdex"
     fdex_agent_worktree_root: str = str(SERVER_DIR / "data" / "agent-worktrees")
@@ -82,35 +70,30 @@ class Settings(BaseSettings):
     fdex_agent_sandbox_cpu_percent: int = Field(default=150, ge=10, le=800)
     fdex_agent_sandbox_pids_max: int = Field(default=512, ge=32, le=4096)
     fdex_agent_sandbox_max_concurrent: int = Field(default=1, ge=1, le=8)
-    # Disk is not preallocated. This is an owner-wide admission budget for repository clones,
-    # worktrees and build caches; users can release completed workspaces from the client.
     fdex_agent_account_disk_mb: int = Field(default=20480, ge=512, le=204800)
 
-    # Phase 7.5 Device OAuth remains a compatibility path for old/native clients.
     fdex_github_oauth_client_id: str = ""
     fdex_github_oauth_scope: str = "repo read:user offline_access"
     fdex_github_oauth_refresh_skew_seconds: int = Field(default=300, ge=30, le=3600)
 
-    # Phase 7.6 OAuth App remains a compatibility path. Phase 7.7 GitHub App installation
-    # is the preferred end-user integration because repository selection happens on GitHub
-    # and FDEX does not persist a user's OAuth access/refresh token.
     fdex_github_web_oauth_client_id: str = ""
     fdex_github_web_oauth_client_secret: str = ""
     fdex_github_web_oauth_scope: str = "repo read:user"
     fdex_github_web_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
 
-    # Phase 7.48 Google Drive uses one operator-owned OAuth Web application and stores each
-    # FDEX user's access/refresh tokens only in the dedicated encrypted Drive credential vault.
-    # The default full Drive scope enables the promised cross-Drive search/read/write workflow;
-    # public deployments may need Google's verification for this restricted scope.
+    # Phase 7.48 Google Drive: one operator OAuth application, owner-scoped encrypted grants.
     fdex_google_oauth_client_id: str = ""
     fdex_google_oauth_client_secret: str = ""
     fdex_google_oauth_scope: str = "https://www.googleapis.com/auth/drive"
     fdex_google_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
 
-    # GitHub App service identity. These values identify the FDEX integration itself and are
-    # configured once by the operator. Per-user access is represented only by installation_id.
-    # Keep the private key outside the repository; either path or base64 may be supplied.
+    # Phase 7.49 Linear: OAuth is the supported multi-user integration path. Linear access tokens
+    # expire after 24 hours and refresh tokens rotate, so both are kept only in the plugin vault.
+    fdex_linear_oauth_client_id: str = ""
+    fdex_linear_oauth_client_secret: str = ""
+    fdex_linear_oauth_scope: str = "read,write"
+    fdex_linear_oauth_flow_minutes: int = Field(default=10, ge=2, le=30)
+
     fdex_github_app_id: str = ""
     fdex_github_app_slug: str = ""
     fdex_github_app_client_id: str = ""
@@ -119,9 +102,6 @@ class Settings(BaseSettings):
     fdex_github_app_private_key_b64: str = ""
     fdex_github_app_flow_minutes: int = Field(default=10, ge=2, le=30)
 
-    # Outbound GitHub transport. Direct access remains the default. Operators whose center
-    # network has unreliable international egress can explicitly configure a trusted HTTP(S)
-    # proxy. OAuth/user/install tokens are sensitive, so FDEX never uses third-party mirrors.
     fdex_github_http_proxy: str = ""
     fdex_github_connect_timeout_seconds: float = Field(default=10.0, ge=2.0, le=120.0)
     fdex_github_read_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
@@ -206,6 +186,10 @@ class Settings(BaseSettings):
     @property
     def google_drive_oauth_ready(self) -> bool:
         return bool(self.fdex_google_oauth_client_id.strip() and self.fdex_google_oauth_client_secret.strip())
+
+    @property
+    def linear_oauth_ready(self) -> bool:
+        return bool(self.fdex_linear_oauth_client_id.strip() and self.fdex_linear_oauth_client_secret.strip())
 
     @property
     def github_app_ready(self) -> bool:
