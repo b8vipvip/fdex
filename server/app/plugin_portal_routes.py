@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -11,6 +13,7 @@ from app.plugin_code_hosts import (
     disconnect_code_host,
     list_code_host_repositories,
 )
+from app.plugin_mcp_gateway import _tool_call, _tool_catalog
 from app.plugin_runtime import (
     catalog_snapshot,
     effective_agent_grant,
@@ -35,6 +38,16 @@ def _code_host(plugin_id: str) -> str:
     if clean not in {"gitlab", "gitee"}:
         raise ValueError("当前连接入口仅支持 GitLab / Gitee")
     return clean
+
+
+def _mcp_error_text(result: dict[str, object]) -> str:
+    content = result.get("content")
+    if not isinstance(content, list):
+        return "Plugin MCP 返回未知错误"
+    for item in content:
+        if isinstance(item, dict) and str(item.get("text") or "").strip():
+            return str(item["text"])[:800]
+    return "Plugin MCP 返回未知错误"
 
 
 @router.get("", response_class=HTMLResponse, response_model=None)
@@ -137,6 +150,69 @@ def plugin_code_host_repositories(plugin_id: str, request: Request) -> JSONRespo
         return JSONResponse({"ok": True, "plugin_id": clean_plugin, "count": len(repositories), "repositories": repositories})
     except (CodeHostPluginError, KeyError, PermissionError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@router.post("/{plugin_id}/agents/{employee_id}/verify", response_model=None)
+def verify_plugin_agent_mcp(
+    plugin_id: str,
+    employee_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+) -> Response:
+    """Run a real read-only request through the same Plugin MCP dispatcher used by Codex.
+
+    This is intentionally not a synthetic connection check: the selected 智体's current grant is
+    evaluated, the MCP catalog is generated, `_tool_call` enters Plugin Runtime authorization/audit,
+    and the native GitLab/Gitee adapter performs the live repository-list request. No write tool is
+    invoked and no third-party credential is returned to the browser.
+    """
+    user = _current_user(request)
+    if user is None:
+        return _login_redirect(request)
+    clean_plugin = (plugin_id or "").strip().lower()
+    try:
+        _verify_csrf(request, csrf_token)
+        clean_plugin = _code_host(clean_plugin)
+        owner_id = _owner(user)
+        definition = plugin_definition(clean_plugin)
+        status = plugin_connection_status(owner_id, clean_plugin)
+        if not bool(status.get("connected")):
+            raise ValueError(f"{definition.name} 尚未连接")
+        employee = web_workspace_store().get(owner_id, "employee", int(employee_id))
+        if bool(employee.get("_deleted")) or not bool(employee.get("active", True)):
+            raise ValueError("智体已停用，不能验证插件 MCP")
+        grant = effective_agent_grant(owner_id, employee, clean_plugin)
+        if str(grant.get("mode") or "none") == "none":
+            raise ValueError(f"请先给智体授权 {definition.name} 的只读或读写权限")
+
+        tool_name = f"{clean_plugin}_list_repositories"
+        catalog_names = {str(item.get("name") or "") for item in _tool_catalog(owner_id, employee)}
+        if tool_name not in catalog_names:
+            raise ValueError(f"{definition.name} MCP Tool 当前未向该智体开放")
+        result = _tool_call({"owner_id": owner_id, "employee": employee}, tool_name, {})
+        if bool(result.get("isError")):
+            raise CodeHostPluginError(_mcp_error_text(result))
+        content = result.get("content")
+        text = ""
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and str(item.get("text") or "").strip():
+                    text = str(item["text"])
+                    break
+        try:
+            payload = json.loads(text) if text else []
+        except json.JSONDecodeError as exc:
+            raise CodeHostPluginError("Plugin MCP 验证返回了无效 JSON") from exc
+        count = len(payload) if isinstance(payload, list) else 0
+        mode_label = "读写" if str(grant.get("mode")) == "write" else "只读"
+        _flash(
+            request,
+            f"{definition.name} MCP 验证通过：智体「{str(employee.get('name') or employee_id)}」当前为{mode_label}权限，实时读取到 {count} 个仓库/项目。",
+            "success",
+        )
+    except (CodeHostPluginError, KeyError, PermissionError, RuntimeError, ValueError) as exc:
+        _flash(request, f"Plugin MCP 验证失败：{exc}", "error")
+    return RedirectResponse(f"/account/plugins#plugin-{clean_plugin}", status_code=303)
 
 
 @router.post("/{plugin_id}/agents/{employee_id}", response_model=None)
