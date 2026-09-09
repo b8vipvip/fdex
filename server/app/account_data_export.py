@@ -12,6 +12,7 @@ from app.memory_erasure import memory_erasure_status
 from app.memory_scope_registry import MemoryScopeRegistry, memory_scope_registry
 from app.plugin_code_hosts import code_host_credential_store
 from app.plugin_feishu import feishu_credential_store
+from app.plugin_notion import notion_credential_store
 from app.remote_mcp_oauth import remote_mcp_oauth_store
 from app.remote_mcp_registry import remote_mcp_registry
 
@@ -179,6 +180,24 @@ def _native_plugin_connections(user_id: str) -> list[dict[str, object]]:
                 "secret_configured": feishu.get("secret_configured"),
             }
         )
+    try:
+        notion = notion_credential_store().get(user_id)
+    except (ValueError, RuntimeError):
+        notion = None
+    if notion is not None:
+        rows.append(
+            {
+                "plugin_id": "notion",
+                "bot_id": notion.get("bot_id"),
+                "bot_name": notion.get("bot_name"),
+                "workspace_id": notion.get("workspace_id"),
+                "workspace_name": notion.get("workspace_name"),
+                "last_checked_at": notion.get("last_checked_at"),
+                "created_at": notion.get("created_at"),
+                "updated_at": notion.get("updated_at"),
+                "token_configured": notion.get("token_configured"),
+            }
+        )
     return rows
 
 
@@ -234,6 +253,7 @@ def build_account_export(
             "plugin_code_host_token_cipher",
             "feishu_app_secret",
             "feishu_tenant_access_token",
+            "notion_integration_token",
             "plugin_mcp_capability_tokens",
             "provider_api_keys",
             "remote_mcp_bearer_tokens",
