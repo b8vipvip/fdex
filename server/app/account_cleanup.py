@@ -24,6 +24,7 @@ from app.plugin_google_drive import google_drive_store
 from app.plugin_jira import jira_store
 from app.plugin_linear import linear_store
 from app.plugin_notion import notion_credential_store
+from app.plugin_vercel import vercel_credential_store
 from app.plugin_mcp_gateway import plugin_mcp_lease_store
 from app.remote_mcp_credentials import remote_mcp_credential_store
 from app.remote_mcp_gateway import remote_mcp_lease_store
@@ -123,6 +124,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
     plugin_google_drive_cleanup = google_drive_store().delete_owner(clean)
     plugin_linear_cleanup = linear_store().delete_owner(clean)
     plugin_jira_cleanup = jira_store().delete_owner(clean)
+    plugin_vercel_connection_count = vercel_credential_store().delete_owner(clean)
     codex_interaction_cleanup = codex_interaction_store().delete_owner(clean)
     codex_item_cleanup = codex_item_store().delete_owner(clean)
     codex_cleanup = codex_host_store().delete_owner(clean)
@@ -168,6 +170,7 @@ def _purge_agent_resources_only(user_id: str) -> dict[str, object]:
         "plugin_jira_connections": plugin_jira_cleanup["connections"],
         "plugin_jira_sites": plugin_jira_cleanup["sites"],
         "plugin_jira_oauth_flows": plugin_jira_cleanup["oauth_flows"],
+        "plugin_vercel_connections": plugin_vercel_connection_count,
         "agent_tasks": retry_task_cleanup["agent_tasks"],
         "codex_retry_attempts": retry_task_cleanup["codex_retry_attempts"],
         "codex_retry_transitions": retry_task_cleanup["codex_retry_transitions"],

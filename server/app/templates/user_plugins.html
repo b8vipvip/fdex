@@ -31,6 +31,7 @@
         <strong>{{ plugin.connection_count }} 个连接</strong>
         {% if plugin.account_label %}<span>{{ plugin.account_label }}</span>{% endif %}
         {% if plugin.repository_count is defined %}<span>{{ plugin.repository_count }} 个仓库/项目</span>{% endif %}
+        {% if plugin.project_count is defined and plugin.id == 'vercel' %}<span>{{ plugin.project_count }} 个 Vercel 项目</span>{% endif %}
         {% if plugin.site_count is defined %}<span>{{ plugin.site_count }} 个 Jira 站点</span>{% endif %}
       </div>
     {% endif %}
@@ -176,6 +177,27 @@
         <div class="plugin-card-actions"><button class="button button-secondary" type="button" disabled>需服务端配置 Jira OAuth</button></div>
       </div>
       {% endif %}
+    {% elif plugin.id == 'vercel' %}
+      {% if plugin.connected %}
+      <div class="plugin-card-actions plugin-code-host-actions">
+        <a class="button button-secondary" href="/account/plugins/vercel/repositories.json" target="_blank" rel="noopener">检查项目</a>
+        <form action="/account/plugins/vercel/disconnect" method="post" onsubmit="return confirm('确定断开 Vercel？智体将立即失去部署与生产流量操作能力。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">断开</button>
+        </form>
+      </div>
+      {% else %}
+      <details class="plugin-connect-panel">
+        <summary class="button button-primary">连接 Vercel</summary>
+        <form action="/account/plugins/vercel/connect" method="post" class="stack plugin-connect-form" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="fine">使用 Vercel Access Token。Token 只在提交时发送一次，验证成功后以 Fernet 加密保存在当前 FDEX 账号独立凭据库。个人账号可不填 Team ID；连接团队资源时填写 team_ 开头的 Team ID。生产 Promote/Rollback 被标记为高风险 Tool，即使智体拥有读写权限也仍需 Codex 当次人工审批。</div>
+          <label>Vercel Access Token<input type="password" name="access_token" required minlength="8" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="仅用于验证并加密保存"></label>
+          <label>Team ID（可选）<input type="text" name="base_url" maxlength="240" autocomplete="off" spellcheck="false" placeholder="team_xxx；个人账号留空"></label>
+          <button class="button button-primary" type="submit">验证并连接</button>
+        </form>
+      </details>
+      {% endif %}
     {% elif plugin.connectable %}
       <div class="plugin-card-actions"><button class="button button-primary" type="button">连接</button></div>
     {% else %}
@@ -208,7 +230,7 @@
               </select>
               <button class="button button-secondary compact-button" type="submit">保存</button>
             </form>
-            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive', 'linear', 'jira'] and grants[employee.id|string][plugin.id] != 'none' %}
+            {% if plugin.id in ['gitlab', 'gitee', 'feishu', 'notion', 'google-drive', 'linear', 'jira', 'vercel'] and grants[employee.id|string][plugin.id] != 'none' %}
             <form action="/account/plugins/{{ plugin.id }}/agents/{{ employee.id }}/verify" method="post" class="plugin-grant-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="button button-secondary compact-button" type="submit">验证 MCP</button>
