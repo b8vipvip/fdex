@@ -54,7 +54,7 @@
     {% if rollout.rows %}
     <div class="table-wrap">
         <table class="data-table provider-table">
-            <thead><tr><th>优先级</th><th>供应商 / 模型</th><th>当前结论</th><th>真实证据</th><th>本次测试 / 最后完成</th><th>操作</th></tr></thead>
+            <thead><tr><th>优先级</th><th>供应商 / 模型</th><th>当前结论</th><th>真实证据</th><th>本次测试 / 最后完成（北京时间）</th><th>操作</th></tr></thead>
             <tbody>
             {% for row in rollout.rows %}
             {% set p = row.provider %}
@@ -94,15 +94,15 @@
                 <td>
                     {% if run.active %}
                     <strong>本次开始</strong><br>
-                    {{ run.started_at[:19].replace('T',' ') }}<br>
+                    {{ run.started_at|admin_time }}<br>
                     <span class="muted">{{ run.runtime_version }} · 已用时 {{ run.elapsed_seconds }} 秒</span>
                     {% elif run.finished_at %}
                     <strong>本次结束</strong><br>
-                    {{ run.finished_at[:19].replace('T',' ') }} · {{ '通过' if run.status == 'passed' else '失败' }}<br>
+                    {{ run.finished_at|admin_time }} · {{ '通过' if run.status == 'passed' else '失败' }}<br>
                     <span class="muted">{{ run.runtime_version }}</span>
                     {% endif %}
                     {% if record.checked_at %}
-                    <div class="tiny-line" style="margin-top:8px">最后完成：{{ record.checked_at[:19].replace('T',' ') }}</div>
+                    <div class="tiny-line" style="margin-top:8px">最后完成：{{ record.checked_at|admin_time }}</div>
                     <span class="muted">{{ record.runtime_version }} · {{ record.latency_ms }} ms</span>
                     {% elif not run.started_at %}<span class="muted">未执行真实 Codex smoke</span>{% endif %}
                 </td>
