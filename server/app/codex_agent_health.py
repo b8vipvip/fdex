@@ -26,6 +26,7 @@ from app.codex_provider_compatibility import (
     COMPATIBILITY_MAX_AGE_HOURS,
     codex_provider_compatibility_store,
     level_at_least,
+    probe_chat2api_contract,
 )
 from app.codex_provider_rollout import rollout_selection
 from app.config import SERVER_DIR, fresh_settings
@@ -360,6 +361,7 @@ async def _probe_provider_live(provider: dict[str, Any], store: CodexAgentHealth
             "latency_ms": 0,
             "consecutive_failures": 0,
             "error": "Responses/API Key/Base URL/text model 配置不完整",
+            "upstream_contract": None,
         }
 
     timeout = min(5.0, max(1.0, float(provider.get("timeout_seconds") or 5.0)))
@@ -396,6 +398,16 @@ async def _probe_provider_live(provider: dict[str, Any], store: CodexAgentHealth
         except (httpx.HTTPError, ValueError) as exc:
             state = "unreachable"
             error = _safe_error(exc, spec.api_key)
+
+    upstream_contract = await probe_chat2api_contract(provider)
+    if upstream_contract is not None:
+        compatibility = codex_provider_compatibility_store()
+        upstream_contract = await asyncio.to_thread(
+            compatibility.record_upstream_contract,
+            provider_id,
+            upstream_contract,
+        )
+
     latency_ms = int((perf_counter() - started) * 1000)
     healthy = state in {"ok", "reachable"}
     failures = await asyncio.to_thread(
@@ -415,6 +427,11 @@ async def _probe_provider_live(provider: dict[str, Any], store: CodexAgentHealth
         "latency_ms": latency_ms,
         "consecutive_failures": failures,
         "error": error,
+        "upstream_contract": {
+            "runtime_version": str((upstream_contract or {}).get("runtime_version") or ""),
+            "bundle_version": str((upstream_contract or {}).get("bundle_version") or ""),
+            "contract_version": str((upstream_contract or {}).get("contract_version") or ""),
+        } if upstream_contract else None,
     }
 
 
@@ -508,7 +525,6 @@ async def run_codex_agent_health_check(*, force_host: bool = False) -> dict[str,
     }
 
     isolation = await asyncio.to_thread(codex_process_isolation_status)
-    selected, compatibility = await asyncio.to_thread(_compatibility_snapshot, runtime)
 
     providers = provider_store().list(enabled_only=True, include_secret=True)
     live_results = await asyncio.gather(
@@ -528,10 +544,16 @@ async def run_codex_agent_health_check(*, force_host: bool = False) -> dict[str,
                     "latency_ms": 0,
                     "consecutive_failures": 1,
                     "error": _safe_error(result, str(provider.get("api_key") or "")),
+                    "upstream_contract": None,
                 }
             )
         else:
             live.append(result)
+
+    # Live probing records the current chat2api /version identity first. Recompute
+    # compatibility afterwards so an upstream runtime/Worker deployment invalidates
+    # old full-smoke evidence in the same monitor pass rather than one cycle later.
+    selected, compatibility = await asyncio.to_thread(_compatibility_snapshot, runtime)
 
     host: dict[str, Any]
     if runtime is None:

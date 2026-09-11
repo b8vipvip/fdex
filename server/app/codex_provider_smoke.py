@@ -20,6 +20,7 @@ from app.codex_engine import (
 from app.codex_process_isolation import codex_process_isolation_status
 from app.codex_provider_compatibility import (
     codex_provider_compatibility_store,
+    probe_chat2api_contract,
     provider_runtime_fingerprint,
 )
 from app.config import SERVER_DIR, fresh_settings
@@ -166,8 +167,18 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
         raise CodexProviderSmokeError(
             "供应商必须配置 Responses 协议、API Key、有效 Base URL 和文本模型后才能执行 Codex smoke"
         )
-    fingerprint = provider_runtime_fingerprint(provider, runtime)
+
     compatibility = codex_provider_compatibility_store()
+    discovered_upstream = await probe_chat2api_contract(provider)
+    if discovered_upstream is not None:
+        compatibility.record_upstream_contract(spec.provider_id, discovered_upstream)
+    upstream_contract = compatibility.upstream_contract(spec.provider_id)
+    fingerprint = provider_runtime_fingerprint(
+        provider,
+        runtime,
+        upstream_contract_identity=str((upstream_contract or {}).get("identity") or ""),
+    )
+
     started = perf_counter()
     smoke_id = uuid.uuid4().hex
     root = (SERVER_DIR / "data" / "codex-provider-smoke" / smoke_id).resolve()
@@ -194,6 +205,12 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
         "reasoning": False,
         "runtime": runtime.version,
         "process_isolation": True,
+        "upstream_contract": {
+            "runtime_version": str((upstream_contract or {}).get("runtime_version") or ""),
+            "bundle_version": str((upstream_contract or {}).get("bundle_version") or ""),
+            "contract_version": str((upstream_contract or {}).get("contract_version") or ""),
+            "identity": str((upstream_contract or {}).get("identity") or ""),
+        } if upstream_contract else None,
     }
 
     async def deny_server_request(method: str, _params: dict[str, Any]) -> Any:
