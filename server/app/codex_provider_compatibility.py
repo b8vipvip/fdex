@@ -11,6 +11,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
+import httpx
+
 from app.config import SERVER_DIR, fresh_settings
 
 COMPATIBILITY_MAX_AGE_HOURS = 168
@@ -46,13 +48,79 @@ def level_at_least(value: str, required: str) -> bool:
     return LEVEL_ORDER[normalize_level(value)] >= LEVEL_ORDER[normalize_level(required)]
 
 
-def provider_runtime_fingerprint(provider: dict[str, Any], runtime: Any) -> str:
+def chat2api_contract_identity(payload: Any) -> dict[str, str] | None:
+    """Return a secret-free stable identity for a chat2api runtime contract."""
+    if not isinstance(payload, dict) or str(payload.get("object") or "") != "chat2api.version":
+        return None
+    server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
+    bridge = payload.get("chrome_bridge") if isinstance(payload.get("chrome_bridge"), dict) else {}
+    contract = {
+        "object": "chat2api.version",
+        "contract_version": int(payload.get("contract_version") or 0),
+        "runtime_version": str(server.get("runtime_version") or ""),
+        "feature_revision": str(server.get("feature_revision") or ""),
+        "bundle_version": str(bridge.get("bundle_version") or ""),
+        "build_revision": str(bridge.get("build_revision") or ""),
+        "route_window_authority_revision": int(bridge.get("route_window_authority_revision") or 0),
+        "route_close_terminal_revision": int(bridge.get("route_close_terminal_revision") or 0),
+    }
+    if not contract["runtime_version"]:
+        return None
+    return {
+        "identity": hashlib.sha256(_json(contract).encode("utf-8")).hexdigest(),
+        "runtime_version": contract["runtime_version"],
+        "bundle_version": contract["bundle_version"],
+        "contract_version": str(contract["contract_version"]),
+    }
+
+
+async def probe_chat2api_contract(provider: dict[str, Any]) -> dict[str, str] | None:
+    """Best-effort discovery of the upstream chat2api `/version` contract.
+
+    Non-chat2api providers simply return None. This is deliberately separate from
+    the semantic Codex smoke: it only supplies a runtime identity so an upstream
+    deployment change invalidates evidence produced against an older runtime.
+    """
+    from app.provider_manager import api_roots
+
+    api_key = str(provider.get("api_key") or "")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    timeout = min(5.0, max(1.0, float(provider.get("timeout_seconds") or 5.0)))
+    seen: set[str] = set()
+    for root in api_roots(str(provider.get("base_url") or "")):
+        url = root.rstrip("/") + "/version"
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+            if not (200 <= int(response.status_code) < 300):
+                continue
+            identity = chat2api_contract_identity(response.json())
+            if identity is not None:
+                return identity
+        except (httpx.HTTPError, ValueError, TypeError):
+            continue
+    return None
+
+
+def provider_runtime_fingerprint(
+    provider: dict[str, Any],
+    runtime: Any,
+    *,
+    upstream_contract_identity: str = "",
+) -> str:
     """Bind a compatibility result to every input that can change Codex wire/tool behavior.
 
     The API key itself is never persisted. It contributes only to the outer SHA-256 fingerprint so
     rotating credentials immediately invalidates an old smoke result without exposing the secret.
     The fingerprint also binds the same effective text-model candidate ordering used by Codex
     Provider selection, including the valid "backup-only" configuration when the main model is empty.
+    For chat2api Providers, the discovered `/version` runtime identity is also bound so a server/Worker
+    deployment invalidates compatibility even when Base URL, credentials and model names stay fixed.
     """
     from app.codex_subagent_governance import codex_subagent_cli_overrides
     from app.provider_manager import text_model_candidates
@@ -60,7 +128,7 @@ def provider_runtime_fingerprint(provider: dict[str, Any], runtime: Any) -> str:
     settings = fresh_settings()
     api_key = str(provider.get("api_key") or "")
     payload = {
-        "v": 2,
+        "v": 3,
         "provider_id": int(provider.get("id") or 0),
         "base_url": str(provider.get("base_url") or "").strip().rstrip("/"),
         "api_key_sha256": hashlib.sha256(api_key.encode("utf-8")).hexdigest() if api_key else "",
@@ -76,6 +144,7 @@ def provider_runtime_fingerprint(provider: dict[str, Any], runtime: Any) -> str:
         "cpu_percent": int(settings.fdex_agent_sandbox_cpu_percent),
         "pids_max": int(settings.fdex_agent_sandbox_pids_max),
         "app_version": str(settings.app_version),
+        "upstream_contract_identity": str(upstream_contract_identity or ""),
     }
     return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
 
@@ -125,6 +194,14 @@ class CodexProviderCompatibilityStore:
                 evidence_json TEXT NOT NULL DEFAULT '{}',
                 error TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS upstream_contract (
+                provider_id INTEGER PRIMARY KEY,
+                identity TEXT NOT NULL,
+                runtime_version TEXT NOT NULL DEFAULT '',
+                bundle_version TEXT NOT NULL DEFAULT '',
+                contract_version TEXT NOT NULL DEFAULT '',
+                observed_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS smoke_capabilities (
                 token_hash TEXT PRIMARY KEY,
                 marker TEXT NOT NULL,
@@ -156,6 +233,42 @@ class CodexProviderCompatibilityStore:
                 (int(provider_id),),
             ).fetchone()
         return self._row(row)
+
+    def upstream_contract(self, provider_id: int) -> dict[str, Any] | None:
+        with self.db() as conn:
+            row = conn.execute(
+                "SELECT * FROM upstream_contract WHERE provider_id=?",
+                (int(provider_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_upstream_contract(self, provider_id: int, contract: dict[str, Any]) -> dict[str, Any]:
+        identity = str(contract.get("identity") or "")
+        if not identity:
+            raise ValueError("upstream contract identity is required")
+        with self.db() as conn:
+            conn.execute(
+                """
+                INSERT INTO upstream_contract(
+                    provider_id,identity,runtime_version,bundle_version,contract_version,observed_at
+                ) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(provider_id) DO UPDATE SET
+                    identity=excluded.identity,
+                    runtime_version=excluded.runtime_version,
+                    bundle_version=excluded.bundle_version,
+                    contract_version=excluded.contract_version,
+                    observed_at=excluded.observed_at
+                """,
+                (
+                    int(provider_id),
+                    identity,
+                    str(contract.get("runtime_version") or "")[:160],
+                    str(contract.get("bundle_version") or "")[:160],
+                    str(contract.get("contract_version") or "")[:80],
+                    _now(),
+                ),
+            )
+        return self.upstream_contract(int(provider_id)) or {}
 
     def record(
         self,
@@ -210,6 +323,7 @@ class CodexProviderCompatibilityStore:
     def delete(self, provider_id: int) -> None:
         with self.db() as conn:
             conn.execute("DELETE FROM compatibility WHERE provider_id=?", (int(provider_id),))
+            conn.execute("DELETE FROM upstream_contract WHERE provider_id=?", (int(provider_id),))
 
     def evaluate(
         self,
@@ -221,13 +335,20 @@ class CodexProviderCompatibilityStore:
     ) -> dict[str, Any]:
         provider_id = int(provider.get("id") or 0)
         record = self.get(provider_id)
-        expected = provider_runtime_fingerprint(provider, runtime)
+        upstream = self.upstream_contract(provider_id)
+        upstream_identity = str((upstream or {}).get("identity") or "")
+        expected = provider_runtime_fingerprint(
+            provider,
+            runtime,
+            upstream_contract_identity=upstream_identity,
+        )
         result: dict[str, Any] = {
             "provider_id": provider_id,
             "valid": False,
             "level": "none",
             "required_level": normalize_level(required_level),
             "fingerprint_current": expected,
+            "upstream_contract": upstream,
             "reason": "尚未执行真实 Codex Provider smoke",
             "record": record,
         }
@@ -235,7 +356,7 @@ class CodexProviderCompatibilityStore:
             return result
         result["level"] = normalize_level(str(record.get("level") or "none"))
         if str(record.get("fingerprint") or "") != expected:
-            result["reason"] = "Provider、API Key、模型、Runtime 或治理配置已变化，旧 Codex smoke 已失效"
+            result["reason"] = "Provider、API Key、模型、Runtime、治理配置或上游运行合同已变化，旧 Codex smoke 已失效"
             return result
         try:
             checked = datetime.fromisoformat(str(record.get("checked_at") or ""))
