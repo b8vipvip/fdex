@@ -170,7 +170,8 @@ def test_admin_provider_request_page_and_single_export(monkeypatch) -> None:
     assert "供应商 AI 请求记录" in page.text
     assert "Supplier A" in page.text
     assert "gpt-5.6" in page.text
-    assert "/api/health" not in page.text
+    assert "provider-record-export-1" in page.text
+    assert "https://supplier.example/v1/responses" in page.text
     assert "导出日志" in page.text
 
     exported = client.get("/admin/requests/provider-record-export-1/export")
