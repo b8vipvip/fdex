@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import Request
 
+from app.request_records import request_record_store
+
 _LOGGER = logging.getLogger("uvicorn.error")
 _REQUEST_ID_RE = re.compile(r"[^A-Za-z0-9._:-]+")
 
@@ -52,3 +54,10 @@ def log_ai_event(event: str, request_id: str, *, level: str = "info", **fields: 
         _LOGGER.warning(message)
     else:
         _LOGGER.info(message)
+
+    # Diagnostics persistence must never be able to break an AI request. The durable store applies
+    # its own secret redaction and bounded retention before writing the structured event to SQLite.
+    try:
+        request_record_store().record_event(payload, level=level)
+    except Exception as exc:  # pragma: no cover - defensive guard for disk/SQLite failures
+        _LOGGER.warning("FDEX request record persistence failed: %s", type(exc).__name__)
