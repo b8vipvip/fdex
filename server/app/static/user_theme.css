@@ -1,0 +1,144 @@
+/* FDEX user-center day/night themes. Dark remains the default; light mirrors ChatGPT's neutral palette. */
+html{color-scheme:dark}
+html[data-theme="light"]{
+  color-scheme:light;
+  --bg:#fff;
+  --sidebar:#f9f9f9;
+  --surface:#f4f4f4;
+  --surface-2:#ececec;
+  --surface-3:#e6e6e6;
+  --line:rgba(0,0,0,.08);
+  --line-strong:rgba(0,0,0,.14);
+  --text:#0d0d0d;
+  --muted:#676767;
+  --muted-2:#8a8a8a;
+  --danger:#d92d20;
+  --warn:#9a6700;
+}
+
+/* Global shell */
+html[data-theme="light"] body,
+html[data-theme="light"] .user-shell,
+html[data-theme="light"] .user-workspace{background:var(--bg);color:var(--text)}
+html[data-theme="light"] .user-sidebar{background:var(--sidebar)}
+html[data-theme="light"] .user-topbar{background:rgba(255,255,255,.92)}
+html[data-theme="light"] .user-brand:hover,
+html[data-theme="light"] .sidebar-toggle:hover,
+html[data-theme="light"] .sidebar-logout:hover,
+html[data-theme="light"] .topbar-icon:hover,
+html[data-theme="light"] .user-nav a:hover,
+html[data-theme="light"] .user-nav a.active{background:rgba(0,0,0,.055);color:#111}
+html[data-theme="light"] .user-brand-mark{background:#111;color:#fff}
+html[data-theme="light"] .user-nav a{color:#333}
+html[data-theme="light"] .user-nav a::before{color:#777}
+html[data-theme="light"] .user-nav a.active::before{color:#111}
+html[data-theme="light"] .account-profile:hover{background:rgba(0,0,0,.05)}
+html[data-theme="light"] .topbar-action{color:#333;border-color:rgba(0,0,0,.12)}
+html[data-theme="light"] .topbar-action:hover{background:rgba(0,0,0,.045)}
+html[data-theme="light"] .sidebar-logout,
+html[data-theme="light"] .topbar-icon,
+html[data-theme="light"] .sidebar-toggle{color:#666}
+html[data-theme="light"] .danger-icon:hover{color:#c62828;background:rgba(198,40,40,.08)}
+html[data-theme="light"] .sidebar-backdrop{background:rgba(0,0,0,.28)}
+
+/* Theme button: moon indicates the action while in light mode; sun indicates the action while in dark mode. */
+.theme-toggle{position:relative}
+.theme-toggle .theme-icon{position:absolute;left:50%;top:50%;width:19px;height:19px;transform:translate(-50%,-50%);fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.theme-toggle .theme-icon-moon{display:none}
+html[data-theme="light"] .theme-toggle .theme-icon-sun{display:none}
+html[data-theme="light"] .theme-toggle .theme-icon-moon{display:block}
+
+/* Shared surfaces and forms */
+html[data-theme="light"] .card{background:#f4f4f4}
+html[data-theme="light"] .repo,
+html[data-theme="light"] .agent-list-row,
+html[data-theme="light"] .metric-grid>div{background:#f7f7f7}
+html[data-theme="light"] .agent-list-row:hover,
+html[data-theme="light"] .agent-list-row:focus-visible{background:#f0f0f0;border-color:rgba(0,0,0,.14)}
+html[data-theme="light"] input[type=text],
+html[data-theme="light"] input[type=email],
+html[data-theme="light"] input[type=password],
+html[data-theme="light"] input[type=number],
+html[data-theme="light"] select,
+html[data-theme="light"] textarea{background:#fff;color:#111;border-color:rgba(0,0,0,.14)}
+html[data-theme="light"] input:focus,
+html[data-theme="light"] select:focus,
+html[data-theme="light"] textarea:focus{background:#fff;border-color:#8f8f8f}
+html[data-theme="light"] .button-primary,
+html[data-theme="light"] button.primary{background:#111;color:#fff}
+html[data-theme="light"] .button-primary:hover,
+html[data-theme="light"] button.primary:hover{background:#2b2b2b}
+html[data-theme="light"] .button-secondary,
+html[data-theme="light"] button.secondary{color:#222;border-color:rgba(0,0,0,.14)}
+html[data-theme="light"] .button-secondary:hover,
+html[data-theme="light"] button.secondary:hover{background:rgba(0,0,0,.045)}
+html[data-theme="light"] .alert{background:#f6f6f6;color:#222;border-color:rgba(0,0,0,.12)}
+html[data-theme="light"] .code-block,
+html[data-theme="light"] .codex-item-output,
+html[data-theme="light"] .codex-item-live{background:#f7f7f7;color:#222;border-color:rgba(0,0,0,.1)}
+html[data-theme="light"] .login-wrap{background:#fff}
+html[data-theme="light"] .login-card{background:#f7f7f7;border-color:rgba(0,0,0,.09);box-shadow:0 20px 55px rgba(0,0,0,.1)}
+
+/* Sidebar recent chats + agent management */
+html[data-theme="light"] .user-nav.user-nav-flat{border-bottom-color:rgba(0,0,0,.07)}
+html[data-theme="light"] .recent-title{color:#767676}
+html[data-theme="light"] .recent-chat-list{scrollbar-color:#c6c6c6 transparent}
+html[data-theme="light"] .recent-chat-item{color:#333}
+html[data-theme="light"] .recent-chat-item:hover,
+html[data-theme="light"] .recent-chat-item.active{background:rgba(0,0,0,.055);color:#111}
+html[data-theme="light"] .recent-chat-kind{background:#ececec;color:#555}
+html[data-theme="light"] .recent-chat-summary{color:#777}
+html[data-theme="light"] .recent-empty{color:#888}
+html[data-theme="light"] .agent-prompt-ai{background:#eee;color:#222;border-color:rgba(0,0,0,.13)}
+html[data-theme="light"] .agent-prompt-ai:hover{background:#e5e5e5}
+html[data-theme="light"] .management-modal{background:rgba(0,0,0,.36)}
+html[data-theme="light"] .management-modal-panel{background:#fff;border-color:rgba(0,0,0,.12);box-shadow:0 24px 80px rgba(0,0,0,.2)}
+html[data-theme="light"] .management-modal-head{border-bottom-color:rgba(0,0,0,.08)}
+html[data-theme="light"] .management-modal-close{color:#777}
+html[data-theme="light"] .management-modal-close:hover{background:rgba(0,0,0,.05);color:#111}
+
+/* Plugin surfaces */
+html[data-theme="light"] .plugin-category-tabs a{color:#666}
+html[data-theme="light"] .plugin-category-tabs a:hover,
+html[data-theme="light"] .plugin-category-tabs a.active{background:#eee;color:#111}
+html[data-theme="light"] .plugin-card{background:#f7f7f7;border-color:#e2e2e2}
+html[data-theme="light"] .plugin-card.connected{border-color:#b9d8c9;background:linear-gradient(180deg,rgba(46,160,110,.08),#f7f7f7 52%)}
+html[data-theme="light"] .plugin-category{color:#777}
+html[data-theme="light"] .plugin-state.roadmap{background:#e8e8e8;color:#666}
+html[data-theme="light"] .plugin-description{color:#444}
+html[data-theme="light"] .plugin-connection-summary{background:rgba(0,0,0,.035)}
+html[data-theme="light"] .plugin-connection-summary span{color:#666}
+html[data-theme="light"] .plugin-tool-pill{background:#ececec;color:#555}
+html[data-theme="light"] .plugin-connect-form{background:#fafafa;border-color:#ddd}
+html[data-theme="light"] .plugin-connect-form label{color:#444}
+html[data-theme="light"] .plugin-permission-table th,
+html[data-theme="light"] .plugin-permission-table td,
+html[data-theme="light"] .plugin-audit-row{border-bottom-color:#e5e5e5}
+html[data-theme="light"] .plugin-audit-status{background:#ececec;color:#666}
+html[data-theme="light"] .plugin-audit-summary{color:#6f6f6f}
+
+/* Chat canvas */
+html[data-theme="light"] .is-chat-route .page>.chat-shell,
+html[data-theme="light"] .is-chat-route .page>section.card,
+html[data-theme="light"] .is-chat-route .chat-history{background:#fff}
+html[data-theme="light"] .is-chat-route .chat-bubble.user{background:#f4f4f4;color:#111}
+html[data-theme="light"] .is-chat-route .chat-bubble.assistant .chat-content{color:#111}
+html[data-theme="light"] .is-chat-route .chat-bubble>.fine{color:#8a8a8a}
+html[data-theme="light"] .fdex-message-action{color:#737373}
+html[data-theme="light"] .fdex-message-action:hover{background:rgba(0,0,0,.055);color:#222}
+html[data-theme="light"] .fdex-action-status{color:#777}
+html[data-theme="light"] .is-chat-route .composer{background:#fff;border-color:#d8d8d8;box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.08)}
+html[data-theme="light"] .is-chat-route .composer:focus-within{border-color:#c6c6c6}
+html[data-theme="light"] .is-chat-route .composer textarea{color:#111}
+html[data-theme="light"] .is-chat-route .composer textarea::placeholder{color:#888}
+html[data-theme="light"] .is-chat-route .file-picker{color:#222;border-color:#d4d4d4}
+html[data-theme="light"] .is-chat-route .file-picker:hover{background:#f3f3f3;border-color:#c7c7c7}
+html[data-theme="light"] .is-chat-route .composer button.primary{background:#111;color:#fff}
+html[data-theme="light"] .is-chat-route .composer button.primary:hover{background:#2a2a2a}
+html[data-theme="light"] .is-chat-route .composer button.primary:disabled{background:#dedede;color:#9a9a9a}
+html[data-theme="light"] .is-chat-route .fdex-paste-preview{color:#3976a8}
+html[data-theme="light"] .is-chat-route .composer.fdex-paste-ready{outline-color:rgba(0,0,0,.12)!important}
+
+@media(max-width:900px){
+  html[data-theme="light"] .user-sidebar{box-shadow:18px 0 45px rgba(0,0,0,.16)}
+}
