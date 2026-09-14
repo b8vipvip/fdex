@@ -8,10 +8,15 @@ from typing import Any
 
 from fastapi import Request
 
-from app.request_records import request_record_store
+from app.provider_request_trace import bind_request_id, install_provider_request_tracing
 
 _LOGGER = logging.getLogger("uvicorn.error")
 _REQUEST_ID_RE = re.compile(r"[^A-Za-z0-9._:-]+")
+
+# Request history in the admin console is specifically outbound AI Provider traffic. Install the
+# transport tracer once when the server request-trace module is imported; ordinary inbound API
+# request events remain in the runtime log only and are no longer persisted in that admin list.
+install_provider_request_tracing()
 
 
 def normalize_request_id(value: str | None) -> str:
@@ -22,9 +27,12 @@ def normalize_request_id(value: str | None) -> str:
 def request_id_for(request: Request) -> str:
     existing = getattr(request.state, "fdex_request_id", "")
     if existing:
-        return str(existing)
+        request_id = str(existing)
+        bind_request_id(request_id)
+        return request_id
     request_id = normalize_request_id(request.headers.get("x-fdex-request-id"))
     request.state.fdex_request_id = request_id
+    bind_request_id(request_id)
     return request_id
 
 
@@ -55,13 +63,6 @@ def _log_event(component: str, event: str, request_id: str, *, level: str = "inf
         _LOGGER.warning(message)
     else:
         _LOGGER.info(message)
-
-    # Diagnostics persistence must never be able to break a production request. The durable store
-    # applies its own secret redaction and bounded retention before writing the structured event.
-    try:
-        request_record_store().record_event(payload, level=level)
-    except Exception as exc:  # pragma: no cover - defensive guard for disk/SQLite failures
-        _LOGGER.warning("FDEX request record persistence failed: %s", type(exc).__name__)
 
 
 def log_request_event(event: str, request_id: str, *, level: str = "info", **fields: Any) -> None:
