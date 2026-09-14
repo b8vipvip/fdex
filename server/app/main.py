@@ -34,6 +34,7 @@ from app.codex_provider_rollout import install_codex_provider_rollout_runtime
 from app.codex_provider_smoke_mcp import router as codex_provider_smoke_mcp_router
 from app.codex_task_input_routes import router as codex_task_input_router
 from app.config import SERVER_DIR, get_settings
+from app.employee_chat_task_routing import install_employee_chat_task_routing
 from app.fdex_memory import close_memory_coordinator
 from app.github_app_admin_routes import router as github_app_admin_router
 from app.github_app_flow_cleanup import start_github_app_flow_cleanup, stop_github_app_flow_cleanup
@@ -65,6 +66,11 @@ install_agent_retry_projection_routes()
 # it and always called /chat/completions. Install the protocol-aware runtime before Web app routes
 # import and start invoking client_ai().
 install_provider_protocol_runtime()
+
+# Generic employee chat sends recent conversation and trusted host facts in the actual model prompt,
+# but multimodal task classification must use only the current turn. This wrapper is deliberately
+# limited to the shared client_ai path; native Coding Agent/Codex Turns stay on their own runtime.
+install_employee_chat_task_routing()
 
 # Phase 7.33 separates generic Provider health from real Codex compatibility. Every production Codex
 # launch/status seam is rebound to the fresh-full compatibility selector here. The explicit admin
