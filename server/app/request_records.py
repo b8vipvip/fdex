@@ -4,13 +4,14 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.config import SERVER_DIR
 
-DB_PATH = SERVER_DIR / "data" / "request-records.sqlite3"
+DB_PATH = SERVER_DIR / "data" / "provider-request-records.sqlite3"
 _RETENTION_DAYS = 30
 _MAX_RECORDS = 20000
 _SECRET_KEYS = (
@@ -70,12 +71,12 @@ def _optional_int(value: Any) -> int | None:
 
 
 class RequestRecordStore:
-    """Durable, bounded server request diagnostics grouped by FDEX Request ID.
+    """Durable outbound AI Provider request diagnostics.
 
-    The existing request trace emits compact structured events. This store persists those events so
-    an administrator can inspect a request summary and export the complete event chain later. It is
-    deliberately metadata-only: request/response bodies are not captured here, and obvious secrets
-    are redacted again before data is written to disk.
+    One row represents one real HTTP request from FDEX to a configured AI Provider. The store keeps
+    only routing/transport metadata needed for troubleshooting: Provider, model, protocol, target,
+    HTTP status, latency, correlation Request ID and compact diagnostic events. Prompt/response bodies
+    are deliberately never persisted and obvious secrets are redacted before disk writes.
     """
 
     def __init__(self, path: Path = DB_PATH) -> None:
@@ -94,39 +95,43 @@ class RequestRecordStore:
                 conn.executescript(
                     """
                     PRAGMA journal_mode=WAL;
-                    CREATE TABLE IF NOT EXISTS request_records (
-                        request_id TEXT PRIMARY KEY,
+                    CREATE TABLE IF NOT EXISTS provider_request_records (
+                        record_id TEXT PRIMARY KEY,
+                        request_id TEXT NOT NULL DEFAULT '',
                         started_at TEXT NOT NULL,
                         ended_at TEXT NOT NULL DEFAULT '',
-                        method TEXT NOT NULL DEFAULT '',
-                        path TEXT NOT NULL DEFAULT '',
+                        provider_id INTEGER,
+                        provider TEXT NOT NULL DEFAULT '',
+                        model TEXT NOT NULL DEFAULT '',
+                        protocol TEXT NOT NULL DEFAULT '',
+                        target TEXT NOT NULL DEFAULT '',
+                        method TEXT NOT NULL DEFAULT 'POST',
+                        mode TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT '',
                         status_code INTEGER,
                         elapsed_ms INTEGER,
-                        client TEXT NOT NULL DEFAULT '',
-                        mode TEXT NOT NULL DEFAULT '',
-                        content_type TEXT NOT NULL DEFAULT '',
-                        content_length TEXT NOT NULL DEFAULT '',
+                        outcome TEXT NOT NULL DEFAULT 'running',
                         event_count INTEGER NOT NULL DEFAULT 0,
-                        last_component TEXT NOT NULL DEFAULT '',
                         last_event TEXT NOT NULL DEFAULT '',
                         error_type TEXT NOT NULL DEFAULT '',
                         error TEXT NOT NULL DEFAULT ''
                     );
-                    CREATE TABLE IF NOT EXISTS request_record_events (
+                    CREATE TABLE IF NOT EXISTS provider_request_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        request_id TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
                         occurred_at TEXT NOT NULL,
                         level TEXT NOT NULL,
-                        component TEXT NOT NULL,
                         event TEXT NOT NULL,
                         payload_json TEXT NOT NULL
                     );
-                    CREATE INDEX IF NOT EXISTS idx_request_records_started
-                        ON request_records(started_at DESC);
-                    CREATE INDEX IF NOT EXISTS idx_request_records_status
-                        ON request_records(status_code, started_at DESC);
-                    CREATE INDEX IF NOT EXISTS idx_request_record_events_request
-                        ON request_record_events(request_id, id ASC);
+                    CREATE INDEX IF NOT EXISTS idx_provider_request_started
+                        ON provider_request_records(started_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_provider_request_provider
+                        ON provider_request_records(provider, started_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_provider_request_status
+                        ON provider_request_records(outcome, status_code, started_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_provider_request_events_record
+                        ON provider_request_events(record_id, id ASC);
                     """
                 )
             self._initialized = True
@@ -137,194 +142,252 @@ class RequestRecordStore:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def record_event(self, payload: dict[str, Any], *, level: str = "info") -> None:
-        cleaned = _clean_payload(payload)
-        if not isinstance(cleaned, dict):
-            return
-        request_id = _redact_text(cleaned.get("request_id"), 80)
-        if not request_id:
-            return
-        event = _redact_text(cleaned.get("event"), 160) or "event"
-        component = _redact_text(cleaned.get("component"), 120) or "server"
-        safe_level = _redact_text(level, 20).lower() or "info"
+    def begin(
+        self,
+        *,
+        request_id: str = "",
+        provider_id: int | None = None,
+        provider: str,
+        model: str = "",
+        protocol: str = "",
+        target: str = "",
+        method: str = "POST",
+        mode: str = "",
+        source: str = "",
+    ) -> str:
+        record_id = uuid.uuid4().hex
         occurred_at = _now()
-        payload_json = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"))
-
+        safe = {
+            "record_id": record_id,
+            "request_id": _redact_text(request_id, 80),
+            "provider_id": _optional_int(provider_id),
+            "provider": _redact_text(provider, 180),
+            "model": _redact_text(model, 180),
+            "protocol": _redact_text(protocol, 80),
+            "target": _redact_text(target, 500),
+            "method": _redact_text(method, 16).upper() or "POST",
+            "mode": _redact_text(mode, 40),
+            "source": _redact_text(source, 80),
+        }
         with self.db() as conn:
-            if event == "http_request_begin":
-                # A caller-supplied Request ID can theoretically be reused. Treat a new begin event
-                # as a fresh request so an old event chain never contaminates a later export.
-                conn.execute("DELETE FROM request_record_events WHERE request_id=?", (request_id,))
-                conn.execute(
-                    """INSERT INTO request_records(
-                           request_id,started_at,ended_at,method,path,status_code,elapsed_ms,
-                           client,mode,content_type,content_length,event_count,last_component,
-                           last_event,error_type,error
-                       ) VALUES(?,?,?,?,?,NULL,NULL,?,?,?,?,0,'','','','')
-                       ON CONFLICT(request_id) DO UPDATE SET
-                           started_at=excluded.started_at,
-                           ended_at='',
-                           method=excluded.method,
-                           path=excluded.path,
-                           status_code=NULL,
-                           elapsed_ms=NULL,
-                           client=excluded.client,
-                           mode=excluded.mode,
-                           content_type=excluded.content_type,
-                           content_length=excluded.content_length,
-                           event_count=0,
-                           last_component='',
-                           last_event='',
-                           error_type='',
-                           error=''""",
-                    (
-                        request_id,
-                        occurred_at,
-                        "",
-                        _redact_text(cleaned.get("method"), 16),
-                        _redact_text(cleaned.get("path"), 500),
-                        _redact_text(cleaned.get("client"), 160),
-                        _redact_text(cleaned.get("mode"), 80),
-                        _redact_text(cleaned.get("content_type"), 160),
-                        _redact_text(cleaned.get("content_length"), 40),
-                    ),
-                )
-            else:
-                conn.execute(
-                    "INSERT OR IGNORE INTO request_records(request_id,started_at) VALUES(?,?)",
-                    (request_id, occurred_at),
-                )
-
             conn.execute(
-                """INSERT INTO request_record_events(
-                       request_id,occurred_at,level,component,event,payload_json
-                   ) VALUES(?,?,?,?,?,?)""",
-                (request_id, occurred_at, safe_level, component, event, payload_json),
+                """INSERT INTO provider_request_records(
+                       record_id,request_id,started_at,ended_at,provider_id,provider,model,protocol,
+                       target,method,mode,source,status_code,elapsed_ms,outcome,event_count,last_event,
+                       error_type,error
+                   ) VALUES(?,?,?,'',?,?,?,?,?,?,?,?,NULL,NULL,'running',1,'provider_request_begin','','')""",
+                (
+                    record_id,
+                    safe["request_id"],
+                    occurred_at,
+                    safe["provider_id"],
+                    safe["provider"],
+                    safe["model"],
+                    safe["protocol"],
+                    safe["target"],
+                    safe["method"],
+                    safe["mode"],
+                    safe["source"],
+                ),
             )
             conn.execute(
-                """UPDATE request_records
-                   SET event_count=event_count+1,last_component=?,last_event=?
-                   WHERE request_id=?""",
-                (component, event, request_id),
+                """INSERT INTO provider_request_events(record_id,occurred_at,level,event,payload_json)
+                   VALUES(?,?,?,?,?)""",
+                (
+                    record_id,
+                    occurred_at,
+                    "info",
+                    "provider_request_begin",
+                    json.dumps(_clean_payload(safe), ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            self._prune(conn)
+        return record_id
+
+    def add_event(self, record_id: str, event: str, *, level: str = "info", **fields: Any) -> None:
+        normalized = _redact_text(record_id, 80)
+        if not normalized:
+            return
+        occurred_at = _now()
+        safe_event = _redact_text(event, 160) or "event"
+        safe_level = _redact_text(level, 20).lower() or "info"
+        payload = _clean_payload(fields)
+        if not isinstance(payload, dict):
+            payload = {}
+        with self.db() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM provider_request_records WHERE record_id=?",
+                (normalized,),
+            ).fetchone()
+            if exists is None:
+                return
+            conn.execute(
+                """INSERT INTO provider_request_events(record_id,occurred_at,level,event,payload_json)
+                   VALUES(?,?,?,?,?)""",
+                (
+                    normalized,
+                    occurred_at,
+                    safe_level,
+                    safe_event,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            conn.execute(
+                """UPDATE provider_request_records
+                   SET event_count=event_count+1,last_event=? WHERE record_id=?""",
+                (safe_event, normalized),
             )
 
-            if event == "http_request_end":
-                conn.execute(
-                    """UPDATE request_records
-                       SET ended_at=?,status_code=?,elapsed_ms=?
-                       WHERE request_id=?""",
-                    (
-                        occurred_at,
-                        _optional_int(cleaned.get("status_code")),
-                        _optional_int(cleaned.get("elapsed_ms")),
-                        request_id,
-                    ),
-                )
-            elif event == "http_request_exception":
-                conn.execute(
-                    """UPDATE request_records
-                       SET ended_at=?,elapsed_ms=?,error_type=?,error=?
-                       WHERE request_id=?""",
-                    (
-                        occurred_at,
-                        _optional_int(cleaned.get("elapsed_ms")),
-                        _redact_text(cleaned.get("error_type"), 160),
-                        _redact_text(cleaned.get("error"), 2000),
-                        request_id,
-                    ),
-                )
-
-            if event == "http_request_begin":
-                self._prune(conn)
+    def finish(
+        self,
+        record_id: str,
+        *,
+        status_code: int | None = None,
+        elapsed_ms: int | None = None,
+        outcome: str,
+        error_type: str = "",
+        error: str = "",
+        content_type: str = "",
+    ) -> None:
+        normalized = _redact_text(record_id, 80)
+        if not normalized:
+            return
+        safe_outcome = _redact_text(outcome, 20).lower()
+        if safe_outcome not in {"success", "error"}:
+            safe_outcome = "error"
+        occurred_at = _now()
+        payload = {
+            "status_code": _optional_int(status_code),
+            "elapsed_ms": _optional_int(elapsed_ms),
+            "outcome": safe_outcome,
+            "error_type": _redact_text(error_type, 160),
+            "error": _redact_text(error, 2000),
+            "content_type": _redact_text(content_type, 180),
+        }
+        event = "provider_request_success" if safe_outcome == "success" else "provider_request_error"
+        level = "info" if safe_outcome == "success" else "warning"
+        with self.db() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM provider_request_records WHERE record_id=?",
+                (normalized,),
+            ).fetchone()
+            if exists is None:
+                return
+            conn.execute(
+                """INSERT INTO provider_request_events(record_id,occurred_at,level,event,payload_json)
+                   VALUES(?,?,?,?,?)""",
+                (
+                    normalized,
+                    occurred_at,
+                    level,
+                    event,
+                    json.dumps(_clean_payload(payload), ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            conn.execute(
+                """UPDATE provider_request_records
+                   SET ended_at=?,status_code=?,elapsed_ms=?,outcome=?,event_count=event_count+1,
+                       last_event=?,error_type=?,error=?
+                   WHERE record_id=?""",
+                (
+                    occurred_at,
+                    payload["status_code"],
+                    payload["elapsed_ms"],
+                    safe_outcome,
+                    event,
+                    payload["error_type"],
+                    payload["error"],
+                    normalized,
+                ),
+            )
 
     def _prune(self, conn: sqlite3.Connection) -> None:
         cutoff = (datetime.now(UTC) - timedelta(days=_RETENTION_DAYS)).isoformat(timespec="milliseconds")
         stale_ids = [
             str(row[0])
             for row in conn.execute(
-                "SELECT request_id FROM request_records WHERE started_at < ?",
+                "SELECT record_id FROM provider_request_records WHERE started_at < ?",
                 (cutoff,),
             ).fetchall()
         ]
         overflow_ids = [
             str(row[0])
             for row in conn.execute(
-                """SELECT request_id FROM request_records
-                   ORDER BY started_at DESC
-                   LIMIT -1 OFFSET ?""",
+                """SELECT record_id FROM provider_request_records
+                   ORDER BY started_at DESC LIMIT -1 OFFSET ?""",
                 (_MAX_RECORDS,),
             ).fetchall()
         ]
         remove_ids = list(dict.fromkeys(stale_ids + overflow_ids))
         if not remove_ids:
             return
-        conn.executemany("DELETE FROM request_record_events WHERE request_id=?", [(item,) for item in remove_ids])
-        conn.executemany("DELETE FROM request_records WHERE request_id=?", [(item,) for item in remove_ids])
+        conn.executemany("DELETE FROM provider_request_events WHERE record_id=?", [(item,) for item in remove_ids])
+        conn.executemany("DELETE FROM provider_request_records WHERE record_id=?", [(item,) for item in remove_ids])
 
     def list(
         self,
         *,
-        method: str = "",
+        provider: str = "",
         status: str = "",
         query: str = "",
         limit: int = 300,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
-        requested_method = _redact_text(method, 16).upper()
-        if requested_method:
-            clauses.append("method=?")
-            params.append(requested_method)
+        requested_provider = _redact_text(provider, 180)
+        if requested_provider:
+            clauses.append("provider=?")
+            params.append(requested_provider)
 
         status_filter = _redact_text(status, 20).lower()
         if status_filter == "success":
-            clauses.append("ended_at<>'' AND status_code BETWEEN 200 AND 399 AND error_type='' ")
+            clauses.append("outcome='success'")
         elif status_filter == "error":
-            clauses.append("(error_type<>'' OR status_code>=400)")
+            clauses.append("outcome='error'")
         elif status_filter == "running":
-            clauses.append("ended_at='' ")
+            clauses.append("outcome='running'")
 
         needle_text = _redact_text(query, 120)
         if needle_text:
             clauses.append(
-                "(request_id LIKE ? OR path LIKE ? OR client LIKE ? OR mode LIKE ? OR "
-                "last_event LIKE ? OR error_type LIKE ? OR error LIKE ?)"
+                "(record_id LIKE ? OR request_id LIKE ? OR provider LIKE ? OR model LIKE ? OR "
+                "protocol LIKE ? OR target LIKE ? OR source LIKE ? OR error_type LIKE ? OR error LIKE ?)"
             )
             needle = f"%{needle_text}%"
-            params.extend([needle] * 7)
+            params.extend([needle] * 9)
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, min(int(limit), 2000)))
         with self.db() as conn:
             rows = conn.execute(
-                f"SELECT * FROM request_records{where} ORDER BY started_at DESC LIMIT ?",
+                f"SELECT * FROM provider_request_records{where} ORDER BY started_at DESC LIMIT ?",
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def methods(self) -> list[str]:
+    def providers(self) -> list[str]:
         with self.db() as conn:
             rows = conn.execute(
-                """SELECT method,MAX(started_at) latest
-                   FROM request_records WHERE method<>''
-                   GROUP BY method ORDER BY latest DESC"""
+                """SELECT provider,MAX(started_at) latest
+                   FROM provider_request_records WHERE provider<>''
+                   GROUP BY provider ORDER BY latest DESC"""
             ).fetchall()
-        return [str(row["method"]) for row in rows]
+        return [str(row["provider"]) for row in rows]
 
-    def get(self, request_id: str) -> dict[str, Any] | None:
-        normalized = _redact_text(request_id, 80)
+    def get(self, record_id: str) -> dict[str, Any] | None:
+        normalized = _redact_text(record_id, 80)
         if not normalized:
             return None
         with self.db() as conn:
             row = conn.execute(
-                "SELECT * FROM request_records WHERE request_id=?",
+                "SELECT * FROM provider_request_records WHERE record_id=?",
                 (normalized,),
             ).fetchone()
             if row is None:
                 return None
             event_rows = conn.execute(
-                """SELECT occurred_at,level,component,event,payload_json
-                   FROM request_record_events WHERE request_id=? ORDER BY id ASC""",
+                """SELECT occurred_at,level,event,payload_json
+                   FROM provider_request_events WHERE record_id=? ORDER BY id ASC""",
                 (normalized,),
             ).fetchall()
 
