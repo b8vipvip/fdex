@@ -5,6 +5,8 @@ from typing import Callable
 
 _CURRENT_USER_MARKER = "\n\n当前用户请求：\n"
 _TRUSTED_TOOL_MARKER = "[FDEX_TRUSTED_TOOL_DATA]"
+_DOCUMENT_BODY_MARKER = "以下内容是 FDEX 从用户实际附件中提取的正文"
+_DOCUMENT_NOTE_MARKER = "文件提取说明："
 _CODEX_BOUNDARY_MARKER = "FDEX AGENT HOST BOUNDARY:"
 _CODEX_CURRENT_REQUEST_MARKER = "CURRENT USER REQUEST:\n"
 
@@ -12,10 +14,10 @@ _CODEX_CURRENT_REQUEST_MARKER = "CURRENT USER REQUEST:\n"
 def current_turn_routing_prompt(prompt: str) -> str:
     """Return only the current generic-employee turn for multimodal task classification.
 
-    Generic Web employee chat keeps recent conversation and trusted host facts inside the actual
-    model prompt so the model can answer with context. Those older/contextual strings must not,
-    however, decide whether this *new* turn is text, image generation, vision, or audio. Otherwise a
-    historical request such as "生成一张图片" can make a later plain "你好" call the image model.
+    Generic Web employee chat keeps recent conversation, trusted host facts, and extracted document
+    text inside the actual model prompt so the model can answer with context. Those contextual strings
+    must not decide whether this *new* turn is text, image generation, vision, or audio. Otherwise an
+    old request such as "生成一张图片" can make a later plain "你好" call the image model.
 
     Native Coding Agent / Codex prompts have their own Turn semantics and must remain byte-for-byte
     untouched here. Coding Agent traffic normally never reaches client_ai at all; the explicit guard
@@ -30,8 +32,9 @@ def current_turn_routing_prompt(prompt: str) -> str:
 
     # Ordinary employees can append deterministic host facts after the user message. They are useful
     # model context but are not user intent and therefore must not promote a text turn to image/audio.
-    if _TRUSTED_TOOL_MARKER in text:
-        text = text.split(_TRUSTED_TOOL_MARKER, 1)[0]
+    for marker in (_TRUSTED_TOOL_MARKER, _DOCUMENT_BODY_MARKER, _DOCUMENT_NOTE_MARKER):
+        if marker in text:
+            text = text.split(marker, 1)[0]
 
     return text.strip()
 
