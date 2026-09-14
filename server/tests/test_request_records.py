@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import app.client_log_admin_routes as client_log_admin_routes
+import app.request_trace as request_trace_module
 from app.main import app
 from app.request_records import RequestRecordStore
 
@@ -14,7 +15,7 @@ def test_request_record_store_groups_events_and_redacts_secrets(tmp_path: Path) 
     request_id = "request-record-test-1"
     store.record_event(
         {
-            "component": "client_ai",
+            "component": "http",
             "event": "http_request_begin",
             "request_id": request_id,
             "method": "POST",
@@ -36,7 +37,7 @@ def test_request_record_store_groups_events_and_redacts_secrets(tmp_path: Path) 
     )
     store.record_event(
         {
-            "component": "client_ai",
+            "component": "http",
             "event": "http_request_end",
             "request_id": request_id,
             "status_code": 200,
@@ -57,6 +58,24 @@ def test_request_record_store_groups_events_and_redacts_secrets(tmp_path: Path) 
     assert record["events"][0]["payload"]["access_token"] == "[REDACTED]"
 
 
+def test_public_api_request_gets_request_id_and_trace_events(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+
+    class CaptureStore:
+        def record_event(self, payload, *, level="info"):
+            events.append({"payload": payload, "level": level})
+
+    monkeypatch.setattr(request_trace_module, "request_record_store", lambda: CaptureStore())
+    client = TestClient(app, base_url="http://testserver")
+    response = client.get("/api/health", headers={"X-FDEX-Request-ID": "health-trace-1"})
+
+    assert response.status_code == 200
+    assert response.headers["x-fdex-request-id"] == "health-trace-1"
+    assert [item["payload"]["event"] for item in events] == ["http_request_begin", "http_request_end"]
+    assert events[0]["payload"]["path"] == "/api/health"
+    assert events[1]["payload"]["status_code"] == 200
+
+
 def test_admin_request_records_page_and_single_export(monkeypatch) -> None:
     record = {
         "request_id": "request-export-1",
@@ -71,7 +90,7 @@ def test_admin_request_records_page_and_single_export(monkeypatch) -> None:
         "content_type": "application/json",
         "content_length": "20",
         "event_count": 2,
-        "last_component": "client_ai",
+        "last_component": "http",
         "last_event": "http_request_end",
         "error_type": "",
         "error": "",
@@ -79,14 +98,14 @@ def test_admin_request_records_page_and_single_export(monkeypatch) -> None:
             {
                 "occurred_at": "2026-09-14T08:00:00.000+00:00",
                 "level": "info",
-                "component": "client_ai",
+                "component": "http",
                 "event": "http_request_begin",
                 "payload": {"request_id": "request-export-1", "event": "http_request_begin"},
             },
             {
                 "occurred_at": "2026-09-14T08:00:00.100+00:00",
                 "level": "info",
-                "component": "client_ai",
+                "component": "http",
                 "event": "http_request_end",
                 "payload": {"request_id": "request-export-1", "event": "http_request_end", "status_code": 200},
             },
