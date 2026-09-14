@@ -135,12 +135,12 @@ def export_service_runtime_logs(request: Request, lines: int = 1000) -> Response
     )
 
 
-def _request_filters(method: str, status: str, q: str, limit: int) -> dict[str, object]:
+def _request_filters(provider: str, status: str, q: str, limit: int) -> dict[str, object]:
     requested_status = (status or "").strip().lower()[:20]
     if requested_status not in {"", "success", "error", "running"}:
         requested_status = ""
     return {
-        "method": (method or "").strip().upper()[:16],
+        "provider": (provider or "").strip()[:180],
         "status": requested_status,
         "query": (q or "").strip()[:120],
         "limit": max(1, min(int(limit), 2000)),
@@ -150,14 +150,14 @@ def _request_filters(method: str, status: str, q: str, limit: int) -> dict[str, 
 @router.get("/requests", response_class=HTMLResponse, response_model=None)
 def request_records_page(
     request: Request,
-    method: str = "",
+    provider: str = "",
     status: str = "",
     q: str = "",
     limit: int = 300,
 ) -> Response:
     if redirect := _guard(request):
         return redirect
-    filters = _request_filters(method, status, q, limit)
+    filters = _request_filters(provider, status, q, limit)
     store = request_record_store()
     records = store.list(**filters)
     return templates.TemplateResponse(
@@ -165,7 +165,7 @@ def request_records_page(
         _ctx(
             request,
             records=records,
-            methods=store.methods(),
+            providers=store.providers(),
             filters=filters,
         ),
     )
@@ -174,20 +174,28 @@ def request_records_page(
 def _request_text_export(record: dict[str, object]) -> str:
     events = record.get("events") if isinstance(record.get("events"), list) else []
     lines = [
-        "FDEX Request Record",
+        "FDEX Provider AI Request Record",
         f"Exported-At: {datetime.now(UTC).isoformat(timespec='seconds')}",
+        f"Record-ID: {record.get('record_id') or ''}",
         f"Request-ID: {record.get('request_id') or ''}",
         f"Started-At: {record.get('started_at') or ''}",
         f"Ended-At: {record.get('ended_at') or ''}",
+        f"Provider: {record.get('provider') or ''}",
+        f"Provider-ID: {record.get('provider_id') if record.get('provider_id') is not None else ''}",
+        f"Model: {record.get('model') or ''}",
+        f"Protocol: {record.get('protocol') or ''}",
+        f"Target: {record.get('target') or ''}",
         f"Method: {record.get('method') or ''}",
-        f"Path: {record.get('path') or ''}",
+        f"Mode: {record.get('mode') or ''}",
+        f"Source: {record.get('source') or ''}",
         f"Status-Code: {record.get('status_code') if record.get('status_code') is not None else ''}",
         f"Elapsed-Ms: {record.get('elapsed_ms') if record.get('elapsed_ms') is not None else ''}",
-        f"Client: {record.get('client') or ''}",
-        f"Mode: {record.get('mode') or ''}",
+        f"Outcome: {record.get('outcome') or ''}",
+        f"Error-Type: {record.get('error_type') or ''}",
+        f"Error: {record.get('error') or ''}",
         f"Events: {len(events)}",
         "",
-        "--- Event Chain ---",
+        "--- Provider Request Event Chain ---",
     ]
     for item in events:
         if not isinstance(item, dict):
@@ -195,22 +203,22 @@ def _request_text_export(record: dict[str, object]) -> str:
         payload = json.dumps(item.get("payload") or {}, ensure_ascii=False, separators=(",", ":"))
         lines.append(
             f"{item.get('occurred_at') or ''} [{str(item.get('level') or 'info').upper()}] "
-            f"{item.get('component') or 'server'}.{item.get('event') or 'event'} {payload}"
+            f"{item.get('event') or 'event'} {payload}"
         )
     return "\n".join(lines) + "\n"
 
 
-@router.get("/requests/{request_id}/export", response_model=None)
-def export_request_record(request: Request, request_id: str) -> Response:
+@router.get("/requests/{record_id}/export", response_model=None)
+def export_request_record(request: Request, record_id: str) -> Response:
     if redirect := _guard(request):
         return redirect
-    record = request_record_store().get(request_id)
+    record = request_record_store().get(record_id)
     if record is None:
-        return Response("请求记录不存在或已超过保留期限。\n", status_code=404, media_type="text/plain; charset=utf-8")
-    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", str(record.get("request_id") or "request")).strip("-._")
+        return Response("供应商 AI 请求记录不存在或已超过保留期限。\n", status_code=404, media_type="text/plain; charset=utf-8")
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", str(record.get("record_id") or "request")).strip("-._")
     safe_id = safe_id[:80] or "request"
     return Response(
         _request_text_export(record),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="fdex-request-{safe_id}.log"'},
+        headers={"Content-Disposition": f'attachment; filename="fdex-provider-request-{safe_id}.log"'},
     )
