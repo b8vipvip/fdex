@@ -48,7 +48,7 @@ from app.provider_protocol_runtime import install_provider_protocol_runtime
 from app.realtime_diagnostic_admin import router as realtime_diagnostic_admin_router
 from app.realtime_voice import router as realtime_voice_router
 from app.remote_mcp_gateway import remote_mcp_lease_store, router as remote_mcp_gateway_router
-from app.request_trace import log_ai_event, request_id_for
+from app.request_trace import log_request_event, request_id_for
 from app.schemas import HealthResponse, PublicConfigResponse, VersionResponse
 from app.update_monitor_routes import router as update_monitor_router
 from app.user_account_auth_routes import router as user_account_auth_router
@@ -121,14 +121,19 @@ app.add_middleware(StreamSafeFdexMemoryMiddleware)
 app.add_middleware(CenterUserAuthMiddleware)
 
 
+def _is_public_api_request(path: str) -> bool:
+    api_prefix = settings.api_prefix.rstrip("/") or "/api"
+    return path == api_prefix or path.startswith(api_prefix + "/")
+
+
 @app.middleware("http")
-async def trace_client_ai_requests(request: Request, call_next):
-    if request.url.path not in {"/api/client/ai", "/api/client/ai/stream"}:
+async def trace_api_requests(request: Request, call_next):
+    if not _is_public_api_request(request.url.path):
         return await call_next(request)
     request_id = request_id_for(request)
     started = perf_counter()
     client_host = request.client.host if request.client else ""
-    log_ai_event(
+    log_request_event(
         "http_request_begin",
         request_id,
         method=request.method,
@@ -141,7 +146,7 @@ async def trace_client_ai_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        log_ai_event(
+        log_request_event(
             "http_request_exception",
             request_id,
             level="error",
@@ -151,7 +156,7 @@ async def trace_client_ai_requests(request: Request, call_next):
         )
         raise
     response.headers["X-FDEX-Request-ID"] = request_id
-    log_ai_event(
+    log_request_event(
         "http_request_end",
         request_id,
         status_code=response.status_code,
