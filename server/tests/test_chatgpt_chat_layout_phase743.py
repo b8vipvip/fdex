@@ -38,8 +38,16 @@ def test_chat_composer_uses_compact_autogrowing_input_and_centered_icons() -> No
     assert "field-sizing:content" in tuning
     assert "min-height:40px" in tuning
     assert "max-height:180px" in tuning
-    assert "stroke-width='2.6'" in tuning
-    assert "stroke-width='2.8'" in tuning
-    assert "center/20px 20px no-repeat" in tuning
-    assert "center/21px 21px no-repeat" in tuning
+
+    plus = tuning.split(".is-chat-route .file-picker::before{", 1)[1].split("}", 1)[0]
+    send = tuning.split(".is-chat-route .composer button.primary::before{", 1)[1].split("}", 1)[0]
+    assert "position:absolute" in plus
+    assert "left:50%" in plus and "top:50%" in plus
+    assert "transform:translate(-50%,-50%)" in plus
+    assert "M10.75 4.5h2.5" in plus
+    assert "position:absolute" in send
+    assert "left:50%" in send and "top:50%" in send
+    assert "calc(-50% + .5px)" in send
+    assert "M10.75 19.5V9.2" in send
+
     assert ".is-chat-route .composer>.fine{display:none}" in tuning
