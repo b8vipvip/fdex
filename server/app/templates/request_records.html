@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}请求记录 · FDEX{% endblock %}
+{% block heading %}请求记录{% endblock %}
+{% block subheading %}查看服务端 AI 请求链路，并按 Request ID 导出单次请求的完整诊断日志{% endblock %}
+{% block actions %}<a class="button secondary" href="/admin/requests">刷新记录</a>{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="panel-header">
+        <div>
+            <h2>服务端请求记录</h2>
+            <p>记录现有客户端 AI 请求的结构化链路，包括请求时间、接口、状态码、耗时、调用模式和内部诊断事件。不会保存请求正文或响应正文；明显的 Token、Cookie、密码与密钥字段会在落盘前再次脱敏。</p>
+        </div>
+    </div>
+
+    <form method="get" action="/admin/requests" class="form-grid" style="margin-bottom:18px">
+        <label>请求方法
+            <select name="method">
+                <option value="">全部方法</option>
+                {% for item in methods %}<option value="{{ item }}" {% if filters.method == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+            </select>
+        </label>
+        <label>请求状态
+            <select name="status">
+                <option value="" {% if not filters.status %}selected{% endif %}>全部状态</option>
+                <option value="success" {% if filters.status == 'success' %}selected{% endif %}>成功</option>
+                <option value="error" {% if filters.status == 'error' %}selected{% endif %}>失败 / 异常</option>
+                <option value="running" {% if filters.status == 'running' %}selected{% endif %}>处理中</option>
+            </select>
+        </label>
+        <label>关键字
+            <input name="q" value="{{ filters.query }}" maxlength="120" placeholder="Request ID、路径、客户端、事件、错误">
+        </label>
+        <label>条数
+            <select name="limit">
+                {% for amount in [100,300,500,1000,2000] %}<option value="{{ amount }}" {% if filters.limit == amount %}selected{% endif %}>最近 {{ amount }} 条</option>{% endfor %}
+            </select>
+        </label>
+        <div style="display:flex;align-items:end;gap:8px">
+            <button class="button" type="submit">筛选</button>
+            <a class="button secondary" href="/admin/requests">清除筛选</a>
+        </div>
+    </form>
+
+    <p class="fine" style="margin-bottom:16px">请求记录最多保留 30 天 / 20,000 条。每行“导出日志”仅导出该 Request ID 对应的完整事件链，适合直接发送给开发人员定位问题。</p>
+
+    {% if records %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr><th>请求时间（UTC）</th><th>Request ID</th><th>接口</th><th>状态 / 耗时</th><th>客户端 / 模式</th><th>事件</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+            {% for item in records %}
+                <tr>
+                    <td><code>{{ item.started_at }}</code>{% if item.ended_at %}<br><span class="fine">结束：{{ item.ended_at }}</span>{% endif %}</td>
+                    <td><code>{{ item.request_id }}</code></td>
+                    <td><strong>{{ item.method or '-' }}</strong><br><code>{{ item.path or '-' }}</code></td>
+                    <td>
+                        {% if item.error_type or (item.status_code is not none and item.status_code >= 400) %}
+                            <span class="badge error">{{ item.status_code if item.status_code is not none else '异常' }}</span>
+                        {% elif item.ended_at %}
+                            <span class="badge success">{{ item.status_code if item.status_code is not none else '完成' }}</span>
+                        {% else %}
+                            <span class="badge warning">处理中</span>
+                        {% endif %}
+                        <br><span class="fine">{{ item.elapsed_ms ~ ' ms' if item.elapsed_ms is not none else '-' }}</span>
+                        {% if item.error_type %}<br><span class="fine">{{ item.error_type }}</span>{% endif %}
+                    </td>
+                    <td>{{ item.client or '-' }}<br><span class="fine">{{ item.mode or 'default' }}</span></td>
+                    <td><strong>{{ item.event_count }}</strong> 条<br><span class="fine">{{ item.last_component }} · {{ item.last_event }}</span></td>
+                    <td><a class="button secondary small" href="/admin/requests/{{ item.request_id }}/export">导出日志</a></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="empty-text">当前筛选条件下暂无请求记录。客户端发起 AI 请求后，这里会自动出现对应的 Request ID 和诊断事件。</p>
+    {% endif %}
+</section>
+{% endblock %}
