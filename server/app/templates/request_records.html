@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}请求记录 · FDEX{% endblock %}
 {% block heading %}请求记录{% endblock %}
-{% block subheading %}查看服务端 AI 请求链路，并按 Request ID 导出单次请求的完整诊断日志{% endblock %}
+{% block subheading %}查看服务端 API 请求链路，并按 Request ID 导出单次请求的完整诊断日志{% endblock %}
 {% block actions %}<a class="button secondary" href="/admin/requests">刷新记录</a>{% endblock %}
 
 {% block content %}
@@ -9,7 +9,7 @@
     <div class="panel-header">
         <div>
             <h2>服务端请求记录</h2>
-            <p>记录现有客户端 AI 请求的结构化链路，包括请求时间、接口、状态码、耗时、调用模式和内部诊断事件。不会保存请求正文或响应正文；明显的 Token、Cookie、密码与密钥字段会在落盘前再次脱敏。</p>
+            <p>记录所有公开 API 请求的结构化链路，包括请求时间、接口、状态码、耗时、调用模式和诊断事件；AI 请求还会附带更详细的供应商与处理事件。不会保存请求正文或响应正文；明显的 Token、Cookie、密码与密钥字段会在落盘前再次脱敏。</p>
         </div>
     </div>
 
@@ -76,7 +76,7 @@
         </table>
     </div>
     {% else %}
-    <p class="empty-text">当前筛选条件下暂无请求记录。客户端发起 AI 请求后，这里会自动出现对应的 Request ID 和诊断事件。</p>
+    <p class="empty-text">当前筛选条件下暂无请求记录。任意公开 API 请求到达服务端后，这里会自动出现对应的 Request ID 和诊断事件。</p>
     {% endif %}
 </section>
 {% endblock %}
