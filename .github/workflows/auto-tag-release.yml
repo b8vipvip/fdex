@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows: ["Build and Test"]
     types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
