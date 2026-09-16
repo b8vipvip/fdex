@@ -155,21 +155,19 @@ jobs:
           fetch-depth: 0
       - name: Create validated release tag
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest="$(git tag -l 'v*.*.*' --sort=-v:refname | head -n1)"
+          git fetch --tags --force
+          latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
           if [[ -z "$latest" ]]; then
-            next="v0.1.0"
+            next="v1.0.0"
           else
-            IFS=. read -r major minor patch <<< "${latest#v}"
-            next="v${major}.${minor}.$((patch + 1))"
+            version="${latest#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+            next="v${major}.${minor}.$((10#$patch + 1))"
           fi
-          if git rev-parse "$next" >/dev/null 2>&1; then
-            echo "Tag $next already exists; nothing to do."
-            exit 0
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "$next" "$GITHUB_SHA"
           git push origin "$next"
-          echo "Created $next for validated main commit $GITHUB_SHA"
+          echo "Tagged validated main commit $GITHUB_SHA as $next; Release Android APK remains the sole build/publish authority."
