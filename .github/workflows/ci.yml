@@ -50,7 +50,7 @@ jobs:
                 app/*|gradle/*|gradlew|gradlew.bat|build.gradle|build.gradle.kts|settings.gradle|settings.gradle.kts|gradle.properties)
                   android=true
                   ;;
-                server/*|deploy/*|scripts/update_server.sh|docker-compose.yml|docker-compose.memory.yml)
+                server/*|deploy/*|scripts/*.sh|docker-compose.yml|docker-compose.memory.yml)
                   server=true
                   ;;
                 .github/workflows/ci.yml)
