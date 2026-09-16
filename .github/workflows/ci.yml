@@ -15,8 +15,59 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Path Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+      server: ${{ steps.filter.outputs.server }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Detect affected components
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          android=false
+          server=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            android=true
+            server=true
+          else
+            base="$BASE_SHA"
+            if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+              base="$(git rev-parse HEAD^)"
+            fi
+            git diff --name-only "$base" "$GITHUB_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            cat "$RUNNER_TEMP/changed-files.txt"
+            while IFS= read -r path; do
+              case "$path" in
+                app/*|gradle/*|gradlew|gradlew.bat|build.gradle|build.gradle.kts|settings.gradle|settings.gradle.kts|gradle.properties)
+                  android=true
+                  ;;
+                server/*)
+                  server=true
+                  ;;
+                .github/workflows/ci.yml)
+                  android=true
+                  server=true
+                  ;;
+              esac
+            done < "$RUNNER_TEMP/changed-files.txt"
+          fi
+          echo "android=$android" >> "$GITHUB_OUTPUT"
+          echo "server=$server" >> "$GITHUB_OUTPUT"
+          echo "Path Gate: android=$android server=$server"
+
   android:
     name: Android Debug APK
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -25,7 +76,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
       - name: Install Android SDK 35
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - uses: gradle/actions/setup-gradle@v4
@@ -53,6 +106,8 @@ jobs:
 
   server:
     name: FastAPI Tests
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
