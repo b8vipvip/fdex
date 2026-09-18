@@ -1,6 +1,7 @@
-import sys,unittest
+import sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
+from gptauto.audit import write_audit
 from gptauto.engine import begin_verify,criterion,finish,gate,is_complete,plan_ready,start
 from gptauto.model import CriterionStatus,Gate,GateStatus,Task
 from gptauto.planner import GoalPlanner
@@ -17,4 +18,9 @@ class GPTAutoEmbeddedTests(unittest.TestCase):
         begin_verify(t);self.assertFalse(is_complete(t))
         for i in range(len(t.definition_of_done)):criterion(t,i,CriterionStatus.PASSED,"verified")
         finish(t);self.assertTrue(is_complete(t))
+    def test_audit_bundle_is_generated(self):
+        t=self.make("修改文档")
+        with tempfile.TemporaryDirectory() as d:
+            paths=write_audit(t,d)
+            for key in ("task_log","state","events","summary"): self.assertTrue(Path(paths[key]).exists())
 if __name__=="__main__":unittest.main()
