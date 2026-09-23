@@ -34,51 +34,289 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Wait for terminal post-merge gates
+      - name: Resolve and start post-merge validation gates
+        id: validation-plan
+        env:
+          GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+          RELEASE_REQUIRED: ${{ inputs.release_required }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "CI" > /tmp/gptauto-required-workflows.txt
+          catalog="$(gh workflow list --repo "$REPOSITORY" --all --json name,path,state)"
+          release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
+
+          if [[ "$RELEASE_REQUIRED" == "true" ]]; then
+            [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
+            gh workflow view "$release_path" --repo "$REPOSITORY" --yaml > /tmp/gptauto-release-workflow.yml
+            python - <<'PY' >> /tmp/gptauto-required-workflows.txt
+          from pathlib import Path
+          import re
+
+          lines = Path("/tmp/gptauto-release-workflow.yml").read_text(encoding="utf-8").splitlines()
+          deps = []
+          for index, line in enumerate(lines):
+              if line.strip() != "workflow_run:":
+                  continue
+              workflow_run_indent = len(line) - len(line.lstrip())
+              for offset in range(index + 1, len(lines)):
+                  current = lines[offset]
+                  stripped = current.strip()
+                  indent = len(current) - len(current.lstrip())
+                  if stripped and indent <= workflow_run_indent:
+                      break
+                  match = re.match(r"^\s*workflows:\s*(.*)$", current)
+                  if not match:
+                      continue
+                  rest = match.group(1).strip()
+                  if rest:
+                      if rest.startswith("[") and rest.endswith("]"):
+                          values = rest[1:-1].split(",")
+                      else:
+                          values = [rest]
+                      deps.extend(value.strip().strip("'\"") for value in values if value.strip())
+                  else:
+                      workflows_indent = indent
+                      for nested in lines[offset + 1:]:
+                          nested_stripped = nested.strip()
+                          nested_indent = len(nested) - len(nested.lstrip())
+                          if nested_stripped and nested_indent <= workflows_indent:
+                              break
+                          item = re.match(r"^\s*-\s*(.+?)\s*$", nested)
+                          if item:
+                              deps.append(item.group(1).strip().strip("'\""))
+                  break
+              break
+
+          seen = set()
+          for dep in deps:
+              if dep and dep not in seen and dep != "Release":
+                  seen.add(dep)
+                  print(dep)
+          PY
+          fi
+
+          awk 'NF && !seen[$0]++' /tmp/gptauto-required-workflows.txt > /tmp/gptauto-required-workflows.unique
+          mv /tmp/gptauto-required-workflows.unique /tmp/gptauto-required-workflows.txt
+          required_csv="$(paste -sd ',' /tmp/gptauto-required-workflows.txt)"
+          echo "required-workflows=$required_csv" >> "$GITHUB_OUTPUT"
+          echo "Required post-merge workflows: $required_csv"
+
+          current_main="$(gh api "repos/$REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')"
+          runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+          while IFS= read -r workflow; do
+            [[ -n "$workflow" ]] || continue
+            count="$(jq --arg workflow "$workflow" '[.workflow_runs[] | select(.name == $workflow)] | length' <<<"$runs")"
+            if [[ "$count" == "0" ]]; then
+              [[ "$current_main" == "$MERGE_SHA" ]] || {
+                echo "::error::Cannot safely dispatch missing $workflow for $MERGE_SHA because $DEFAULT_BRANCH moved to $current_main"
+                exit 1
+              }
+              path="$(jq -r --arg workflow "$workflow" '[.[] | select(.name == $workflow and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
+              [[ -n "$path" ]] || { echo "::error::Required workflow $workflow is disabled or does not exist"; exit 1; }
+              gh workflow run "$path" --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
+              echo "Dispatched post-merge workflow: $workflow ($path)"
+            fi
+          done < /tmp/gptauto-required-workflows.txt
+
+      - name: Wait for terminal post-merge validation gates
         id: gates
         env:
           GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
           REPOSITORY: ${{ github.repository }}
           TASK_ID: ${{ inputs.task_id }}
           MERGE_SHA: ${{ inputs.merge_sha }}
-          RELEASE_REQUIRED: ${{ inputs.release_required }}
         shell: bash
         run: |
           set -Eeuo pipefail
           deadline=$((SECONDS + 1800))
           while (( SECONDS < deadline )); do
             runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
-            ci_status="$(jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | reverse | .[0].status // "missing"' <<<"$runs")"
-            ci_conclusion="$(jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | reverse | .[0].conclusion // ""' <<<"$runs")"
-            release_status="completed"
-            release_conclusion="success"
-            if [[ "$RELEASE_REQUIRED" == "true" ]]; then
-              release_status="$(jq -r '[.workflow_runs[] | select(.name == "Release")] | sort_by(.created_at) | reverse | .[0].status // "missing"' <<<"$runs")"
-              release_conclusion="$(jq -r '[.workflow_runs[] | select(.name == "Release")] | sort_by(.created_at) | reverse | .[0].conclusion // ""' <<<"$runs")"
-            fi
-            echo "task=$TASK_ID ci=$ci_status/$ci_conclusion release=$release_status/$release_conclusion"
-            if [[ "$ci_status" == "completed" && "$ci_conclusion" != "success" ]]; then
-              echo "::error::Post-merge CI finished with $ci_conclusion"
-              exit 1
-            fi
-            if [[ "$RELEASE_REQUIRED" == "true" && "$release_status" == "completed" && "$release_conclusion" != "success" ]]; then
-              echo "::error::Release finished with $release_conclusion"
-              exit 1
-            fi
-            if [[ "$ci_status" == "completed" && "$ci_conclusion" == "success" && "$release_status" == "completed" && "$release_conclusion" == "success" ]]; then
-              ci_run_id="$(jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at) | reverse | .[0].id // empty' <<<"$runs")"
-              release_run_id=""
-              if [[ "$RELEASE_REQUIRED" == "true" ]]; then
-                release_run_id="$(jq -r '[.workflow_runs[] | select(.name == "Release" and .conclusion == "success")] | sort_by(.created_at) | reverse | .[0].id // empty' <<<"$runs")"
+            all_ready=true
+            while IFS= read -r workflow; do
+              [[ -n "$workflow" ]] || continue
+              row="$(jq -c --arg workflow "$workflow" '[.workflow_runs[] | select(.name == $workflow)] | sort_by(.created_at, .id) | reverse | .[0] // {}' <<<"$runs")"
+              status="$(jq -r '.status // "missing"' <<<"$row")"
+              conclusion="$(jq -r '.conclusion // ""' <<<"$row")"
+              run_id="$(jq -r '.id // ""' <<<"$row")"
+              echo "task=$TASK_ID workflow=$workflow run=$run_id status=$status conclusion=$conclusion"
+              if [[ "$status" == "completed" && "$conclusion" != "success" ]]; then
+                echo "::error::Required post-merge workflow $workflow finished with $conclusion (run $run_id)"
+                exit 1
               fi
+              if [[ "$status" != "completed" || "$conclusion" != "success" ]]; then
+                all_ready=false
+              fi
+            done < /tmp/gptauto-required-workflows.txt
+
+            if [[ "$all_ready" == "true" ]]; then
+              ci_run_id="$(jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
+              [[ -n "$ci_run_id" ]] || { echo "::error::Required CI success evidence is missing"; exit 1; }
               echo "main-ci-run-id=$ci_run_id" >> "$GITHUB_OUTPUT"
-              echo "release-run-id=$release_run_id" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            sleep 15
+            sleep 10
           done
-          echo "::error::Timed out waiting for post-merge completion gates"
+          echo "::error::Timed out waiting for post-merge validation gates"
           exit 1
+
+      - name: Require published release evidence
+        id: release-proof
+        env:
+          GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+          RELEASE_REQUIRED: ${{ inputs.release_required }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "$RELEASE_REQUIRED" != "true" ]]; then
+            echo "release-published=false" >> "$GITHUB_OUTPUT"
+            echo "release-run-id=" >> "$GITHUB_OUTPUT"
+            echo "release-id=" >> "$GITHUB_OUTPUT"
+            echo "release-tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          find_release_for_merge() {
+            local rid tag resolved
+            while IFS=$'\t' read -r rid tag; do
+              [[ -n "$rid" && -n "$tag" ]] || continue
+              resolved="$(gh api "repos/$REPOSITORY/commits/$tag" --jq '.sha' 2>/dev/null || true)"
+              if [[ "$resolved" == "$MERGE_SHA" ]]; then
+                printf '%s\t%s\n' "$rid" "$tag"
+                return 0
+              fi
+            done < <(gh api "repos/$REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false and .published_at != null) | [.id, .tag_name] | @tsv')
+            return 1
+          }
+
+          proof="$(find_release_for_merge || true)"
+          release_run_id=""
+          if [[ -z "$proof" ]]; then
+            catalog="$(gh workflow list --repo "$REPOSITORY" --all --json name,path,state)"
+            release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
+            [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
+
+            runs_before="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+            baseline="$(jq '[.workflow_runs[] | select(.name == "Release") | .id] | max // 0' <<<"$runs_before")"
+            gh workflow view "$release_path" --repo "$REPOSITORY" --yaml > /tmp/gptauto-release-workflow.yml
+
+            if grep -Eq '^[[:space:]]+source_sha:' /tmp/gptauto-release-workflow.yml; then
+              gh workflow run "$release_path" --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" -f source_sha="$MERGE_SHA"
+            else
+              current_main="$(gh api "repos/$REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')"
+              [[ "$current_main" == "$MERGE_SHA" ]] || {
+                echo "::error::Release workflow has no source_sha input and $DEFAULT_BRANCH moved to $current_main; refusing to publish the wrong commit"
+                exit 1
+              }
+              gh workflow run "$release_path" --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
+            fi
+            echo "Dispatched Release only after all post-merge validation gates passed."
+
+            deadline=$((SECONDS + 900))
+            while (( SECONDS < deadline )); do
+              runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+              row="$(jq -c --argjson baseline "$baseline" '[.workflow_runs[] | select(.name == "Release" and .id > $baseline)] | sort_by(.created_at, .id) | reverse | .[0] // {}' <<<"$runs")"
+              status="$(jq -r '.status // "missing"' <<<"$row")"
+              conclusion="$(jq -r '.conclusion // ""' <<<"$row")"
+              release_run_id="$(jq -r '.id // ""' <<<"$row")"
+              if [[ "$status" == "completed" ]]; then
+                [[ "$conclusion" == "success" ]] || {
+                  echo "::error::Release workflow failed with $conclusion (run $release_run_id)"
+                  exit 1
+                }
+                proof="$(find_release_for_merge || true)"
+                [[ -n "$proof" ]] || {
+                  echo "::error::Release workflow succeeded without published GitHub Release evidence targeting merge $MERGE_SHA (run $release_run_id)"
+                  exit 1
+                }
+                break
+              fi
+              sleep 5
+            done
+            [[ -n "$proof" ]] || { echo "::error::Timed out waiting for published release evidence"; exit 1; }
+          else
+            runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+            release_run_id="$(jq -r '[.workflow_runs[] | select(.name == "Release" and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
+          fi
+
+          release_id="${proof%%$'\t'*}"
+          release_tag="${proof#*$'\t'}"
+          [[ -n "$release_id" && -n "$release_tag" ]] || { echo "::error::Published release proof is malformed"; exit 1; }
+          echo "release-published=true" >> "$GITHUB_OUTPUT"
+          echo "release-run-id=$release_run_id" >> "$GITHUB_OUTPUT"
+          echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "Published release evidence: id=$release_id tag=$release_tag merge=$MERGE_SHA"
+
+      - name: Publish post-merge recovery handoff
+        if: ${{ failure() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TASK_ID: ${{ inputs.task_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+          RUN_ID: ${{ github.run_id }}
+          VALIDATION_PLAN_OUTCOME: ${{ steps.validation-plan.outcome }}
+          VALIDATION_GATES_OUTCOME: ${{ steps.gates.outcome }}
+          RELEASE_PROOF_OUTCOME: ${{ steps.release-proof.outcome }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          recovery_marker="<!-- gptauto-post-merge-recovery:$TASK_ID:$MERGE_SHA -->"
+          lease_marker="<!-- gptauto-completion-lease:$TASK_ID -->"
+          run_url="https://github.com/$REPOSITORY/actions/runs/$RUN_ID"
+          recovery_body="$recovery_marker
+          GPTAuto POST_MERGE_RECOVERY_REQUIRED for task $TASK_ID.
+
+          Merge SHA: $MERGE_SHA
+          Reconcile run: $RUN_ID
+          Validation plan: $VALIDATION_PLAN_OUTCOME
+          Validation gates: $VALIDATION_GATES_OUTCOME
+          Release proof: $RELEASE_PROOF_OUTCOME
+
+          This is non-terminal recovery evidence. The merged engineering task is NOT complete. Inspect the Reconcile run, repair the failed post-merge validation/release path, and rerun Reconcile for this same task/merge until published terminal evidence exists. Do not manufacture a release tag or mark the task complete merely because a Release workflow is green.
+
+          Run: $run_url"
+          lease_body="$lease_marker
+          GPTAuto Completion Lease is ACTIVE for task $TASK_ID (decision: reconcile_recovery).
+
+          This engineering task is NOT complete. Post-merge reconciliation failed for merge $MERGE_SHA in run $RUN_ID. Continue recovery until Reconcile produces terminal DONE evidence."
+
+          comments="$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null || echo '[]')"
+          recovery_id="$(jq -r --arg marker "$recovery_marker" '[.[] | select(.body | contains($marker))] | .[0].id // empty' <<<"$comments")"
+          if [[ -n "$recovery_id" ]]; then
+            gh api --method PATCH "repos/$REPOSITORY/issues/comments/$recovery_id" -f body="$recovery_body" >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/issues/$PR_NUMBER/comments" -f body="$recovery_body" >/dev/null
+          fi
+
+          lease_id="$(jq -r --arg marker "$lease_marker" '[.[] | select(.body | contains($marker))] | .[0].id // empty' <<<"$comments")"
+          if [[ -n "$lease_id" ]]; then
+            gh api --method PATCH "repos/$REPOSITORY/issues/comments/$lease_id" -f body="$lease_body" >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/issues/$PR_NUMBER/comments" -f body="$lease_body" >/dev/null
+          fi
+
+          {
+            echo "## GPTAuto post-merge recovery handoff"
+            echo "- Task: $TASK_ID"
+            echo "- Merge: $MERGE_SHA"
+            echo "- Reconcile run: $RUN_ID"
+            echo "- Validation plan: $VALIDATION_PLAN_OUTCOME"
+            echo "- Validation gates: $VALIDATION_GATES_OUTCOME"
+            echo "- Release proof: $RELEASE_PROOF_OUTCOME"
+            echo "- Completion Lease remains ACTIVE as reconcile_recovery."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Capture terminal DONE evidence directly
         id: terminal
         env:
@@ -89,7 +327,10 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           MERGE_SHA: ${{ inputs.merge_sha }}
           MAIN_CI_RUN_ID: ${{ steps.gates.outputs.main-ci-run-id }}
-          RELEASE_RUN_ID: ${{ steps.gates.outputs.release-run-id }}
+          RELEASE_RUN_ID: ${{ steps.release-proof.outputs.release-run-id }}
+          RELEASE_ID: ${{ steps.release-proof.outputs.release-id }}
+          RELEASE_TAG: ${{ steps.release-proof.outputs.release-tag }}
+          RELEASE_PUBLISHED: ${{ steps.release-proof.outputs.release-published }}
           RELEASE_REQUIRED: ${{ inputs.release_required }}
           RUN_ID: ${{ github.run_id }}
           ACTOR: ${{ github.actor }}
@@ -114,8 +355,11 @@ jobs:
           fi
 
           release_conclusion=""
-          [[ "$RELEASE_REQUIRED" == "true" ]] && release_conclusion="success"
-          PYTHONPATH=.github python -m gptauto.observer capture             --event "reconcile" --repo "$REPOSITORY" --default-branch "$DEFAULT_BRANCH"             --branch "$DEFAULT_BRANCH" --head-sha "$MERGE_SHA" --pr-number "$PR_NUMBER"             --pr-title "$pr_title" --pr-body "$pr_body" --pr-state "closed" --pr-merged "true"             --merge-sha "$MERGE_SHA" --run-id "$RUN_ID" --actor "$ACTOR"             --pr-ci-conclusion "success" --pr-ci-run-id "$pr_ci_run_id"             --main-ci-conclusion "success" --main-ci-run-id "$MAIN_CI_RUN_ID"             --release-conclusion "$release_conclusion" --release-run-id "$RELEASE_RUN_ID"             --current-pr-head-sha "$pr_head_sha" --release-required-override "$RELEASE_REQUIRED"             --provenance "reconciler" > terminal-result.json
+          if [[ "$RELEASE_REQUIRED" == "true" ]]; then
+            [[ "$RELEASE_PUBLISHED" == "true" ]] || { echo "::error::Release-required task has no published release proof"; exit 1; }
+            release_conclusion="success"
+          fi
+          PYTHONPATH=.github python -m gptauto.observer capture             --event "reconcile" --repo "$REPOSITORY" --default-branch "$DEFAULT_BRANCH"             --branch "$DEFAULT_BRANCH" --head-sha "$MERGE_SHA" --pr-number "$PR_NUMBER"             --pr-title "$pr_title" --pr-body "$pr_body" --pr-state "closed" --pr-merged "true"             --merge-sha "$MERGE_SHA" --run-id "$RUN_ID" --actor "$ACTOR"             --pr-ci-conclusion "success" --pr-ci-run-id "$pr_ci_run_id"             --main-ci-conclusion "success" --main-ci-run-id "$MAIN_CI_RUN_ID"             --release-conclusion "$release_conclusion" --release-run-id "$RELEASE_RUN_ID"             --release-tag "$RELEASE_TAG" --release-published "$RELEASE_PUBLISHED" --release-id "$RELEASE_ID"             --current-pr-head-sha "$pr_head_sha" --release-required-override "$RELEASE_REQUIRED"             --provenance "reconciler" > terminal-result.json
           cat terminal-result.json
           captured_task_id="$(python -c 'import json;print(json.load(open("terminal-result.json"))["task_id"])')"
           captured_state="$(python -c 'import json;print(json.load(open("terminal-result.json"))["state"])')"
@@ -160,7 +404,10 @@ jobs:
           TASK_ID: ${{ inputs.task_id }}
           MERGE_SHA: ${{ inputs.merge_sha }}
           MAIN_CI_RUN_ID: ${{ steps.gates.outputs.main-ci-run-id }}
-          RELEASE_RUN_ID: ${{ steps.gates.outputs.release-run-id }}
+          RELEASE_RUN_ID: ${{ steps.release-proof.outputs.release-run-id }}
+          RELEASE_ID: ${{ steps.release-proof.outputs.release-id }}
+          RELEASE_TAG: ${{ steps.release-proof.outputs.release-tag }}
+          RELEASE_PUBLISHED: ${{ steps.release-proof.outputs.release-published }}
           RELEASE_REQUIRED: ${{ inputs.release_required }}
         shell: bash
         run: |
@@ -172,6 +419,9 @@ jobs:
             echo "- Main CI run: $MAIN_CI_RUN_ID"
             echo "- Release required: $RELEASE_REQUIRED"
             echo "- Release run: ${RELEASE_RUN_ID:-not-required}"
+            echo "- Release published: ${RELEASE_PUBLISHED:-false}"
+            echo "- Release ID: ${RELEASE_ID:-not-required}"
+            echo "- Release tag: ${RELEASE_TAG:-not-required}"
             echo "- Terminal evidence provenance: reconciler"
             echo "- Terminal release intent is pinned to the Executor/Reconcile lease input, not recomputed from mutable PR text."
             echo "- Terminal evidence was captured and uploaded by Reconcile itself; no follow-up Observer run is required."

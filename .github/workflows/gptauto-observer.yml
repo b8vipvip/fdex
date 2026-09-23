@@ -23,8 +23,12 @@ on:
     branches:
       - main
       - master
+  # Control-plane workflows are deliberately excluded from workflow_run.
+  # Observer consumes product evidence only; Reconcile owns post-merge CI/Release
+  # and emits terminal evidence directly, so feeding Release back into Observer
+  # would create a control-plane feedback loop.
   workflow_run:
-    workflows: [CI, Release]
+    workflows: [CI]
     types: [completed]
   release:
     types: [published]
@@ -40,10 +44,10 @@ jobs:
     # A cancelled CI/Release run is replacement/no-result evidence: it cannot
     # satisfy a gate and must not open a repair cycle. Keep the existing
     # Completion Lease active and wait for the replacement/current-head run.
-    # Successful CI/Release runs on the default branch are reconciler-owned
-    # post-merge evidence, so do not create another Observer -> Executor cycle.
-    # Failures still wake Observer so repair evidence is never suppressed.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled' && (github.event.workflow_run.conclusion != 'success' || github.event.workflow_run.head_branch != github.event.repository.default_branch)) || github.event_name == 'release' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.actor != 'github-actions[bot]') }}
+    # Successful default-branch CI is reconciler-owned post-merge evidence and
+    # does not open a new Observer -> Executor cycle. Product CI failures still
+    # wake Observer so foreground repair evidence is never suppressed.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'CI' && github.event.workflow_run.conclusion != 'cancelled' && (github.event.workflow_run.conclusion != 'success' || github.event.workflow_run.head_branch != github.event.repository.default_branch)) || github.event_name == 'release' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.actor != 'github-actions[bot]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -128,7 +132,9 @@ jobs:
               [[ -n "$MAIN_CI_RUN_ID" ]] && MAIN_CI_CONCLUSION="success"
               RELEASE_RUN_ID="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&status=success&per_page=50" \
                 --jq '[.workflow_runs[] | select(.name == "Release" and .conclusion == "success")][0].id // empty' 2>/dev/null || true)"
-              [[ -n "$RELEASE_RUN_ID" ]] && RELEASE_CONCLUSION="success"
+              # A green Release workflow is process evidence only. Publication is
+              # terminal only when a GitHub Release published event (or Reconcile)
+              # proves a release artifact/tag for the merged commit.
             fi
           fi
 
@@ -169,6 +175,6 @@ jobs:
             echo "- Artifact: \`gptauto-$TASK_ID\`"
             echo "- Provenance: \`repository_observer\`"
             echo "- PR/push/main-CI/release events are re-associated through the PR before TASK_ID generation."
-            echo "- A merged PR is VERIFY, not DONE; release/main-CI evidence is reconstructed from successful historical runs, so event order does not affect DONE."
+            echo "- A merged PR is VERIFY, not DONE; main-CI may be reconstructed from runs, but Release workflow success alone never proves publication."
             echo "- DONE artifacts include completion.json: a single terminal receipt with merge, CI, release, gate, and DoD evidence."
           } >> "$GITHUB_STEP_SUMMARY"

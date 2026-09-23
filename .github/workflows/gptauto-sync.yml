@@ -58,12 +58,12 @@ jobs:
           if [[ "$workflow_drift" == "true" && "$HAS_DEDICATED_SYNC_TOKEN" != "true" ]]; then
             marker="<!-- gptauto-sync-workflow-permission -->"
             title="GPTAuto sync blocked: Workflows write permission required"
-            body="$marker
-            GPTAuto detected canonical workflow changes while syncing to v$ver, but this repository has no `GPTAUTO_SYNC_TOKEN`.
+            printf -v body '%s
+            GPTAuto detected canonical workflow changes while syncing to v%s, but this repository has no `GPTAUTO_SYNC_TOKEN`.
 
             The default GitHub Actions token cannot push updates under `.github/workflows/` in this repository. The consumer was intentionally left unchanged so its VERSION never claims a partially installed GPTAuto release.
 
-            Configure repository secret `GPTAUTO_SYNC_TOKEN` with a fine-grained token that has **Contents: Read and write**, **Pull requests: Read and write**, and **Workflows: Read and write** for this repository. The next scheduled sync will retry automatically."
+            Configure repository secret `GPTAUTO_SYNC_TOKEN` with a fine-grained token that has **Contents: Read and write**, **Pull requests: Read and write**, and **Workflows: Read and write** for this repository. The next scheduled sync will retry automatically.' "$marker" "$ver"
             issue="$(gh issue list --state open --search "$marker in:body" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
             if [[ -n "$issue" ]]; then
               gh issue edit "$issue" --title "$title" --body "$body" >/dev/null || true
@@ -72,9 +72,9 @@ jobs:
             fi
             {
               echo "## GPTAuto sync blocked before push"
-              echo "- Target version: `$ver`"
-              echo "- Workflow drift: `true`"
-              echo "- Dedicated sync token configured: `false`"
+              printf -- '- Target version: `%s`\n' "$ver"
+              printf -- '- Workflow drift: `true`\n'
+              printf -- '- Dedicated sync token configured: `false`\n'
               echo "- Consumer left unchanged (atomic sync)."
               echo "- Required token permissions: Contents write, Pull requests write, Workflows write."
             } >> "$GITHUB_STEP_SUMMARY"
