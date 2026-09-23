@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Resolve and start post-merge validation gates
+      - name: Resolve canonical post-merge validation gate
         id: validation-plan
         env:
           GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
@@ -45,82 +45,22 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          printf '%s\n' "CI" > /tmp/gptauto-required-workflows.txt
-          catalog="$(gh workflow list --repo "$REPOSITORY" --all --json name,path,state)"
-          release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
-
-          if [[ "$RELEASE_REQUIRED" == "true" ]]; then
-            [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
-            gh workflow view "$release_path" --repo "$REPOSITORY" --yaml > /tmp/gptauto-release-workflow.yml
-            python - <<'PY' >> /tmp/gptauto-required-workflows.txt
-          from pathlib import Path
-          import re
-
-          lines = Path("/tmp/gptauto-release-workflow.yml").read_text(encoding="utf-8").splitlines()
-          deps = []
-          for index, line in enumerate(lines):
-              if line.strip() != "workflow_run:":
-                  continue
-              workflow_run_indent = len(line) - len(line.lstrip())
-              for offset in range(index + 1, len(lines)):
-                  current = lines[offset]
-                  stripped = current.strip()
-                  indent = len(current) - len(current.lstrip())
-                  if stripped and indent <= workflow_run_indent:
-                      break
-                  match = re.match(r"^\s*workflows:\s*(.*)$", current)
-                  if not match:
-                      continue
-                  rest = match.group(1).strip()
-                  if rest:
-                      if rest.startswith("[") and rest.endswith("]"):
-                          values = rest[1:-1].split(",")
-                      else:
-                          values = [rest]
-                      deps.extend(value.strip().strip("'\"") for value in values if value.strip())
-                  else:
-                      workflows_indent = indent
-                      for nested in lines[offset + 1:]:
-                          nested_stripped = nested.strip()
-                          nested_indent = len(nested) - len(nested.lstrip())
-                          if nested_stripped and nested_indent <= workflows_indent:
-                              break
-                          item = re.match(r"^\s*-\s*(.+?)\s*$", nested)
-                          if item:
-                              deps.append(item.group(1).strip().strip("'\""))
-                  break
-              break
-
-          seen = set()
-          for dep in deps:
-              if dep and dep not in seen and dep != "Release":
-                  seen.add(dep)
-                  print(dep)
-          PY
-          fi
-
-          awk 'NF && !seen[$0]++' /tmp/gptauto-required-workflows.txt > /tmp/gptauto-required-workflows.unique
-          mv /tmp/gptauto-required-workflows.unique /tmp/gptauto-required-workflows.txt
-          required_csv="$(paste -sd ',' /tmp/gptauto-required-workflows.txt)"
-          echo "required-workflows=$required_csv" >> "$GITHUB_OUTPUT"
-          echo "Required post-merge workflows: $required_csv"
-
-          current_main="$(gh api "repos/$REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')"
           runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
-          while IFS= read -r workflow; do
-            [[ -n "$workflow" ]] || continue
-            count="$(jq --arg workflow "$workflow" '[.workflow_runs[] | select(.name == $workflow)] | length' <<<"$runs")"
-            if [[ "$count" == "0" ]]; then
-              [[ "$current_main" == "$MERGE_SHA" ]] || {
-                echo "::error::Cannot safely dispatch missing $workflow for $MERGE_SHA because $DEFAULT_BRANCH moved to $current_main"
-                exit 1
-              }
-              path="$(jq -r --arg workflow "$workflow" '[.[] | select(.name == $workflow and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
-              [[ -n "$path" ]] || { echo "::error::Required workflow $workflow is disabled or does not exist"; exit 1; }
-              gh workflow run "$path" --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
-              echo "Dispatched post-merge workflow: $workflow ($path)"
-            fi
-          done < /tmp/gptauto-required-workflows.txt
+          configured="$(gh variable get GPTAUTO_POST_MERGE_WORKFLOW --repo "$REPOSITORY" 2>/dev/null || true)"
+          if [[ -n "$configured" ]]; then
+            primary="$configured"
+          else
+            primary="$(jq -r '[.workflow_runs[] | select(.event == "push") | select((.name | startswith("GPTAuto ")) | not) | select(.name != "Release") | select((.name | startswith("Release ")) | not) | select(.name != "Repository housekeeping") | select(.name != "Actions Policy Check") | select(.name != "Release Asset Cleanup")] | (map(select(.name == "CI"))[0].name // map(select(.name == "Build and Test"))[0].name // .[0].name // empty)' <<<"$runs")"
+          fi
+          [[ -n "$primary" ]] || { echo "::error::No product post-merge validation workflow observed for $MERGE_SHA. Set GPTAUTO_POST_MERGE_WORKFLOW for a nonstandard trigger."; exit 1; }
+          printf '%s\n' "$primary" > /tmp/gptauto-required-workflows.txt
+          echo "required-workflows=$primary" >> "$GITHUB_OUTPUT"
+          echo "Canonical post-merge validation workflow: $primary"
+          catalog="$(gh api --paginate --slurp "repos/$REPOSITORY/actions/workflows?per_page=100" | jq -c '[.[].workflows[]]')"
+          if [[ "$RELEASE_REQUIRED" == "true" ]]; then
+            release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
+            [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
+          fi
 
       - name: Wait for terminal post-merge validation gates
         id: gates
@@ -153,8 +93,9 @@ jobs:
             done < /tmp/gptauto-required-workflows.txt
 
             if [[ "$all_ready" == "true" ]]; then
-              ci_run_id="$(jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
-              [[ -n "$ci_run_id" ]] || { echo "::error::Required CI success evidence is missing"; exit 1; }
+              primary="$(head -n 1 /tmp/gptauto-required-workflows.txt)"
+              ci_run_id="$(jq -r --arg workflow "$primary" '[.workflow_runs[] | select(.name == $workflow and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
+              [[ -n "$ci_run_id" ]] || { echo "::error::Required product validation success evidence is missing"; exit 1; }
               echo "main-ci-run-id=$ci_run_id" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -199,7 +140,7 @@ jobs:
           proof="$(find_release_for_merge || true)"
           release_run_id=""
           if [[ -z "$proof" ]]; then
-            catalog="$(gh workflow list --repo "$REPOSITORY" --all --json name,path,state)"
+            catalog="$(gh api --paginate --slurp "repos/$REPOSITORY/actions/workflows?per_page=100" | jq -c '[.[].workflows[]]')"
             release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
             [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
 
