@@ -1,9 +1,72 @@
 from dataclasses import dataclass
 from .engine import gate
 from .github import GitHubClient
-from .model import Gate,GateStatus,State,Task
+from .model import CriterionStatus,Gate,GateStatus,State,Task
+
 @dataclass(frozen=True)
-class Decision:action:str;reason:str
+class Decision:
+    action:str
+    reason:str
+
+def _step(task:Task, gate_name:Gate):
+    return next((s for s in task.plan if s.gate==gate_name),None)
+
+def canonical_phase(task:Task)->str:
+    """Single lifecycle authority derived only from durable task evidence."""
+    failed=next((s for s in task.plan if s.required and s.status==GateStatus.FAILED),None)
+    if failed:
+        return "REPAIR_REQUIRED"
+    merge=_step(task,Gate.MERGE)
+    main_ci=_step(task,Gate.MAIN_CI)
+    release=_step(task,Gate.RELEASE)
+    if merge and merge.required and merge.status not in {GateStatus.PASSED,GateStatus.SKIPPED}:
+        pr_ci=_step(task,Gate.PR_CI)
+        if pr_ci and pr_ci.status in {GateStatus.WAITING,GateStatus.PENDING}:
+            return "PR_CI"
+        return "MERGE"
+    if main_ci and main_ci.required and main_ci.status not in {GateStatus.PASSED,GateStatus.SKIPPED}:
+        return "POST_MERGE_CI"
+    if bool(task.metadata.get("release_required")):
+        if not release or release.status not in {GateStatus.PASSED,GateStatus.SKIPPED}:
+            return "RELEASE_VERIFY" if task.metadata.get("release_run_id") else "RELEASE"
+    if task.required_gates_satisfied() and task.criteria_satisfied():
+        return "DONE"
+    return "EXECUTE" if task.state not in {State.VERIFY,State.BLOCKED} else task.state.value
+
+def canonicalize_task(task:Task)->dict:
+    """Project evidence into the one canonical task/host lifecycle state."""
+    phase=canonical_phase(task)
+    previous=str(task.metadata.get("phase") or "")
+    if phase=="DONE":
+        task.state=State.DONE
+    elif phase=="REPAIR_REQUIRED":
+        task.state=State.EXECUTE
+    elif phase in {"POST_MERGE_CI","RELEASE","RELEASE_VERIFY"}:
+        task.state=State.VERIFY
+    elif task.state==State.DONE:
+        # Observer/Reconcile may propose DONE, but only this authority may retain it.
+        task.state=State.VERIFY
+    generation=int(task.metadata.get("generation") or 0)
+    if phase=="REPAIR_REQUIRED" and previous!="REPAIR_REQUIRED":
+        generation+=1
+    task.metadata["phase"]=phase
+    task.metadata["generation"]=generation
+    task.metadata["repair_owner"]="foreground" if phase=="REPAIR_REQUIRED" and not task.metadata.get("ai_provider_configured") else (task.metadata.get("repair_owner") or "")
+    terminal=phase=="DONE"
+    task.metadata["terminal_done"]=terminal
+    task.metadata["allow_foreground_exit"]=terminal
+    task.metadata["completion_lease"]="DONE" if terminal else "ACTIVE"
+    if previous!=phase:
+        task.record(f"canonical lifecycle transition {previous or '-'} -> {phase}",kind="lifecycle",evidence=f"generation={generation}")
+    return {
+        "phase":phase,
+        "generation":generation,
+        "repair_owner":str(task.metadata.get("repair_owner") or ""),
+        "terminal_done":terminal,
+        "allow_foreground_exit":terminal,
+        "completion_lease":"DONE" if terminal else "ACTIVE",
+    }
+
 class Orchestrator:
     def __init__(self,client:GitHubClient):self.github=client
     def decide_gate(self,task,step):
@@ -32,6 +95,7 @@ class Orchestrator:
             return Decision("wait","final verification evidence not recorded")
         return Decision("worker",f"{g.value} requires host/reasoning action")
     def reconcile_once(self,task):
+        canonicalize_task(task)
         if task.state!=State.EXECUTE:return Decision("wait",f"{task.state.value} is not an execution state")
         step=next((x for x in task.plan if x.required and x.status not in {GateStatus.PASSED,GateStatus.SKIPPED}),None)
         if not step:return Decision("ready","all required gates satisfied")
@@ -40,4 +104,5 @@ class Orchestrator:
         elif d.action=="failed":gate(task,step.gate,GateStatus.FAILED,d.reason)
         elif d.action=="blocked":task.state=State.BLOCKED;task.record(d.reason)
         elif d.action=="wait":step.status=GateStatus.WAITING
+        canonicalize_task(task)
         return d
