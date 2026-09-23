@@ -14,7 +14,11 @@ def _step(task:Task, gate_name:Gate):
 def canonical_phase(task:Task)->str:
     """Single lifecycle authority derived only from durable task evidence."""
     failed=next((s for s in task.plan if s.required and s.status==GateStatus.FAILED),None)
-    if failed:
+    conclusion=str(task.metadata.get("workflow_conclusion") or "").lower()
+    event_head=str(task.metadata.get("event_head_sha") or "")
+    current_head=str(task.metadata.get("current_pr_head_sha") or task.metadata.get("head_sha") or "")
+    current_failure=conclusion in {"failure","timed_out","action_required","startup_failure"} and not (event_head and current_head and event_head!=current_head)
+    if failed or current_failure:
         return "REPAIR_REQUIRED"
     merge=_step(task,Gate.MERGE)
     main_ci=_step(task,Gate.MAIN_CI)
