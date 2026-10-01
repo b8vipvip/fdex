@@ -17,7 +17,7 @@ jobs:
         with:
           ref: chore/gptauto-canonicalize-v0.15.1
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ secrets.GPTAUTO_SYNC_TOKEN || secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
       - name: Replace embedded GPTAuto control plane with canonical v0.15.1
         shell: bash
         run: |
