@@ -23,14 +23,14 @@ jobs:
         run: |
           set -Eeuo pipefail
           base='https://raw.githubusercontent.com/b8vipvip/GPTAuto/main'
-          runtime=(__init__.py audit.py cli.py engine.py executor.py github.py model.py observer.py orchestrator.py planner.py registry.py repair.py runner.py time_budget.py VERSION)
+          runtime=(__init__.py audit.py cli.py engine.py executor.py github.py model.py observer.py orchestrator.py planner.py registry.py repair.py runner.py time_budget.py)
           workflows=(gptauto-executor.yml gptauto-observer.yml gptauto-reconcile.yml gptauto-repair.yml gptauto-sync.yml)
           mkdir -p .github/gptauto .github/actions/upload-gptauto-log .github/workflows
           for file in "${runtime[@]}"; do curl -fsSL "$base/gptauto/$file" -o ".github/gptauto/$file"; done
+          printf '0.15.1\n' > .github/gptauto/VERSION
           curl -fsSL "$base/.github/actions/upload-gptauto-log/action.yml" -o .github/actions/upload-gptauto-log/action.yml
           for file in "${workflows[@]}"; do curl -fsSL "$base/consumer-template/$file" -o ".github/workflows/$file"; done
           rm -f .github/workflows/gptauto-one-shot-sync.yml
-          printf '0.15.1\n' > .github/gptauto/VERSION
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .github/gptauto .github/actions/upload-gptauto-log .github/workflows
