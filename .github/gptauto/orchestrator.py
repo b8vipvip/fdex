@@ -12,7 +12,11 @@ def _step(task:Task, gate_name:Gate):
     return next((s for s in task.plan if s.gate==gate_name),None)
 
 def canonical_phase(task:Task)->str:
-    """Single lifecycle authority derived only from durable task evidence."""
+    """Protocol v2 single lifecycle authority derived only from durable task evidence.
+
+    ChatGPT executions are disposable workers. The durable GPTAuto task, not a
+    foreground turn or guard, owns lifecycle state and terminality.
+    """
     failed=next((s for s in task.plan if s.required and s.status==GateStatus.FAILED),None)
     conclusion=str(task.metadata.get("workflow_conclusion") or "").lower()
     event_head=str(task.metadata.get("event_head_sha") or "")
@@ -35,7 +39,9 @@ def canonical_phase(task:Task)->str:
             return "RELEASE_VERIFY" if task.metadata.get("release_run_id") else "RELEASE"
     if task.required_gates_satisfied() and task.criteria_satisfied():
         return "DONE"
-    return "EXECUTE" if task.state not in {State.VERIFY,State.BLOCKED} else task.state.value
+    if task.state==State.BLOCKED:
+        return "USER_ACTION_REQUIRED"
+    return "RUNNING" if task.state!=State.VERIFY else "WAITING_GITHUB"
 
 def canonicalize_task(task:Task)->dict:
     """Project evidence into the one canonical task/host lifecycle state."""
@@ -45,8 +51,10 @@ def canonicalize_task(task:Task)->dict:
         task.state=State.DONE
     elif phase=="REPAIR_REQUIRED":
         task.state=State.EXECUTE
-    elif phase in {"POST_MERGE_CI","RELEASE","RELEASE_VERIFY"}:
+    elif phase in {"POST_MERGE_CI","RELEASE","RELEASE_VERIFY","WAITING_GITHUB"}:
         task.state=State.VERIFY
+    elif phase=="USER_ACTION_REQUIRED":
+        task.state=State.BLOCKED
     elif task.state==State.DONE:
         # Observer/Reconcile may propose DONE, but only this authority may retain it.
         task.state=State.VERIFY
@@ -55,11 +63,17 @@ def canonicalize_task(task:Task)->dict:
         generation+=1
     task.metadata["phase"]=phase
     task.metadata["generation"]=generation
-    task.metadata["repair_owner"]="foreground" if phase=="REPAIR_REQUIRED" and not task.metadata.get("ai_provider_configured") else (task.metadata.get("repair_owner") or "")
+    # One repair generation has exactly one owner. The three repair tiers are
+    # sequential stages inside this pipeline, never competing repair authorities.
+    task.metadata["repair_owner"]="repair_pipeline" if phase=="REPAIR_REQUIRED" else ""
     terminal=phase=="DONE"
     task.metadata["terminal_done"]=terminal
     task.metadata["allow_foreground_exit"]=terminal
     task.metadata["completion_lease"]="DONE" if terminal else "ACTIVE"
+    task.metadata["protocol"]="gptauto.task-state/v2"
+    task.metadata["continuation_required"]=phase=="REPAIR_REQUIRED"
+    current_head=str(task.metadata.get("current_pr_head_sha") or task.metadata.get("head_sha") or "")
+    task.metadata["continuation_key"]=f"{task.task_id}:{generation}:{current_head or 'no-head'}"
     if previous!=phase:
         task.record(f"canonical lifecycle transition {previous or '-'} -> {phase}",kind="lifecycle",evidence=f"generation={generation}")
     return {
@@ -69,6 +83,9 @@ def canonicalize_task(task:Task)->dict:
         "terminal_done":terminal,
         "allow_foreground_exit":terminal,
         "completion_lease":"DONE" if terminal else "ACTIVE",
+        "protocol":"gptauto.task-state/v2",
+        "continuation_required":phase=="REPAIR_REQUIRED",
+        "continuation_key":str(task.metadata.get("continuation_key") or ""),
     }
 
 class Orchestrator:
