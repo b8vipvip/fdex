@@ -18,7 +18,7 @@ on:
 permissions:
   contents: read
   actions: write
-  pull-requests: read
+  pull-requests: write
   issues: write
 concurrency:
   group: gptauto-reconcile-${{ inputs.task_id }}
@@ -34,10 +34,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Resolve canonical post-merge validation gate
+      - name: Resolve and dispatch canonical post-merge validation gate
         id: validation-plan
         env:
-          GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GPTAUTO_GITHUB_TOKEN || secrets.GPTAUTO_EXECUTOR_TOKEN || secrets.GPTAUTO_SYNC_TOKEN || github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MERGE_SHA: ${{ inputs.merge_sha }}
@@ -45,18 +45,65 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+
+          # Task Protocol v2: Reconcile is the explicit post-merge scheduler.
+          # A merge performed with GITHUB_TOKEN does not necessarily emit another
+          # workflow-triggering push, so waiting for a spontaneous push CI is not
+          # a valid lifecycle transition.
+          catalog="$(gh api --paginate --slurp "repos/$REPOSITORY/actions/workflows?per_page=100" | jq -c '[.[].workflows[]]')"
           configured="$(gh variable get GPTAUTO_POST_MERGE_WORKFLOW --repo "$REPOSITORY" 2>/dev/null || true)"
           if [[ -n "$configured" ]]; then
-            primary="$configured"
+            primary_path="$(jq -r --arg wanted "$configured" '[.[] | select((.name == $wanted or .path == $wanted) and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
+            [[ -n "$primary_path" ]] || { echo "::error::Configured GPTAUTO_POST_MERGE_WORKFLOW '$configured' is missing or disabled"; exit 1; }
           else
-            primary="$(jq -r '[.workflow_runs[] | select(.event == "push") | select((.name | startswith("GPTAuto ")) | not) | select(.name != "Release") | select((.name | startswith("Release ")) | not) | select(.name != "Repository housekeeping") | select(.name != "Actions Policy Check") | select(.name != "Release Asset Cleanup")] | (map(select(.name == "CI"))[0].name // map(select(.name == "Build and Test"))[0].name // .[0].name // empty)' <<<"$runs")"
+            primary_path="$(jq -r '[.[] | select(((.name == "CI") or (.name == "Build and Test")) and ((.state // "") | ascii_downcase | startswith("disabled") | not))] | (map(select(.name == "CI"))[0].path // .[0].path // empty)' <<<"$catalog")"
+            [[ -n "$primary_path" ]] || { echo "::error::No canonical product validation workflow named CI or Build and Test is enabled. Configure GPTAUTO_POST_MERGE_WORKFLOW."; exit 1; }
           fi
-          [[ -n "$primary" ]] || { echo "::error::No product post-merge validation workflow observed for $MERGE_SHA. Set GPTAUTO_POST_MERGE_WORKFLOW for a nonstandard trigger."; exit 1; }
+          primary="$(jq -r --arg path "$primary_path" '.[] | select(.path == $path) | .name' <<<"$catalog" | head -n1)"
+          [[ -n "$primary" ]] || { echo "::error::Unable to resolve product validation workflow name for $primary_path"; exit 1; }
+
+          current_main="$(gh api "repos/$REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')"
+          [[ "$current_main" == "$MERGE_SHA" ]] || {
+            echo "::error::Default branch moved to $current_main before post-merge validation for $MERGE_SHA; refusing to validate a different commit"
+            exit 1
+          }
+
           printf '%s\n' "$primary" > /tmp/gptauto-required-workflows.txt
           echo "required-workflows=$primary" >> "$GITHUB_OUTPUT"
-          echo "Canonical post-merge validation workflow: $primary"
-          catalog="$(gh api --paginate --slurp "repos/$REPOSITORY/actions/workflows?per_page=100" | jq -c '[.[].workflows[]]')"
+          echo "workflow-path=$primary_path" >> "$GITHUB_OUTPUT"
+          echo "Canonical post-merge validation workflow: $primary ($primary_path)"
+
+          # Reuse exact-SHA success evidence if it already exists. Otherwise
+          # dispatch exactly one workflow_dispatch run and bind later validation
+          # to the returned run generation rather than polling for registration.
+          runs_before="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+          existing_success="$(jq -r --arg workflow "$primary" '[.workflow_runs[] | select(.name == $workflow and .status == "completed" and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs_before")"
+          if [[ -n "$existing_success" ]]; then
+            echo "validation-run-id=$existing_success" >> "$GITHUB_OUTPUT"
+            echo "Reusing exact-SHA post-merge validation run $existing_success."
+          else
+            baseline="$(jq -r --arg workflow "$primary" '[.workflow_runs[] | select(.name == $workflow) | .id] | max // 0' <<<"$runs_before")"
+            gh workflow view "$primary_path" --repo "$REPOSITORY" --yaml > /tmp/gptauto-product-workflow.yml
+            grep -Eq '^[[:space:]]*workflow_dispatch:' /tmp/gptauto-product-workflow.yml || {
+              echo "::error::Canonical post-merge workflow $primary_path has no workflow_dispatch trigger. Add workflow_dispatch or configure GPTAUTO_POST_MERGE_WORKFLOW to a dispatchable product workflow."
+              exit 1
+            }
+            gh workflow run "$primary_path" --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
+            echo "Dispatched canonical post-merge validation for merge $MERGE_SHA."
+
+            registration_deadline=$((SECONDS + 90))
+            validation_run_id=""
+            while (( SECONDS < registration_deadline )); do
+              runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
+              validation_run_id="$(jq -r --arg workflow "$primary" --argjson baseline "$baseline" '[.workflow_runs[] | select(.name == $workflow and .event == "workflow_dispatch" and .id > $baseline)] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
+              [[ -n "$validation_run_id" ]] && break
+              sleep 3
+            done
+            [[ -n "$validation_run_id" ]] || { echo "::error::Dispatched $primary_path but no exact-SHA workflow_dispatch run registered for $MERGE_SHA"; exit 1; }
+            echo "validation-run-id=$validation_run_id" >> "$GITHUB_OUTPUT"
+            echo "Registered canonical post-merge validation run $validation_run_id."
+          fi
+
           if [[ "$RELEASE_REQUIRED" == "true" ]]; then
             release_path="$(jq -r '[.[] | select(.name == "Release" and ((.state // "") | ascii_downcase | startswith("disabled") | not))][0].path // empty' <<<"$catalog")"
             [[ -n "$release_path" ]] || { echo "::error::Release is required but no enabled Release workflow exists"; exit 1; }
@@ -65,20 +112,22 @@ jobs:
       - name: Wait for terminal post-merge validation gates
         id: gates
         env:
-          GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GPTAUTO_GITHUB_TOKEN || secrets.GPTAUTO_EXECUTOR_TOKEN || secrets.GPTAUTO_SYNC_TOKEN || github.token }}
           REPOSITORY: ${{ github.repository }}
           TASK_ID: ${{ inputs.task_id }}
           MERGE_SHA: ${{ inputs.merge_sha }}
         shell: bash
         run: |
           set -Eeuo pipefail
+          required_run_id="${{ steps.validation-plan.outputs.validation-run-id }}"
+          [[ -n "$required_run_id" ]] || { echo "::error::Canonical validation run id is missing"; exit 1; }
           deadline=$((SECONDS + 1800))
           while (( SECONDS < deadline )); do
             runs="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$MERGE_SHA&per_page=100")"
             all_ready=true
             while IFS= read -r workflow; do
               [[ -n "$workflow" ]] || continue
-              row="$(jq -c --arg workflow "$workflow" '[.workflow_runs[] | select(.name == $workflow)] | sort_by(.created_at, .id) | reverse | .[0] // {}' <<<"$runs")"
+              row="$(jq -c --arg workflow "$workflow" --argjson required_run_id "$required_run_id" '[.workflow_runs[] | select(.name == $workflow and .id == $required_run_id)] | .[0] // {}' <<<"$runs")"
               status="$(jq -r '.status // "missing"' <<<"$row")"
               conclusion="$(jq -r '.conclusion // ""' <<<"$row")"
               run_id="$(jq -r '.id // ""' <<<"$row")"
@@ -94,7 +143,7 @@ jobs:
 
             if [[ "$all_ready" == "true" ]]; then
               primary="$(head -n 1 /tmp/gptauto-required-workflows.txt)"
-              ci_run_id="$(jq -r --arg workflow "$primary" '[.workflow_runs[] | select(.name == $workflow and .conclusion == "success")] | sort_by(.created_at, .id) | reverse | .[0].id // empty' <<<"$runs")"
+              ci_run_id="$required_run_id"
               [[ -n "$ci_run_id" ]] || { echo "::error::Required product validation success evidence is missing"; exit 1; }
               echo "main-ci-run-id=$ci_run_id" >> "$GITHUB_OUTPUT"
               exit 0
@@ -107,7 +156,7 @@ jobs:
       - name: Require published release evidence
         id: release-proof
         env:
-          GH_TOKEN: ${{ secrets.GPTAUTO_EXECUTOR_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GPTAUTO_GITHUB_TOKEN || secrets.GPTAUTO_EXECUTOR_TOKEN || secrets.GPTAUTO_SYNC_TOKEN || github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MERGE_SHA: ${{ inputs.merge_sha }}
@@ -200,7 +249,7 @@ jobs:
         if: ${{ failure() }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GPTAUTO_GITHUB_TOKEN || secrets.GPTAUTO_EXECUTOR_TOKEN || secrets.GPTAUTO_SYNC_TOKEN || github.token }}
           REPOSITORY: ${{ github.repository }}
           TASK_ID: ${{ inputs.task_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
