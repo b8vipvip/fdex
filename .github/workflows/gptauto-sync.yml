@@ -1,11 +1,5 @@
 name: GPTAuto Consumer Sync
 on:
-  # Bootstrap only: exercise the configured token immediately after this workflow is merged.
-  # The canonical sync replaces this file with its upstream template on success.
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/gptauto-sync.yml'
   repository_dispatch:
     types: [gptauto_release_published]
   workflow_dispatch:
