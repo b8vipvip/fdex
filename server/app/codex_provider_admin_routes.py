@@ -126,7 +126,7 @@ async def _background_smoke(provider_id: int, run_id: str) -> None:
             level,
         )
     except Exception as exc:
-        report.write("smoke_crashed", error_type=type(exc).__name__, error=str(exc))
+        report.write("smoke_crashed", error_type=type(exc).__name__)
         runs.finish(
             int(provider_id),
             run_id,
