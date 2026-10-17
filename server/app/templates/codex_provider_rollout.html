@@ -111,6 +111,7 @@
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button class="button primary small" type="submit" {% if run.active or not p.enabled or not row.spec or not rollout.runtime or not isolation.enforced %}disabled{% endif %}>{{ '测试中…' if run.active else '执行 full smoke' }}</button>
                     </form>
+                    <div class="tiny-line muted">本次测试超时：连续 {{ settings.fdex_codex_smoke_turn_idle_timeout_seconds|int }} 秒无进展，或单轮执行超过 {{ settings.fdex_codex_smoke_turn_max_seconds|int }} 秒；不再固定 120 秒截断。</div>
                     {% if row.smoke_report_available %}
                     <a class="button secondary small" style="margin-top:8px" href="/admin/agent/codex-providers/{{ p.id }}/smoke/{{ run.run_id }}/report" download="fdex-codex-smoke-{{ p.id }}-{{ run.run_id }}.jsonl">下载诊断报告</a>
                     <div class="tiny-line">包含本次测试的阶段、事件与超时诊断；运行中也可下载已有日志。</div>
