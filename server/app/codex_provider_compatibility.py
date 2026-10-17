@@ -390,7 +390,9 @@ class CodexProviderCompatibilityStore:
     def issue_smoke_capability(self, marker: str, *, lifetime_seconds: int = 600) -> str:
         token = secrets.token_urlsafe(32)
         now = _now_dt()
-        expires = now + timedelta(seconds=max(30, min(1800, int(lifetime_seconds))))
+        # Local-only smoke capability: long-running smoke turns may legitimately
+        # exceed 30 minutes before reaching MCP. Always revoke after the run.
+        expires = now + timedelta(seconds=max(30, min(18000, int(lifetime_seconds))))
         with self.db() as conn:
             conn.execute("DELETE FROM smoke_capabilities WHERE expires_at<=?", (_now(),))
             conn.execute(

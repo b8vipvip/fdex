@@ -13,6 +13,7 @@ from starlette.background import BackgroundTask
 from app.config import fresh_settings
 from app.memory_semantic import hash_tags, parse_tag_response
 from app.provider_manager import api_roots, provider_store, text_model_candidates
+from app.stream_timeout import upstream_stream_timeout
 
 _HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
@@ -236,6 +237,13 @@ async def _proxy_openai(request: Request, original: dict[str, Any], path: str) -
                 url,
                 headers=_headers(api_key, "text/event-stream" if stream else "application/json"),
                 json=payload,
+                **(
+                    {"timeout": upstream_stream_timeout(
+                        float(provider.get("timeout_seconds") or 180),
+                        read_timeout_seconds=_settings().fdex_ai_stream_read_timeout_seconds,
+                    )}
+                    if stream else {}
+                ),
             )
             try:
                 upstream = await request.app.state.http.send(upstream_request, stream=stream)

@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from app.config import fresh_settings
 from app.document_service import prepare_documents
 from app.multimodal_service import (
     TASK_AUDIO,
@@ -32,6 +33,7 @@ from app.provider_manager import (
     text_model_candidates,
 )
 from app.request_trace import log_ai_event, request_id_for
+from app.stream_timeout import upstream_stream_timeout
 
 router = APIRouter(prefix="/api/client", tags=["android-client"])
 
@@ -517,6 +519,7 @@ async def client_ai_stream(request: Request, payload: AIRequest) -> StreamingRes
 
     async def generate() -> AsyncIterator[str]:
         started_all = perf_counter()
+        stream_read_timeout_seconds = fresh_settings().fdex_ai_stream_read_timeout_seconds
         errors: list[str] = []
         log_ai_event("stream_begin", request_id, provider_count=len(providers))
         yield _sse("status", status="FDEX 服务端已接收请求，正在解析附件与选择模型…")
@@ -596,7 +599,9 @@ async def client_ai_stream(request: Request, payload: AIRequest) -> StreamingRes
                     send_task: asyncio.Task[httpx.Response] | None = None
                     try:
                         timeout_seconds = float(provider.get("timeout_seconds") or 60)
-                        timeout = httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds))
+                        timeout = upstream_stream_timeout(
+                            timeout_seconds, read_timeout_seconds=stream_read_timeout_seconds
+                        )
                         log_ai_event(
                             "provider_attempt_begin",
                             request_id,
@@ -604,6 +609,7 @@ async def client_ai_stream(request: Request, payload: AIRequest) -> StreamingRes
                             model=model,
                             target=_provider_target(url),
                             timeout_seconds=timeout_seconds,
+                            stream_read_timeout_seconds=stream_read_timeout_seconds,
                             vision=vision,
                             image_count=len(images) if vision else 0,
                         )

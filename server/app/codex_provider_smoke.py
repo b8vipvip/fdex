@@ -55,12 +55,18 @@ def _turn_id(result: Any) -> str:
     return value
 
 
+def _turn_now() -> float:
+    """Monotonic clock for independent idle and maximum turn duration accounting."""
+    return asyncio.get_running_loop().time()
+
+
 async def _run_turn(
     client: CodexAppServerClient,
     thread_id: str,
     prompt: str,
     *,
     timeout: float,
+    max_timeout: float | None = None,
     stage: str = "wire",
     report: CodexSmokeReport | None = None,
 ) -> dict[str, Any]:
@@ -70,13 +76,17 @@ async def _run_turn(
         "input": [{"type": "text", "text": prompt, "text_elements": []}],
         "approvalPolicy": "never",
     }
+    idle_timeout = max(0.01, float(timeout))
+    maximum_duration = max(0.01, float(max_timeout)) if max_timeout is not None else None
     if report:
-        report.write("stage_begin", stage=stage, timeout_seconds=timeout)
-    turn_id = _turn_id(await client.request("turn/start", payload, timeout=min(timeout, 60.0)))
+        report.write(
+            "stage_begin", stage=stage, idle_timeout_seconds=idle_timeout,
+            max_turn_seconds=maximum_duration,
+        )
+    turn_id = _turn_id(await client.request("turn/start", payload, timeout=min(idle_timeout, 60.0)))
     if report:
         report.write("turn_started", stage=stage, turn_id=turn_id)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(15.0, timeout)
+    started_at = _turn_now()
     item_types: list[str] = []
     mcp_tools: list[str] = []
     collab_tools: list[str] = []
@@ -87,23 +97,39 @@ async def _run_turn(
     status = ""
     error = ""
     last_event = ""
-    last_event_at = loop.time()
+    last_event_at = started_at
     notification_count = 0
     delta_chunks = 0
     delta_chars = 0
 
     while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
+        now = _turn_now()
+        idle_seconds = max(0.0, now - last_event_at)
+        elapsed_seconds = max(0.0, now - started_at)
+        max_expired = maximum_duration is not None and elapsed_seconds >= maximum_duration
+        idle_expired = idle_seconds >= idle_timeout
+        if max_expired or idle_expired:
+            timeout_kind = "max_turn_duration" if max_expired else "no_progress"
             if report:
                 report.write(
-                    "turn_timeout", stage=stage, timeout_seconds=timeout,
-                    idle_seconds=round(loop.time() - last_event_at, 2),
+                    "turn_timeout", stage=stage, timeout_kind=timeout_kind,
+                    idle_timeout_seconds=idle_timeout, max_turn_seconds=maximum_duration,
+                    elapsed_seconds=round(elapsed_seconds, 2),
+                    idle_seconds=round(idle_seconds, 2),
                     last_event=last_event or "none", notification_count=notification_count,
                     delta_chunks=delta_chunks, delta_chars=delta_chars,
                     item_types=sorted(set(item_types)),
                 )
-            raise CodexProviderSmokeError(f"Codex smoke turn timed out after {timeout:.0f}s")
+            if max_expired:
+                raise CodexProviderSmokeError(
+                    f"Codex smoke turn exceeded maximum duration of {maximum_duration:.0f}s"
+                )
+            raise CodexProviderSmokeError(
+                f"Codex smoke turn received no progress for {idle_timeout:.0f}s"
+            )
+        remaining = idle_timeout - idle_seconds
+        if maximum_duration is not None:
+            remaining = min(remaining, maximum_duration - elapsed_seconds)
         try:
             method, params = await client.next_notification(timeout=min(1.0, remaining))
         except CodexRpcError as exc:
@@ -113,10 +139,18 @@ async def _run_turn(
                 report.write("notification_error", stage=stage, error_code=exc.code, error=str(exc))
             raise
 
+        event_turn_id = str(params.get("turnId") or "")
+        if event_turn_id and event_turn_id != turn_id:
+            continue
+        if method == "turn/completed":
+            completed_turn = params.get("turn")
+            if not isinstance(completed_turn, dict) or str(completed_turn.get("id") or "") != turn_id:
+                continue
         notification_count += 1
         last_event = method
-        last_event_at = loop.time()
-        event_turn_id = str(params.get("turnId") or "")
+        if method.startswith(("item/", "turn/")):
+            # Unrelated server status notifications must not keep a stalled turn alive.
+            last_event_at = _turn_now()
         if report and method not in {"item/started", "item/completed", "item/agentMessage/delta", "turn/completed"}:
             report.write("notification", stage=stage, method=method)
         if method in {"item/started", "item/completed"} and event_turn_id in {"", turn_id}:
@@ -238,7 +272,14 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
 
     marker_root = f"FDEX_CODEX_SMOKE_{smoke_id[:16]}"
     mcp_marker = marker_root + "_MCP"
-    capability = compatibility.issue_smoke_capability(mcp_marker, lifetime_seconds=900)
+    settings = fresh_settings()
+    idle_timeout = float(settings.fdex_codex_smoke_turn_idle_timeout_seconds)
+    max_turn_seconds = float(settings.fdex_codex_smoke_turn_max_seconds)
+    # Capability is local-only and revoked in finally; keep it alive for all four
+    # potentially long turns so an otherwise healthy MCP stage does not expire.
+    capability = compatibility.issue_smoke_capability(
+        mcp_marker, lifetime_seconds=int(max_turn_seconds * 4 + 600)
+    )
     level = "none"
     error = ""
     evidence: dict[str, Any] = {
@@ -260,13 +301,12 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
     async def deny_server_request(method: str, _params: dict[str, Any]) -> Any:
         raise CodexServerRequestDenied(f"Provider smoke denies interactive server request {method}")
 
-    settings = fresh_settings()
-    stage_timeout = max(45.0, min(180.0, float(provider.get("timeout_seconds") or 60) * 2.0))
     if report:
         report.write(
             "runtime_config", model=spec.model, runtime_version=runtime.version,
             runtime_source=runtime.source, provider_timeout_seconds=provider.get("timeout_seconds") or 60,
-            stage_timeout_seconds=stage_timeout, smoke_id=smoke_id,
+            stage_idle_timeout_seconds=idle_timeout,
+            stage_max_turn_seconds=max_turn_seconds, smoke_id=smoke_id,
         )
     config = _codex_thread_config(codex_home, allow_network=False)
     config["model_reasoning_effort"] = "medium"
@@ -287,7 +327,7 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
         env=_safe_process_env(codex_home, spec.api_key),
         cwd=workspace,
         client_version=settings.app_version,
-        request_timeout=max(30.0, min(stage_timeout, 120.0)),
+        request_timeout=60.0,
         server_request_handler=deny_server_request,
         experimental_api=True,
     )
@@ -329,7 +369,7 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
                     "Reason briefly about this instruction, but do not use shell, MCP, or collaboration tools. "
                     f"Then reply with this exact marker and no other requirement: {wire_marker}"
                 ),
-                timeout=stage_timeout,
+                timeout=idle_timeout, max_timeout=max_turn_seconds,
                 stage="wire", report=report,
             )
             _require_marker("wire", wire, wire_marker)
@@ -351,7 +391,7 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
                     f"with exactly this text followed by a newline: {tool_marker}. Then use a shell command to "
                     f"read that file and finally reply with {tool_marker}. Do not use MCP or sub-agents in this stage."
                 ),
-                timeout=stage_timeout,
+                timeout=idle_timeout, max_timeout=max_turn_seconds,
                 stage="tools", report=report,
             )
             _require_marker("tools", tools, tool_marker)
@@ -376,7 +416,7 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
                     f'{{"marker":"{mcp_marker}"}}. Use the returned tool text as evidence, then reply with '
                     f"{mcp_marker}. Do not use shell commands or sub-agents in this stage."
                 ),
-                timeout=stage_timeout,
+                timeout=idle_timeout, max_timeout=max_turn_seconds,
                 stage="mcp", report=report,
             )
             _require_marker("MCP", mcp, mcp_marker)
@@ -406,7 +446,7 @@ async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dic
                     "and wait for child activity/completion before producing your final response. After waiting, "
                     f"reply with {agent_marker}. Do not use shell or MCP in this stage."
                 ),
-                timeout=stage_timeout,
+                timeout=idle_timeout, max_timeout=max_turn_seconds,
                 stage="subagent", report=report,
             )
             _require_marker("sub-agent", subagent, agent_marker)
