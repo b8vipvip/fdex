@@ -82,7 +82,7 @@
             <label class="field"><span>优先级</span><input type="number" name="priority" min="1" max="10000" value="{{ edit_provider.priority if edit_provider else 100 }}" required><small>数字越小越先调用</small></label>
             <label class="field full-row"><span>BaseUrl</span><input type="url" name="base_url" required value="{{ edit_provider.base_url if edit_provider else '' }}" placeholder="https://example.com/v1"><small>不要填写具体的 <code>/chat/completions</code>、<code>/images/generations</code>、<code>/audio/speech</code> 或 <code>/realtime</code></small></label>
             <label class="field"><span>API Key</span><input type="password" name="api_key" autocomplete="new-password" placeholder="{{ '留空保持当前密钥' if edit_provider else 'sk-...' }}">{% if edit_provider %}<small>当前：<code>{{ edit_provider.api_key_masked or '未配置' }}</code></small>{% endif %}</label>
-            <label class="field"><span>请求超时（秒）</span><input type="number" name="timeout_seconds" min="5" max="600" value="{{ edit_provider.timeout_seconds if edit_provider else 60 }}"></label>
+            <label class="field"><span>连接/发送及非流式超时（秒）</span><input type="number" name="timeout_seconds" min="5" max="600" value="{{ edit_provider.timeout_seconds if edit_provider else 60 }}"><small>流式请求不使用此值限制总执行时间；上游连续无数据的读取超时由 FDEX_AI_STREAM_READ_TIMEOUT_SECONDS 单独控制（当前 {{ settings.fdex_ai_stream_read_timeout_seconds|int }} 秒，0 表示不限制）。</small></label>
         </div>
 
         <fieldset class="provider-fieldset capability-box">
