@@ -109,12 +109,16 @@ async def _run_turn(
         except CodexRpcError as exc:
             if exc.code == -32002:
                 continue
+            if report:
+                report.write("notification_error", stage=stage, error_code=exc.code, error=str(exc))
             raise
 
         notification_count += 1
         last_event = method
         last_event_at = loop.time()
         event_turn_id = str(params.get("turnId") or "")
+        if report and method not in {"item/started", "item/completed", "item/agentMessage/delta", "turn/completed"}:
+            report.write("notification", stage=stage, method=method)
         if method in {"item/started", "item/completed"} and event_turn_id in {"", turn_id}:
             item = params.get("item")
             if isinstance(item, dict):
