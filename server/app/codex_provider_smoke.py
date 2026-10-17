@@ -18,6 +18,7 @@ from app.codex_engine import (
     select_codex_provider_from,
 )
 from app.codex_process_isolation import codex_process_isolation_status
+from app.codex_provider_smoke_report import CodexSmokeReport
 from app.codex_provider_compatibility import (
     codex_provider_compatibility_store,
     probe_chat2api_contract,
@@ -60,6 +61,8 @@ async def _run_turn(
     prompt: str,
     *,
     timeout: float,
+    stage: str = "wire",
+    report: CodexSmokeReport | None = None,
 ) -> dict[str, Any]:
     payload = {
         "threadId": thread_id,
@@ -67,7 +70,11 @@ async def _run_turn(
         "input": [{"type": "text", "text": prompt, "text_elements": []}],
         "approvalPolicy": "never",
     }
+    if report:
+        report.write("stage_begin", stage=stage, timeout_seconds=timeout)
     turn_id = _turn_id(await client.request("turn/start", payload, timeout=min(timeout, 60.0)))
+    if report:
+        report.write("turn_started", stage=stage, turn_id=turn_id)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(15.0, timeout)
     item_types: list[str] = []
@@ -79,10 +86,23 @@ async def _run_turn(
     final_item_text = ""
     status = ""
     error = ""
+    last_event = ""
+    last_event_at = loop.time()
+    notification_count = 0
+    delta_chunks = 0
+    delta_chars = 0
 
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
+            if report:
+                report.write(
+                    "turn_timeout", stage=stage, timeout_seconds=timeout,
+                    idle_seconds=round(loop.time() - last_event_at, 2),
+                    last_event=last_event or "none", notification_count=notification_count,
+                    delta_chunks=delta_chunks, delta_chars=delta_chars,
+                    item_types=sorted(set(item_types)),
+                )
             raise CodexProviderSmokeError(f"Codex smoke turn timed out after {timeout:.0f}s")
         try:
             method, params = await client.next_notification(timeout=min(1.0, remaining))
@@ -91,6 +111,9 @@ async def _run_turn(
                 continue
             raise
 
+        notification_count += 1
+        last_event = method
+        last_event_at = loop.time()
         event_turn_id = str(params.get("turnId") or "")
         if method in {"item/started", "item/completed"} and event_turn_id in {"", turn_id}:
             item = params.get("item")
@@ -98,6 +121,12 @@ async def _run_turn(
                 item_type = str(item.get("type") or "")
                 if item_type:
                     item_types.append(item_type)
+                if report:
+                    report.write(
+                        "item_event", stage=stage, method=method,
+                        item_type=item_type, item_status=str(item.get("status") or ""),
+                        tool=str(item.get("tool") or ""), server=str(item.get("server") or ""),
+                    )
                 if item_type == "mcpToolCall":
                     mcp_tools.append(f"{str(item.get('server') or '')}:{str(item.get('tool') or '')}")
                 if item_type == "collabAgentToolCall":
@@ -116,6 +145,10 @@ async def _run_turn(
             delta = str(params.get("delta") or "")
             if delta:
                 final_parts.append(delta)
+                delta_chunks += 1
+                delta_chars += len(delta)
+                if report and delta_chunks == 1:
+                    report.write("first_output_delta", stage=stage, char_count=len(delta))
         elif method == "turn/completed":
             turn = params.get("turn")
             if not isinstance(turn, dict) or str(turn.get("id") or "") != turn_id:
@@ -126,6 +159,12 @@ async def _run_turn(
                 error = str(raw_error.get("message") or raw_error)[:1200]
             elif raw_error is not None:
                 error = str(raw_error)[:1200]
+            if report:
+                report.write(
+                    "turn_completed", stage=stage, status=status, error=error,
+                    notification_count=notification_count, delta_chunks=delta_chunks,
+                    delta_chars=delta_chars, item_types=sorted(set(item_types)),
+                )
             break
 
     if status != "completed":
@@ -146,7 +185,7 @@ def _require_marker(stage: str, result: dict[str, Any], marker: str) -> None:
         raise CodexProviderSmokeError(f"{stage} turn completed but final response did not contain the required marker")
 
 
-async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
+async def run_codex_provider_smoke(provider_id: int, *, run_id: str = "") -> dict[str, Any]:
     """Run a real official app-server Provider smoke without touching a user repository.
 
     The smoke deliberately uses an isolated scratch workspace, the same sanitized Provider env,
@@ -168,6 +207,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
             "供应商必须配置 Responses 协议、API Key、有效 Base URL 和文本模型后才能执行 Codex smoke"
         )
 
+    report = CodexSmokeReport(provider_id, run_id, api_key=spec.api_key) if run_id else None
     compatibility = codex_provider_compatibility_store()
     discovered_upstream = await probe_chat2api_contract(provider)
     if discovered_upstream is not None:
@@ -218,6 +258,12 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
 
     settings = fresh_settings()
     stage_timeout = max(45.0, min(180.0, float(provider.get("timeout_seconds") or 60) * 2.0))
+    if report:
+        report.write(
+            "runtime_config", model=spec.model, runtime_version=runtime.version,
+            runtime_source=runtime.source, provider_timeout_seconds=provider.get("timeout_seconds") or 60,
+            stage_timeout_seconds=stage_timeout, smoke_id=smoke_id,
+        )
     config = _codex_thread_config(codex_home, allow_network=False)
     config["model_reasoning_effort"] = "medium"
     config["model_reasoning_summary"] = "auto"
@@ -242,8 +288,11 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
         experimental_api=True,
     )
 
+    current_stage = "thread_start"
     try:
         async with client:
+            if report:
+                report.write("app_server_started")
             thread = await client.request(
                 "thread/start",
                 {
@@ -264,8 +313,11 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                 timeout=45.0,
             )
             thread_id = _thread_id(thread)
+            if report:
+                report.write("thread_started", thread_id=thread_id)
 
             wire_marker = marker_root + "_WIRE"
+            current_stage = "wire"
             wire = await _run_turn(
                 client,
                 thread_id,
@@ -274,8 +326,11 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                     f"Then reply with this exact marker and no other requirement: {wire_marker}"
                 ),
                 timeout=stage_timeout,
+                stage="wire", report=report,
             )
             _require_marker("wire", wire, wire_marker)
+            if report:
+                report.write("stage_verified", stage="wire", item_types=sorted(set(wire.get("item_types") or [])))
             evidence["wire"] = True
             evidence["reasoning"] = "reasoning" in set(wire.get("item_types") or [])
             evidence["wire_item_types"] = sorted(set(wire.get("item_types") or []))
@@ -283,6 +338,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
 
             tool_marker = marker_root + "_TOOLS"
             tool_file = workspace / "fdex_codex_provider_smoke.txt"
+            current_stage = "tools"
             tools = await _run_turn(
                 client,
                 thread_id,
@@ -292,6 +348,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                     f"read that file and finally reply with {tool_marker}. Do not use MCP or sub-agents in this stage."
                 ),
                 timeout=stage_timeout,
+                stage="tools", report=report,
             )
             _require_marker("tools", tools, tool_marker)
             if not tool_file.is_file() or tool_file.read_text(encoding="utf-8").strip() != tool_marker:
@@ -303,7 +360,10 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
             evidence["tool_item_types"] = sorted(tool_types)
             evidence["reasoning"] = bool(evidence["reasoning"] or "reasoning" in tool_types)
             level = "tools"
+            if report:
+                report.write("stage_verified", stage="tools", item_types=sorted(tool_types))
 
+            current_stage = "mcp"
             mcp = await _run_turn(
                 client,
                 thread_id,
@@ -313,6 +373,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                     f"{mcp_marker}. Do not use shell commands or sub-agents in this stage."
                 ),
                 timeout=stage_timeout,
+                stage="mcp", report=report,
             )
             _require_marker("MCP", mcp, mcp_marker)
             cap_state = compatibility.smoke_capability(capability)
@@ -327,7 +388,11 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
             evidence["mcp_tools"] = list(mcp.get("mcp_tools") or [])[:20]
             evidence["reasoning"] = bool(evidence["reasoning"] or "reasoning" in mcp_types)
 
+            if report:
+                report.write("stage_verified", stage="mcp", item_types=sorted(mcp_types), mcp_call_count=cap_state.get("call_count"))
+
             agent_marker = marker_root + "_SUBAGENT"
+            current_stage = "subagent"
             subagent = await _run_turn(
                 client,
                 thread_id,
@@ -338,6 +403,7 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                     f"reply with {agent_marker}. Do not use shell or MCP in this stage."
                 ),
                 timeout=stage_timeout,
+                stage="subagent", report=report,
             )
             _require_marker("sub-agent", subagent, agent_marker)
             completed_collab = list(subagent.get("completed_collab_tools") or [])
@@ -365,14 +431,20 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
                     "full smoke completed tools/MCP/sub-agent stages but no official reasoning Item was observed"
                 )
             level = "full"
+            if report:
+                report.write("stage_verified", stage="subagent", item_types=sorted(sub_types), collab_tools=completed_collab)
     except Exception as exc:
         error = _safe_error(exc, spec.api_key)
+        if report:
+            report.write("smoke_error", stage=current_stage, error_type=type(exc).__name__, error=error, elapsed_ms=int((perf_counter() - started) * 1000))
     finally:
         compatibility.revoke_smoke_capability(capability)
         try:
             shutil.rmtree(root)
         except OSError:
             pass
+        if report:
+            report.write("scratch_workspace_cleaned")
 
     latency_ms = int((perf_counter() - started) * 1000)
     record = compatibility.record(
@@ -387,6 +459,8 @@ async def run_codex_provider_smoke(provider_id: int) -> dict[str, Any]:
         evidence=evidence,
         error=error,
     )
+    if report:
+        report.write("compatibility_recorded", level=level, latency_ms=latency_ms, error=error)
     return {
         "ok": level == "full" and not error,
         "level": level,
