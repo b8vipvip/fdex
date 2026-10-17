@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     # Independent from provider timeout (connection/write and non-stream requests).
     fdex_ai_stream_read_timeout_seconds: float = Field(default=3600.0, ge=0.0, le=86400.0)
     # Full Smoke measures Codex turn progress separately from the overall turn budget.
-    fdex_codex_smoke_turn_idle_timeout_seconds: float = Field(default=1800.0, ge=60.0, le=14400.0)
-    fdex_codex_smoke_turn_max_seconds: float = Field(default=3600.0, ge=120.0, le=14400.0)
+    fdex_codex_smoke_turn_idle_timeout_seconds: float = Field(default=1800.0, ge=60.0, le=3600.0)
+    fdex_codex_smoke_turn_max_seconds: float = Field(default=3600.0, ge=120.0, le=3600.0)
 
     fdex_agent_enabled: bool = True
     fdex_agent_codex_bin: str = ""
