@@ -5,8 +5,8 @@ import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
@@ -15,6 +15,7 @@ from app.codex_engine import resolve_codex_runtime, select_codex_provider_from
 from app.codex_process_isolation import codex_process_isolation_status
 from app.codex_provider_rollout import provider_rollout_rows
 from app.codex_provider_smoke import run_codex_provider_smoke
+from app.codex_provider_smoke_report import CodexSmokeReport
 from app.codex_provider_smoke_runs import codex_provider_smoke_run_store
 from app.config import SERVER_DIR, fresh_settings
 from app.provider_manager import provider_store
@@ -67,6 +68,7 @@ def _rollout_with_smoke_runs() -> dict[str, object]:
         provider_id = int(provider.get("id") or 0) if isinstance(provider, dict) else 0
         run = runs.get(provider_id) if provider_id > 0 else None
         row["smoke_run"] = run
+        row["smoke_report_available"] = bool(run and CodexSmokeReport(provider_id, str(run["run_id"])).exists())
         if run is not None and bool(run.get("active")):
             active = True
     rollout["smoke_active"] = active
@@ -91,13 +93,15 @@ async def _smoke_heartbeat(provider_id: int, run_id: str, stopped: asyncio.Event
 
 async def _background_smoke(provider_id: int, run_id: str) -> None:
     runs = codex_provider_smoke_run_store()
+    report = CodexSmokeReport(provider_id, run_id)
+    report.write("smoke_started")
     stopped = asyncio.Event()
     heartbeat = asyncio.create_task(
         _smoke_heartbeat(int(provider_id), run_id, stopped),
         name=f"fdex-codex-provider-smoke-heartbeat-{provider_id}",
     )
     try:
-        result = await run_codex_provider_smoke(int(provider_id))
+        result = await run_codex_provider_smoke(int(provider_id), run_id=run_id)
         ok = bool(result.get("ok"))
         level = str(result.get("level") or "none")
         error = str(result.get("error") or "")
@@ -113,6 +117,7 @@ async def _background_smoke(provider_id: int, run_id: str) -> None:
             ),
             error=error,
         )
+        report.write("smoke_finished", status="passed" if ok else "failed", level=level, error=error, latency_ms=result.get("latency_ms"))
         logger.info(
             "Codex Provider smoke finished provider_id=%s run_id=%s ok=%s level=%s",
             provider_id,
@@ -121,6 +126,7 @@ async def _background_smoke(provider_id: int, run_id: str) -> None:
             level,
         )
     except Exception as exc:
+        report.write("smoke_crashed", error_type=type(exc).__name__)
         runs.finish(
             int(provider_id),
             run_id,
@@ -154,6 +160,29 @@ def codex_provider_rollout_page(request: Request) -> Response:
             rollout=_rollout_with_smoke_runs(),
             isolation=codex_process_isolation_status(),
         ),
+    )
+
+
+@router.get("/{provider_id}/smoke/{run_id}/report", response_model=None)
+def download_codex_provider_smoke_report(request: Request, provider_id: int, run_id: str) -> Response:
+    if not is_admin(request):
+        return _login_redirect()
+    try:
+        report = CodexSmokeReport(provider_id, run_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="诊断报告不存在") from None
+    try:
+        content = report.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="诊断报告不存在（旧版测试不会自动生成报告）") from None
+    return PlainTextResponse(
+        content,
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="fdex-codex-smoke-{provider_id}-{run_id}.jsonl"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -194,6 +223,9 @@ def start_codex_provider_smoke(
         run_id = str(run.get("run_id") or "")
         if not run_id:
             raise RuntimeError("无法创建 Codex Provider smoke 运行记录")
+        report = CodexSmokeReport(int(provider_id), run_id)
+        report.write("smoke_queued", model=spec.model, runtime_version=runtime.version, runtime_source=runtime.source)
+        CodexSmokeReport.prune(int(provider_id))
         background_tasks.add_task(_background_smoke, int(provider_id), run_id)
         write_audit(
             request,
