@@ -140,6 +140,26 @@ async def _run_turn(
             raise
 
         event_turn_id = str(params.get("turnId") or "")
+        if report and method in {"error", "warning", "item/started", "item/completed", "turn/completed"}:
+            item_detail = params.get("item") if isinstance(params.get("item"), dict) else {}
+            error_detail = params.get("error") if isinstance(params.get("error"), dict) else {}
+            report.write(
+                "event_trace", stage=stage, method=method,
+                expected_turn_id=turn_id, event_turn_id=event_turn_id,
+                thread_id=str(params.get("threadId") or thread_id)[:128],
+                item_id=str(item_detail.get("id") or "")[:128],
+                item_type=str(item_detail.get("type") or "")[:80],
+                item_status=str(item_detail.get("status") or "")[:80],
+                tool=str(item_detail.get("tool") or "")[:120],
+                sender_thread_id=str(item_detail.get("senderThreadId") or "")[:128],
+                receiver_thread_ids=[
+                    str(value)[:128] for value in (item_detail.get("receiverThreadIds") or [])[:20]
+                ] if isinstance(item_detail.get("receiverThreadIds"), list) else [],
+                error_code=str(error_detail.get("code") or params.get("code") or "")[:80],
+                error_type=str(error_detail.get("type") or "")[:80],
+                event_keys=sorted(str(key)[:80] for key in params.keys())[:40],
+                item_keys=sorted(str(key)[:80] for key in item_detail.keys())[:40],
+            )
         if event_turn_id and event_turn_id != turn_id:
             continue
         if method == "turn/completed":
