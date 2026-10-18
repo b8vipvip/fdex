@@ -108,8 +108,15 @@ def test_real_turn_event_metadata_is_logged_without_prompt_or_response_text(
     assert result["text"] == "private output"
     lines = [json.loads(line) for line in report.read().splitlines()]
     assert [line["event"] for line in lines] == [
-        "stage_begin", "turn_started", "item_event", "first_output_delta", "turn_completed"
+        "stage_begin", "turn_started", "event_trace", "item_event",
+        "first_output_delta", "event_trace", "turn_completed",
     ]
+    traces = [line for line in lines if line["event"] == "event_trace"]
+    assert traces[0]["expected_turn_id"] == "turn-1"
+    assert traces[0]["event_turn_id"] == "turn-1"
+    assert traces[0]["thread_id"] == "thread-1"
+    assert traces[0]["item_type"] == "reasoning"
+    assert traces[1]["method"] == "turn/completed"
     raw = report.read()
     assert "private prompt" not in raw
     assert "private output" not in raw
@@ -122,3 +129,50 @@ def test_rollout_template_exposes_report_link_only_when_file_exists() -> None:
     assert "run.run_id" in template
     assert "下载诊断报告" in template
     assert "旧版测试未保存诊断报告" in template
+
+
+def test_smoke_trace_correlates_foreign_turn_without_counting_its_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    report = _report(monkeypatch, tmp_path)
+
+    class FakeAppServer:
+        def __init__(self) -> None:
+            self.events = iter([
+                ("item/completed", {
+                    "turnId": "child-turn", "threadId": "child-thread",
+                    "item": {
+                        "id": "spawn-1", "type": "collabAgentToolCall",
+                        "status": "completed", "tool": "spawnAgent",
+                        "senderThreadId": "parent-thread",
+                        "receiverThreadIds": ["child-thread"],
+                        "arguments": {"message": "private child task"},
+                    },
+                }),
+                ("error", {
+                    "turnId": "parent-turn", "threadId": "parent-thread",
+                    "error": {"code": "transport_timeout", "message": "private error detail"},
+                }),
+                ("turn/completed", {"turn": {"id": "parent-turn", "status": "completed"}}),
+            ])
+
+        async def request(self, method: str, payload: object, timeout: float) -> dict:
+            return {"turn": {"id": "parent-turn"}}
+
+        async def next_notification(self, *, timeout: float) -> tuple[str, dict]:
+            return next(self.events)
+
+    result = asyncio.run(_run_turn(
+        FakeAppServer(), "parent-thread", "private prompt", timeout=20.0,
+        stage="subagent", report=report,
+    ))
+    assert result["completed_collab_tools"] == []
+    raw = report.read()
+    assert "private child task" not in raw
+    assert "private error detail" not in raw
+    assert "private prompt" not in raw
+    traces = [json.loads(line) for line in raw.splitlines() if json.loads(line)["event"] == "event_trace"]
+    assert traces[0]["event_turn_id"] == "child-turn"
+    assert traces[0]["expected_turn_id"] == "parent-turn"
+    assert traces[0]["receiver_thread_ids"] == ["child-thread"]
+    assert traces[1]["error_code"] == "transport_timeout"
